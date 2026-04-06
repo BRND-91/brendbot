@@ -48,18 +48,21 @@ async def run() -> None:
             if not mentioned:
                 return
 
-        await pool.route_message(
-            platform=platform,
-            sender_id=sender_id,
-            chat_id=chat_id,
-            text=text,
-            tier=tier,
-            is_group=is_group,
-            message_id=message_id,
-            reply_to_id=reply_to_id,
-            reply_to_text=reply_to_text,
-            reply_to_author=reply_to_author,
-        )
+        try:
+            await pool.route_message(
+                platform=platform,
+                sender_id=sender_id,
+                chat_id=chat_id,
+                text=text,
+                tier=tier,
+                is_group=is_group,
+                message_id=message_id,
+                reply_to_id=reply_to_id,
+                reply_to_text=reply_to_text,
+                reply_to_author=reply_to_author,
+            )
+        except Exception:
+            logger.exception("Error routing message from %s", sender_id)
 
     listener = DiscordListener(token=cfg.discord_token, on_message=on_message)
 

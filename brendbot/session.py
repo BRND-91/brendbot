@@ -94,8 +94,16 @@ class Session:
 
     async def start(self) -> None:
         opts = self._build_options()
-        self._client = ClaudeSDKClient(options=opts)
-        await self._client.connect()
+        logger.info(
+            "Creating session %s (tier=%s, model=%s, perm=%s, cwd=%s)",
+            self.key, self.tier, self._model, opts.permission_mode, self.cwd,
+        )
+        try:
+            self._client = ClaudeSDKClient(options=opts)
+            await self._client.connect()
+        except Exception as e:
+            logger.error("Failed to start Claude session %s: %s", self.key, e)
+            raise
         self.running = True
         self._task = asyncio.create_task(self._run_loop(), name=f"session:{self.key}")
         logger.info("Session started: %s", self.key)
@@ -199,24 +207,30 @@ class Session:
             logger.info("[%s] turn complete%s", self.key, cost)
 
     def _build_options(self) -> ClaudeAgentOptions:
+        import os
+
+        is_root = os.getuid() == 0
+
         if self.tier == "admin":
             tools = [
                 "Read", "Write", "Edit", "Bash", "Glob", "Grep",
                 "WebSearch", "WebFetch", "Task", "NotebookEdit",
             ]
-            perm_mode = "bypassPermissions"
+            # bypassPermissions requires IS_SANDBOX=1 which only works as root.
+            # For non-root users (e.g. WSL), use acceptEdits instead.
+            perm_mode = "bypassPermissions" if is_root else "acceptEdits"
             turn_limit = 200
         elif self.tier == "trusted":
             tools = ["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"]
-            perm_mode = "default"
+            perm_mode = "acceptEdits"
             turn_limit = 50
         else:
             tools = ["Read", "Bash", "Glob", "Grep"]
-            perm_mode = "default"
+            perm_mode = "acceptEdits"
             turn_limit = 30
 
         env: dict[str, str] = {}
-        if self.tier == "admin":
+        if self.tier == "admin" and is_root:
             env["IS_SANDBOX"] = "1"
 
         opts = ClaudeAgentOptions(

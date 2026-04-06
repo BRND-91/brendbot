@@ -239,7 +239,7 @@ class Session:
             permission_mode=perm_mode,
             setting_sources=["project"],
             model=self._model,
-            fallback_model="sonnet",
+            fallback_model="haiku" if self._model != "haiku" else "sonnet",
             max_turns=turn_limit,
             max_buffer_size=10 * 1024 * 1024,
             env=env,

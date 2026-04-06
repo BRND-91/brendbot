@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+discord-attachments/
+transcripts/
+state/
+*.egg-info/
+dist/

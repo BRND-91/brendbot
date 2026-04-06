@@ -1,0 +1,144 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""Send a Discord message to a channel via the Discord REST API.
+
+Usage: send-discord <channel_id> <message> [--reply-to <message_id>] [--file <path>]
+
+Reads DISCORD_TOKEN from environment or .env file.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import httpx
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print(
+            "Usage: send-discord <channel_id> <message> [--reply-to <msg_id>] [--file <path>]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    channel_id = sys.argv[1]
+
+    # Accept message from argv or stdin
+    if len(sys.argv) >= 3 and sys.argv[2] != "--stdin":
+        text = sys.argv[2]
+    elif "--stdin" in sys.argv or len(sys.argv) < 3:
+        text = sys.stdin.read().strip()
+        if not text:
+            print("Error: no message provided", file=sys.stderr)
+            sys.exit(1)
+    else:
+        text = sys.argv[2]
+
+    # Parse optional flags
+    reply_to = None
+    if "--reply-to" in sys.argv:
+        idx = sys.argv.index("--reply-to")
+        if idx + 1 < len(sys.argv):
+            reply_to = sys.argv[idx + 1]
+
+    file_path = None
+    if "--file" in sys.argv:
+        idx = sys.argv.index("--file")
+        if idx + 1 < len(sys.argv):
+            file_path = sys.argv[idx + 1]
+
+    # Fix escaped exclamation marks
+    text = text.replace("\\!", "!")
+
+    # Load .env if DISCORD_TOKEN not in environment
+    for env_path in [
+        Path(__file__).parent.parent / ".env",
+        Path.home() / "brendbot" / ".env",
+    ]:
+        if env_path.exists() and not os.getenv("DISCORD_TOKEN"):
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("Error: DISCORD_TOKEN not set", file=sys.stderr)
+        sys.exit(1)
+
+    base_url = f"https://discord.com/api/v10/channels/{channel_id}"
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Content-Type": "application/json",
+    }
+
+    # Typing indicator
+    try:
+        httpx.post(f"{base_url}/typing", headers=headers, timeout=5)
+    except Exception:
+        pass
+
+    # Split long messages (Discord 2000 char limit)
+    chunks = _split(text, 2000)
+    for i, chunk in enumerate(chunks):
+        payload: dict = {"content": chunk}
+        if reply_to and i == 0:
+            payload["message_reference"] = {"message_id": reply_to}
+
+        if file_path and i == 0:
+            send_headers = {"Authorization": f"Bot {token}"}
+            fp = Path(file_path)
+            if not fp.exists():
+                print(f"Error: file not found: {file_path}", file=sys.stderr)
+                sys.exit(1)
+            ext_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
+            mime = ext_map.get(fp.suffix.lower(), "application/octet-stream")
+            with open(fp, "rb") as f:
+                files_data = {"files[0]": (fp.name, f, mime)}
+                data = {"content": chunk}
+                if reply_to:
+                    import json
+                    data["payload_json"] = json.dumps({
+                        "content": chunk,
+                        "message_reference": {"message_id": reply_to},
+                    })
+                    del data["content"]
+                resp = httpx.post(
+                    f"{base_url}/messages",
+                    headers=send_headers,
+                    data=data,
+                    files=files_data,
+                    timeout=30,
+                )
+        else:
+            resp = httpx.post(
+                f"{base_url}/messages", json=payload, headers=headers, timeout=30
+            )
+        resp.raise_for_status()
+
+    print(f"Sent to channel {channel_id}")
+
+
+def _split(text: str, limit: int) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
+
+
+if __name__ == "__main__":
+    main()

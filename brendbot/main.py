@@ -42,12 +42,14 @@ async def run() -> None:
 
         # In groups, only respond to @mentions or name mentions
         if is_group:
+            # Auto-detect bot ID from Discord connection (no .env needed)
+            bot_id = cfg.discord_bot_id or listener.bot_id
             mentioned = cfg.bot_name.lower() in text.lower()
-            if cfg.discord_bot_id:
-                mentioned = mentioned or f"<@{cfg.discord_bot_id}>" in text
+            if bot_id:
+                mentioned = mentioned or f"<@{bot_id}>" in text
             logger.info(
                 "Mention check: bot_name=%r bot_id=%r mentioned=%s text=%r",
-                cfg.bot_name, cfg.discord_bot_id, mentioned, text[:100],
+                cfg.bot_name, bot_id, mentioned, text[:100],
             )
             if not mentioned:
                 return

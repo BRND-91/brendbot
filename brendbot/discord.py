@@ -25,6 +25,7 @@ class DiscordListener:
         self._on_message = on_message
         self._client: discord.Client | None = None
         self._ready = asyncio.Event()
+        self.bot_id: str = ""  # Set on_ready, used for mention detection
 
     async def run(self) -> None:
         """Start the Discord bot. Blocks until disconnected."""
@@ -37,10 +38,12 @@ class DiscordListener:
 
         @client.event
         async def on_ready() -> None:
+            if client.user:
+                self.bot_id = str(client.user.id)
             logger.info(
                 "Bot connected as %s (id=%s)",
                 client.user,
-                client.user.id if client.user else "?",
+                self.bot_id or "?",
             )
             guilds = [g.name for g in client.guilds]
             logger.info("In %d server(s): %s", len(guilds), ", ".join(guilds))

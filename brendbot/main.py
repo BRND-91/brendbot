@@ -45,9 +45,14 @@ async def run() -> None:
             mentioned = cfg.bot_name.lower() in text.lower()
             if cfg.discord_bot_id:
                 mentioned = mentioned or f"<@{cfg.discord_bot_id}>" in text
+            logger.info(
+                "Mention check: bot_name=%r bot_id=%r mentioned=%s text=%r",
+                cfg.bot_name, cfg.discord_bot_id, mentioned, text[:100],
+            )
             if not mentioned:
                 return
 
+        logger.info("Routing message from %s (tier=%s, is_group=%s)", sender_id, tier, is_group)
         try:
             await pool.route_message(
                 platform=platform,

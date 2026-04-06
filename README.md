@@ -32,14 +32,24 @@ source ~/.bashrc  # or restart your terminal
 uv sync
 ```
 
-### 2. Authenticate with Claude
+### 2. Install & authenticate Claude Code CLI
+
+brendbot uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview) + [Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) — **not** raw API tokens. Your Claude Pro or Max subscription covers all usage. No separate API key or credits needed.
 
 ```bash
-# This opens a browser — log in with your Anthropic account
+# Install Claude Code CLI (requires Node.js)
+# If you don't have Node.js: https://nodejs.org/en/download
+sudo npm install -g @anthropic-ai/claude-code
+
+# Authenticate — opens a browser, log in with your Anthropic account
 claude login
 ```
 
-> This uses OAuth. Your Claude Pro/Max subscription covers all API usage. No API key or credit card beyond your subscription.
+This stores an OAuth token locally. You'll see "Authentication successful" in the terminal when it works.
+
+> **Don't have a subscription?** Sign up at [claude.ai/settings/billing](https://claude.ai/settings/billing). Pro ($20/mo) or Max ($100/mo) — both work. You do NOT need a separate API key from [console.anthropic.com](https://console.anthropic.com) — the CLI login handles everything.
+>
+> **CLI docs**: [docs.anthropic.com/en/docs/claude-code/overview](https://docs.anthropic.com/en/docs/claude-code/overview)
 
 ### 3. Create a Discord bot
 
@@ -79,16 +89,70 @@ That's it. Mention your bot in Discord and it'll respond.
 
 ## Running on Windows (WSL)
 
-If you're on Windows, use WSL (Windows Subsystem for Linux):
+Windows doesn't run this natively — you need [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) (Windows Subsystem for Linux), which gives you a real Ubuntu terminal inside Windows. It's free, built into Windows 10/11, and takes 2 minutes to set up.
+
+### Step 1: Install WSL
+
+Open **PowerShell as Administrator** (right-click Start → "Terminal (Admin)" or "PowerShell (Admin)"):
 
 ```powershell
-# In PowerShell (admin):
 wsl --install
-
-# Restart your computer, then open Ubuntu from Start menu
 ```
 
-Then follow the Quick Start steps above inside your Ubuntu terminal. Everything works the same.
+This installs Ubuntu. **Restart your computer** when prompted.
+
+> If you already have WSL but it's an old version, upgrade: `wsl --update`
+>
+> Full guide: [Microsoft WSL install docs](https://learn.microsoft.com/en-us/windows/wsl/install)
+
+### Step 2: Set up Ubuntu
+
+Open **Ubuntu** from your Start menu. First launch will ask you to create a username and password (this is just for your Linux environment, pick anything).
+
+Then install the prerequisites:
+
+```bash
+# Update package list
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js (needed for Claude CLI)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs git
+
+# Install Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
+```
+
+### Step 3: Authenticate with Claude
+
+```bash
+claude login
+```
+
+This opens a browser link. Click it, log in with your Anthropic account (the one with your Claude Pro/Max subscription). Once you see "Authentication successful", you're done. **No API key needed** — the CLI uses OAuth to authenticate with your existing subscription.
+
+> Don't have a subscription? Sign up at [claude.ai/settings/billing](https://claude.ai/settings/billing) — Pro is $20/mo, Max is $100/mo. Both work.
+
+### Step 4: Clone and run brendbot
+
+Now follow the [Quick Start](#quick-start) steps above — they work identically inside your Ubuntu terminal.
+
+```bash
+git clone https://github.com/sammcgrail/brendbot.git
+cd brendbot
+./setup.sh
+```
+
+### WSL Tips
+
+- **Access from Windows**: Your Ubuntu files live at `\\wsl$\Ubuntu\home\<username>\` in File Explorer
+- **Copy/paste**: Right-click to paste in the Ubuntu terminal
+- **Keep it running**: The bot stops when you close the terminal. For 24/7 uptime, use a VPS instead (see below) or run `wsl --shutdown` to cleanly stop, `ubuntu` to restart
+- **VS Code integration**: Install [VS Code](https://code.visualstudio.com/) + the [WSL extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) to edit files with a real editor
 
 ## Running on a VPS (24/7)
 
@@ -104,15 +168,23 @@ For always-on hosting, grab a cheap VPS:
 # SSH into your server
 ssh root@your-server-ip
 
-# Clone, install, configure (same as Quick Start)
-git clone https://github.com/sammcgrail/brendbot.git
-cd brendbot
+# Install prerequisites
+apt update && apt install -y git curl
+curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+apt install -y nodejs
+npm install -g @anthropic-ai/claude-code
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc
-uv sync
+
+# Authenticate with your Claude subscription (opens a link to click)
 claude login
+
+# Clone and set up
+git clone https://github.com/sammcgrail/brendbot.git
+cd brendbot
+uv sync
 cp .env.example .env
-nano .env
+nano .env  # add your Discord token + user ID
 
 # Run in background with systemd (survives reboots)
 ./setup.sh --systemd
@@ -222,6 +294,36 @@ brendbot/
 
 **Bot responds very slowly**
 → That's normal for the first message (cold start). Subsequent messages in the same session are faster. You can also try `CLAUDE_MODEL=haiku` for speed over quality.
+
+## Resources & Links
+
+### Claude
+- [Claude Code Overview](https://docs.anthropic.com/en/docs/claude-code/overview) — what Claude Code is and how it works
+- [Claude Agent SDK docs](https://docs.anthropic.com/en/docs/claude-code/sdk) — the SDK this bot uses under the hood
+- [Claude Pro/Max pricing](https://claude.ai/settings/billing) — subscription that covers API usage
+- [Claude Code GitHub](https://github.com/anthropics/claude-code) — source code and issues
+
+### Discord
+- [Discord Developer Portal](https://discord.com/developers/applications) — create your bot here
+- [discord.py docs](https://discordpy.readthedocs.io/en/stable/) — the Python Discord library
+- [Discord bot permissions calculator](https://discordapi.com/permissions.html) — figure out what permissions your bot needs
+- [How to get Discord user/channel IDs](https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID-) — enable Developer Mode
+
+### WSL (Windows)
+- [Microsoft WSL install guide](https://learn.microsoft.com/en-us/windows/wsl/install) — official setup docs
+- [WSL basic commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands) — start, stop, manage
+- [VS Code + WSL extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) — edit code with a real editor
+- [Node.js install for WSL](https://learn.microsoft.com/en-us/windows/dev-environment/javascript/nodejs-on-wsl) — Microsoft's official guide
+
+### VPS Hosting
+- [Hetzner Cloud](https://www.hetzner.com/cloud/) — cheapest quality VPS ($4.50/mo)
+- [Oracle Cloud Free Tier](https://www.oracle.com/cloud/free/) — free forever ARM instance (4 vCPU, 24GB RAM)
+- [AWS Free Tier](https://aws.amazon.com/free/) — free t2.micro for 12 months
+- [How to set up a VPS from scratch](https://www.digitalocean.com/community/tutorials/initial-server-setup-with-ubuntu-22-04) — DigitalOcean's guide (works for any provider)
+
+### Python
+- [uv package manager](https://docs.astral.sh/uv/) — the fast Python tool we use
+- [Python 3.12 downloads](https://www.python.org/downloads/) — if you need to install Python
 
 ## License
 

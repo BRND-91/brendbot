@@ -26,6 +26,7 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -139,18 +140,26 @@ def _render(template: str, variables: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 # Hard restart when input tokens exceed this value.
-# 100_000 = 50% of Claude Sonnet's 200K context window — fires before
+# 400_000 = 40% of Claude Sonnet's 1M context window — fires before
 # "lost in the middle" degradation degrades response quality.
-_CONTEXT_REFRESH_THRESHOLD = 100_000
+_CONTEXT_REFRESH_THRESHOLD = 400_000
 
 # Soft warning threshold — bot is told to stop reading modules and work
 # from what's already in context.
-_CONTEXT_SOFT_WARNING = 80_000
+_CONTEXT_SOFT_WARNING = 320_000
 
 # Max turns to retain in the rolling turn log.
 # At refresh, the last _MAX_TURN_LOG turns are written to CONTEXT_SUMMARY.md
 # so they survive ice picks and session restarts.
 _MAX_TURN_LOG = 30
+
+# Hard cap on Bash calls within a single user-message turn.
+# Prevents runaway tool loops from spiking context into restart territory.
+_TOOL_CALL_BUDGET = 8
+
+# Write a rolling checkpoint every N completed turns so manual ice picks
+# don't wipe session context. At 5 turns × ~800 chars each = ~4KB max.
+_CHECKPOINT_INTERVAL = 5
 
 
 class Session:
@@ -219,6 +228,11 @@ class Session:
         # Capped at _MAX_TURN_LOG entries. Written to CONTEXT_SUMMARY.md on
         # MEMORY refresh so turns survive ice picks and session restarts.
         self._turn_log: list[dict] = []
+        # Per-turn Bash call budget. Reset on each incoming user message.
+        # Prevents runaway tool loops from ballooning context.
+        self._tool_call_count: int = 0
+        # Completed turn counter — drives rolling checkpoint writes.
+        self._completed_turn_count: int = 0
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -322,6 +336,9 @@ class Session:
                     logger.exception("Error handling message: %s", e)
                 if isinstance(message, ResultMessage):
                     self._error_count = 0
+                    self._completed_turn_count += 1
+                    if self._completed_turn_count == 1 or self._completed_turn_count % _CHECKPOINT_INTERVAL == 0:
+                        self._write_checkpoint()
                     if self._context_state == "threshold_hit":
                         # Threshold exceeded — write raw log and restart immediately.
                         await self._trigger_clean_restart()
@@ -342,7 +359,21 @@ class Session:
     def _handle(self, message: Any) -> None:
         if isinstance(message, AssistantMessage):
             for block in message.content:
-                if isinstance(block, TextBlock):
+                if isinstance(block, ThinkingBlock):
+                    # Externalize thinking to a persistent log file so reasoning
+                    # is visible outside the subprocess context.
+                    try:
+                        import datetime
+                        thoughts_path = Path(self.cwd) / "thoughts.log"
+                        ts = datetime.datetime.now().isoformat(timespec="seconds")
+                        with thoughts_path.open("a") as f:
+                            f.write(f"\n--- [{ts}] turn {self._completed_turn_count} ---\n")
+                            f.write(block.thinking)
+                            f.write("\n")
+                        logger.debug("[%s] thinking block written to thoughts.log", self.key)
+                    except Exception as exc:
+                        logger.warning("[%s] thoughts.log write failed: %s", self.key, exc)
+                elif isinstance(block, TextBlock):
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
                 elif isinstance(block, ToolUseBlock):
@@ -383,7 +414,7 @@ class Session:
             try:
                 import pathlib
                 status_path = pathlib.Path(self.cwd) / "context_status.txt"
-                pct = round(self._last_input_tokens / 200_000 * 100, 1)
+                pct = round(self._last_input_tokens / 1_000_000 * 100, 1)
                 status_path.write_text(f"{self._last_input_tokens} {pct}\n")
             except Exception:
                 pass
@@ -505,6 +536,29 @@ class Session:
             if "🧠" not in self._active_reactions:
                 await self._react("🧠")
 
+    def _write_checkpoint(self) -> None:
+        """Write rolling checkpoint to CONTEXT_SUMMARY.md.
+
+        Called every _CHECKPOINT_INTERVAL completed turns so manual ice picks
+        always find a recent checkpoint on disk. Same path as the auto-restart
+        write, same path as the init read — no ambiguity.
+        """
+        if not self._turn_log:
+            return
+        try:
+            summary_path = Path(self.cwd) / "CONTEXT_SUMMARY.md"
+            lines = [f"# CONTEXT SUMMARY — last {len(self._turn_log)} turns\n",
+                     f"Written at context_tokens={self._last_input_tokens}\n\n"]
+            for entry in self._turn_log:
+                role = entry.get("role", "unknown")
+                text = entry.get("text", "")
+                lines.append(f"[{role}] {text}\n\n")
+            summary_path.write_text("".join(lines))
+            logger.info("[%s] checkpoint written (%d turns, turn=%d)",
+                        self.key, len(self._turn_log), self._completed_turn_count)
+        except Exception as exc:
+            logger.warning("[%s] checkpoint write failed: %s", self.key, exc)
+
     async def _trigger_clean_restart(self) -> None:
         """Write raw turn log and restart immediately. No summarization turn.
 
@@ -542,9 +596,12 @@ class Session:
                 "Read", "Write", "Edit", "Bash", "Glob", "Grep",
                 "WebSearch", "WebFetch", "Task", "NotebookEdit",
             ]
-            # bypassPermissions requires IS_SANDBOX=1 which only works as root.
-            # For non-root users (e.g. WSL), use acceptEdits instead.
-            perm_mode = "bypassPermissions" if is_root else "acceptEdits"
+            # acceptEdits on all platforms — bypassPermissions skips can_use_tool
+            # entirely, which means the per-turn tool budget never fires.
+            # acceptEdits triggers the callback for non-edit tools (Bash, etc.)
+            # so the budget is enforced. The callback returns Allow for admin
+            # unless the budget is exceeded.
+            perm_mode = "acceptEdits"
             turn_limit = 200
         elif self.tier == "trusted":
             tools = ["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"]
@@ -556,8 +613,6 @@ class Session:
             turn_limit = 30
 
         env: dict[str, str] = {}
-        if self.tier == "admin" and is_root:
-            env["IS_SANDBOX"] = "1"
 
         opts = ClaudeAgentOptions(
             cwd=self.cwd,
@@ -568,6 +623,7 @@ class Session:
             fallback_model="haiku" if self._model != "haiku" else "sonnet",
             max_turns=turn_limit,
             max_buffer_size=10 * 1024 * 1024,
+            max_thinking_tokens=8000,
             env=env,
         )
 
@@ -585,6 +641,22 @@ class Session:
                 return PermissionResultDeny(
                     message="CLAUDE.md is managed by admin only"
                 )
+
+        # Per-turn total tool call budget — applies to all tiers.
+        # Covers Bash, Glob, Grep, Read, Edit, and all others.
+        # Prevents runaway tool chains from spiking context into restart territory.
+        self._tool_call_count += 1
+        if self._tool_call_count > _TOOL_CALL_BUDGET:
+            logger.warning(
+                "[%s] Tool call budget exceeded (%d/%d) — blocking",
+                self.key, self._tool_call_count, _TOOL_CALL_BUDGET,
+            )
+            return PermissionResultDeny(
+                message=(
+                    f"Tool call budget exceeded ({self._tool_call_count}/{_TOOL_CALL_BUDGET} "
+                    "per turn). Stop tool use and respond with what is known."
+                )
+            )
 
         effective = self.current_sender_tier or self.tier
 
@@ -694,7 +766,8 @@ class SessionPool:
         wrapped = (
             f"{context_block}"
             f"<message platform='{platform}' sender='{sender_id}' "
-            f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}>"
+            f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}"
+            f" context_tokens='{session._last_input_tokens}'>"
             f"{reply_block}\n{text}\n</message>"
         )
 
@@ -702,6 +775,9 @@ class SessionPool:
 
         # Log user turn for cross-reset continuity
         session.log_turn("user", text)
+
+        # Reset per-turn tool call budget for the incoming message.
+        session._tool_call_count = 0
 
         # Reactions disabled by admin directive.
         # set_reaction_target / _react calls removed.
@@ -808,8 +884,9 @@ class SessionPool:
                     "Use it to maintain continuity. Do not respond to this injection."
                 )
                 logger.info("CONTEXT_SUMMARY.md injected for %s", key)
-                context_summary.unlink()
-                logger.info("CONTEXT_SUMMARY.md deleted after injection for %s", key)
+                # File is NOT deleted — next checkpoint write will overwrite it.
+                # Deleting here created a gap window: manual ice picks between
+                # deletion and next checkpoint write started cold.
             except Exception as exc:
                 logger.warning("CONTEXT_SUMMARY.md injection failed: %s", exc)
 

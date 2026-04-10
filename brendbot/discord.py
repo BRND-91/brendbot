@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 ATTACHMENTS_DIR = Path(__file__).parent.parent / "discord-attachments"
 KNOWLEDGE_DIR = Path(__file__).parent / "knowledge"
 MAX_IMAGE_SIZE = 20 * 1024 * 1024
+
+_SPREADSHEET_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".xlsb"}
+_SPREADSHEET_CONTENT_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+}
 RECENCY_WINDOW_SECONDS = 300  # 5 minutes
 CONTEXT_BUFFER_SIZE = 20  # messages per channel
 
@@ -255,6 +262,8 @@ async def _ensure_seeded(channel: discord.abc.Messageable, channel_id: str) -> d
                     "display_name": m.author.display_name,
                     "text": seed_text,
                     "message_id": str(m.id),
+                    "timestamp": m.created_at.timestamp(),
+                    "reply_to_id": str(m.reference.message_id) if m.reference else None,
                 })
             logger.debug("Seeded context buffer for channel %s (%d msgs)", channel_id, len(buf))
         except Exception as e:
@@ -326,6 +335,8 @@ class DiscordListener:
                 "display_name": message.author.display_name,
                 "text": buf_text,
                 "message_id": msg_id,
+                "timestamp": message.created_at.timestamp(),
+                "reply_to_id": str(message.reference.message_id) if message.reference else None,
             })
 
             # Don't process responses to other bots unless they directly @mention or name-mention this bot.
@@ -430,18 +441,40 @@ class DiscordListener:
             # Drops bot-to-bot noise and unaddressed human chatter from the
             # per-turn context block, reducing input token cost.
             _ADMIN_ID = "369485175329128448"
-            _bot_mention = f"<@{self.bot_id}>" if self.bot_id else ""
-            _bot_names = ("brendbot", "brend")
-            def _relevant(m: dict) -> bool:
-                if m.get("sender_id") == _ADMIN_ID:
-                    return True
-                t = m.get("text", "")
-                if _bot_mention and _bot_mention in t:
-                    return True
-                if any(n in t.lower() for n in _bot_names):
-                    return True
-                return False
-            filtered_context = [m for m in context_snapshot if _relevant(m)]
+            # Build thread-aware context: walk reply chain or fall back to recent relevant messages
+            _THREAD_MAX = 10
+            _THREAD_MAX_AGE = 900  # 15 minutes
+            _now_ts = message.created_at.timestamp()
+            _buf_index = {m["message_id"]: m for m in context_snapshot if "message_id" in m}
+
+            if reply_to_id:
+                _thread_context: list[dict] = []
+                _cur_id: str | None = reply_to_id
+                while _cur_id and len(_thread_context) < _THREAD_MAX:
+                    _parent = _buf_index.get(_cur_id)
+                    if not _parent:
+                        break
+                    if _now_ts - _parent.get("timestamp", 0) > _THREAD_MAX_AGE:
+                        break
+                    _thread_context.append(_parent)
+                    _cur_id = _parent.get("reply_to_id")
+                _thread_context.reverse()
+                filtered_context = _thread_context
+            else:
+                _bot_mention = f"<@{self.bot_id}>" if self.bot_id else ""
+                _bot_names = ("brendbot", "brend")
+                def _relevant(m: dict) -> bool:
+                    if _now_ts - m.get("timestamp", 0) > _THREAD_MAX_AGE:
+                        return False
+                    if m.get("sender_id") == _ADMIN_ID:
+                        return True
+                    t = m.get("text", "")
+                    if _bot_mention and _bot_mention in t:
+                        return True
+                    if any(n in t.lower() for n in _bot_names):
+                        return True
+                    return False
+                filtered_context = [m for m in context_snapshot if _relevant(m)][-5:]
 
             await self._on_message(
                 platform,
@@ -498,6 +531,30 @@ async def _download_attachment(att: discord.Attachment) -> str | None:
         return None
 
 
+def _summarize_xlsx(local_path: str) -> str:
+    """Extract a compact manifest from an xlsx file. Replaces raw URL injection to prevent context explosion."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(local_path, data_only=True)
+        sheet_lines = []
+        for name in wb.sheetnames:
+            ws = wb[name]
+            dims = ws.dimensions or "empty"
+            sheet_lines.append(f"    {name}: {dims}")
+        nr_count = len(wb.defined_names)
+        wb.close()
+        summary_parts = [f"  Sheets ({len(sheet_lines)}):"] + sheet_lines
+        if nr_count:
+            summary_parts.append(f"  Named ranges: {nr_count}")
+        summary_parts.append(f"  Local path: {local_path}")
+        summary_parts.append(
+            "  Do not read this file directly. Request a specific sheet name and cell range — only that slice will be extracted."
+        )
+        return "\n".join(summary_parts)
+    except Exception as e:
+        return f"  [xlsx manifest failed: {e}]"
+
+
 async def _format_attachments(attachments: list[discord.Attachment]) -> str:
     """Format Discord attachments into text for Claude."""
     if not attachments:
@@ -516,10 +573,21 @@ async def _format_attachments(attachments: list[discord.Attachment]) -> str:
         lines.append(f"  - {att.filename} ({att.content_type or 'unknown'}, {size_str})")
 
         is_image = att.content_type and att.content_type.startswith("image/")
+        is_spreadsheet = (
+            att.content_type in _SPREADSHEET_CONTENT_TYPES
+            or Path(att.filename or "").suffix.lower() in _SPREADSHEET_EXTENSIONS
+        )
+
         if is_image and att.size <= MAX_IMAGE_SIZE:
             local_path = await _download_attachment(att)
             if local_path:
                 lines.append(f"    Path: {local_path}")
+            else:
+                lines.append(f"    URL: {att.url}")
+        elif is_spreadsheet:
+            local_path = await _download_attachment(att)
+            if local_path:
+                lines.append(_summarize_xlsx(local_path))
             else:
                 lines.append(f"    URL: {att.url}")
         else:

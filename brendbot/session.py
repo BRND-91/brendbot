@@ -845,20 +845,21 @@ class SessionPool:
                     except Exception as exc:
                         logger.warning("Memory fragment %s injection failed: %s", frag_name, exc)
 
-            # Index of remaining fragments for on-demand Read
+            # Index of remaining fragments for on-demand query via kb-query memory
             other_frags = [
                 f for f in sorted(memory_dir.iterdir())
                 if f.suffix == ".md" and f.name not in _ESSENTIAL_FRAGMENTS
             ]
             if other_frags:
-                index_lines = [f"- {f.name}: {f}" for f in other_frags]
+                index_lines = [f"- {f.stem}: {f}" for f in other_frags]
                 await session.inject(
                     "<memory-index>\n" + "\n".join(index_lines) + "\n</memory-index>\n"
                     "Additional memory fragments are available on disk. "
-                    "Read the relevant file when a question touches that domain "
-                    "(e.g., buildsci.md for building science, tools.md for tool usage, "
-                    "bots.md for bot roster). Do not load all fragments — only what the "
-                    "current question requires. Do not respond to this injection."
+                    "Use `kb-query memory <source>` to load the relevant fragment when a question touches that domain "
+                    "(e.g., `kb-query memory buildsci`, `kb-query memory tools`, `kb-query memory bots`). "
+                    "Do not Read .md files directly — use kb-query memory for indexed fragments. "
+                    "Do not load all fragments — only what the current question requires. "
+                    "Do not respond to this injection."
                 )
         else:
             # Fallback: monolithic MEMORY.md (pre-migration sessions)

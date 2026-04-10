@@ -10,6 +10,7 @@ theorems become rows in normalized tables. A single kb-query SELECT returns
 """
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -39,6 +40,15 @@ def create_schema(conn):
         CREATE TABLE governance_provenance (tag TEXT PRIMARY KEY, meaning TEXT);
         CREATE VIRTUAL TABLE fts_knowledge USING fts5(module_id, entry_type, term, description, source);
         CREATE TABLE imagegen_config (section TEXT PRIMARY KEY, data JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE memory_fragments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            content TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_memory_source ON memory_fragments (source);
+        CREATE INDEX idx_memory_tag ON memory_fragments (tag);
     """)
 
 
@@ -153,6 +163,40 @@ def migrate_imagegen_config(conn):
     return rows
 
 
+def migrate_memory_fragments(conn):
+    """Parse on-demand memory fragment .md files into memory_fragments table.
+
+    Essential fragments (behavior.md, identity.md) are always injected in full
+    at session start — no need to index them here. Only the lazy-loaded ones.
+    """
+    project_root = KNOWLEDGE_DIR.parent.parent
+    transcript_discord = project_root / "transcripts" / "discord"
+    if not transcript_discord.is_dir():
+        print("  SKIP memory_fragments (transcripts/discord not found)")
+        return 0
+
+    _ESSENTIAL = {"behavior.md", "identity.md"}
+    _TAG_PATTERN = re.compile(r'^- \[([^\]]+)\]\s+(.+)$', re.MULTILINE)
+
+    rows = 0
+    for memory_dir in sorted(transcript_discord.glob("*/memory")):
+        if not memory_dir.is_dir():
+            continue
+        for md_file in sorted(memory_dir.glob("*.md")):
+            if md_file.name in _ESSENTIAL:
+                continue
+            source = md_file.stem
+            text = md_file.read_text(encoding="utf-8")
+            for m in _TAG_PATTERN.finditer(text):
+                tag, content = m.group(1), m.group(2).strip()
+                conn.execute(
+                    "INSERT INTO memory_fragments (source, tag, content) VALUES (?, ?, ?)",
+                    (source, tag, content),
+                )
+                rows += 1
+    return rows
+
+
 def main():
     if DB_PATH.exists():
         DB_PATH.unlink()
@@ -174,6 +218,10 @@ def main():
     ig_count = migrate_imagegen_config(conn)
     print(f"  imagegen_config: {ig_count} rows")
     total += ig_count
+
+    mem_count = migrate_memory_fragments(conn)
+    print(f"  memory_fragments: {mem_count} rows")
+    total += mem_count
 
     conn.commit()
     conn.close()

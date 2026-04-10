@@ -1,0 +1,86 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""Add a reaction to a Discord message.
+
+Usage: react-discord <channel_id> <message_id> <emoji>
+
+Emoji formats:
+  unicode emoji:   😂  (pass the actual character)
+  custom emote:    lol  (name only, looked up in EMOTES table)
+  custom emote:    lol:715707973103517767  (name:id)
+
+Reads DISCORD_TOKEN from environment or .env file.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# Known server emotes: name -> id
+EMOTES = {
+    "lol": "715707973103517767",
+    "calne": "1491605224916385822",
+    "gok": "680628364171935761",
+}
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print(
+            "Usage: react-discord <channel_id> <message_id> <emoji>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    channel_id = sys.argv[1]
+    message_id = sys.argv[2]
+    emoji_arg = sys.argv[3]
+
+    # Load .env if DISCORD_TOKEN not set
+    for env_path in [
+        Path(__file__).parent.parent / ".env",
+        Path.home() / "brendbot" / ".env",
+    ]:
+        if env_path.exists() and not os.getenv("DISCORD_TOKEN"):
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("Error: DISCORD_TOKEN not set", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve emoji
+    if ":" in emoji_arg:
+        # name:id format
+        emoji_str = emoji_arg
+    elif emoji_arg in EMOTES:
+        # known custom emote by name
+        emoji_str = f"{emoji_arg}:{EMOTES[emoji_arg]}"
+    else:
+        # assume unicode emoji — pass as-is
+        emoji_str = emoji_arg
+
+    import httpx
+    from urllib.parse import quote
+
+    encoded = quote(emoji_str, safe="")
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
+    headers = {"Authorization": f"Bot {token}"}
+
+    resp = httpx.put(url, headers=headers, timeout=10)
+    if resp.status_code == 204:
+        print(f"Reacted with {emoji_str} on message {message_id}")
+    else:
+        print(f"Error {resp.status_code}: {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

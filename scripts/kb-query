@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Query the FUSED-CORE knowledge base (SQLite).
+
+Usage:
+    kb-query search <terms>          Full-text search across all modules
+    kb-query defs <MODULE>           List all definitions in a module
+    kb-query facts <MODULE> [topic]  List facts (optionally filtered by topic)
+    kb-query thms <MODULE>           List theorems in a module
+    kb-query def <ID>                Look up a specific definition by ID
+    kb-query gates                   List all governance gates
+    kb-query xlinks <MODULE>         List crosslinks for a module
+    kb-query topics <MODULE>         List available fact topics in a module
+
+Examples:
+    kb-query search "R-value"
+    kb-query search "insul*"           (prefix matching)
+    kb-query defs BUILDSCI
+    kb-query facts BUILDSCI airflow
+    kb-query def BSCI.ENCL.RVALUE
+    kb-query gates
+"""
+
+import sqlite3
+import sys
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent / "brendbot" / "knowledge" / "knowledge.db"
+
+
+def get_conn():
+    if not DB_PATH.exists():
+        print(f"Error: {DB_PATH} not found. Run migrate_to_sqlite.py first.", file=sys.stderr)
+        sys.exit(1)
+    return sqlite3.connect(str(DB_PATH))
+
+
+def cmd_search(terms):
+    conn = get_conn()
+    # Try FTS first
+    results = conn.execute(
+        "SELECT module_id, entry_type, term, description, source "
+        "FROM fts_knowledge WHERE fts_knowledge MATCH ? LIMIT 20",
+        (terms,)
+    ).fetchall()
+
+    if not results:
+        # Fallback to LIKE on definitions + facts
+        like = f"%{terms}%"
+        results = conn.execute(
+            "SELECT module_id, 'def' as entry_type, term, description, source "
+            "FROM definitions WHERE term LIKE ? OR description LIKE ? OR formal LIKE ? "
+            "UNION ALL "
+            "SELECT module_id, 'fact', name, description, source "
+            "FROM facts WHERE name LIKE ? OR description LIKE ? "
+            "LIMIT 20",
+            (like, like, like, like, like)
+        ).fetchall()
+
+    if not results:
+        print("No results found.")
+        return
+
+    for mod, etype, term, desc, src in results:
+        src_tag = f" [{src}]" if src else ""
+        print(f"[{mod}/{etype}] {term}: {desc}{src_tag}")
+
+
+def cmd_defs(module):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, term, description, formal, source FROM definitions WHERE module_id=? ORDER BY id",
+        (module.upper(),)
+    ).fetchall()
+    if not rows:
+        print(f"No definitions found for {module}")
+        return
+    for did, term, desc, formal, src in rows:
+        parts = [f"{term or did}"]
+        if formal:
+            parts.append(f"  formula: {formal}")
+        if desc:
+            parts.append(f"  {desc}")
+        if src:
+            parts.append(f"  [{src}]")
+        print(" | ".join(parts))
+
+
+def cmd_facts(module, topic=None):
+    conn = get_conn()
+    if topic:
+        rows = conn.execute(
+            "SELECT topic, name, description, source FROM facts WHERE module_id=? AND topic=? ORDER BY name",
+            (module.upper(), topic)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT topic, name, description, source FROM facts WHERE module_id=? ORDER BY topic, name",
+            (module.upper(),)
+        ).fetchall()
+    if not rows:
+        print(f"No facts found for {module}" + (f" topic={topic}" if topic else ""))
+        return
+    for t, name, desc, src in rows:
+        src_tag = f" [{src}]" if src else ""
+        print(f"[{t}] {name}: {desc}{src_tag}")
+
+
+def cmd_thms(module):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, description, formal, source FROM theorems WHERE module_id=? ORDER BY id",
+        (module.upper(),)
+    ).fetchall()
+    if not rows:
+        print(f"No theorems found for {module}")
+        return
+    for tid, desc, formal, src in rows:
+        parts = [tid]
+        if formal:
+            parts.append(formal)
+        if desc:
+            parts.append(desc)
+        if src:
+            parts.append(f"[{src}]")
+        print(" | ".join(parts))
+
+
+def cmd_def_lookup(def_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, module_id, term, description, formal, source FROM definitions WHERE id=?",
+        (def_id,)
+    ).fetchone()
+    if not row:
+        print(f"Definition '{def_id}' not found")
+        return
+    did, mod, term, desc, formal, src = row
+    print(f"Module: {mod}")
+    print(f"Term: {term}")
+    if desc: print(f"Description: {desc}")
+    if formal: print(f"Formal: {formal}")
+    if src: print(f"Source: {src}")
+
+
+def cmd_gates():
+    conn = get_conn()
+    for gid, rule, fail, note in conn.execute("SELECT * FROM governance_gates ORDER BY id"):
+        parts = [f"{gid}: {rule} (fail: {fail})"]
+        if note:
+            parts.append(f"  Note: {note}")
+        print("\n".join(parts))
+
+
+def cmd_xlinks(module):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT from_id, to_ids, link_type, note FROM crosslinks WHERE module_id=? ORDER BY from_id",
+        (module.upper(),)
+    ).fetchall()
+    if not rows:
+        print(f"No crosslinks found for {module}")
+        return
+    for fr, to, lt, note in rows:
+        print(f"{fr} --[{lt}]--> {to}: {note}")
+
+
+def cmd_topics(module):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT topic, COUNT(*) FROM facts WHERE module_id=? GROUP BY topic ORDER BY topic",
+        (module.upper(),)
+    ).fetchall()
+    if not rows:
+        print(f"No topics found for {module}")
+        return
+    for topic, count in rows:
+        print(f"  {topic} ({count} facts)")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd == "search" and len(sys.argv) >= 3:
+        cmd_search(" ".join(sys.argv[2:]))
+    elif cmd == "defs" and len(sys.argv) >= 3:
+        cmd_defs(sys.argv[2])
+    elif cmd == "facts" and len(sys.argv) >= 3:
+        topic = sys.argv[3] if len(sys.argv) >= 4 else None
+        cmd_facts(sys.argv[2], topic)
+    elif cmd == "thms" and len(sys.argv) >= 3:
+        cmd_thms(sys.argv[2])
+    elif cmd == "def" and len(sys.argv) >= 3:
+        cmd_def_lookup(sys.argv[2])
+    elif cmd == "gates":
+        cmd_gates()
+    elif cmd == "xlinks" and len(sys.argv) >= 3:
+        cmd_xlinks(sys.argv[2])
+    elif cmd == "topics" and len(sys.argv) >= 3:
+        cmd_topics(sys.argv[2])
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

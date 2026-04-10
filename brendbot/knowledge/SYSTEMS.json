@@ -1,0 +1,39 @@
+{
+  "id": "SYSTEMS",
+  "version": "v2.1",
+  "created_utc": "2026-04-07T00:00:00Z",
+  "author": "BREND",
+  "desc": "Systems thinking: foundations, dynamic patterns, governing rules, tools, leadership, people factors.",
+  "deps": ["LOGIC", "STATS"],
+  "thms": [
+    {"id": "th.forrester_effect", "stmt": "demand signal variance → amplification increases monotonically upstream", "src": "SYSTEMS.2.1"},
+    {"id": "th.s_curve", "stmt": "growth rate → logistic-like curve, → 0 as stock → R (resource constraint)", "src": "SYSTEMS.2.2"},
+    {"id": "th.oscillation", "stmt": "balancing loop + delay → controlled variable oscillates around goal", "src": "SYSTEMS.2.3"},
+    {"id": "th.overshoot", "stmt": "load > capacity + delayed feedback → decline after lag ∝ delay", "src": "SYSTEMS.2.4"},
+    {"id": "th.tipping_point", "stmt": "driving variable > θ → abrupt state transition", "src": "SYSTEMS.2.5"},
+    {"id": "th.ashby", "stmt": "Variety(R) ≥ Variety(S) required for control; under-variety → uncontrolled disturbances", "src": "SYSTEMS.3.2"},
+    {"id": "th.goodhart", "stmt": "M adopted as target T → agents optimize M directly, breaking M↔G causal link", "src": "SYSTEMS.3.3"}
+  ],
+  "xlinks": [
+    {"from": "SYSTEMS.PAT.OSCIL", "to": ["PERSONALITY.OPS.GROUP_ADJUST", "PERSONALITY.PROTO.MULTI.FAMILY"], "type": "triggers"},
+    {"from": "SYSTEMS.PAT.OVERSHOOT", "to": ["PERSONALITY.GATES.RISK_GATE"], "type": "triggers"},
+    {"from": "SYSTEMS.PAT.TIPPING", "to": ["PERSONALITY.PROTO.SPONTANEOUS", "PERSONALITY.PROTO.STORY.THEMATIC"], "type": "triggers"},
+    {"from": "SYSTEMS.PAT.FORRESTER", "to": ["PERSONALITY.OPS.GROUP_ADJUST", "PERSONALITY.PROTO.MULTI.FAMILY"], "type": "triggers"},
+    {"from": "SYSTEMS.PEOPLE.EI", "to": ["PERSONALITY.OPS.CALIBRATE_EMPATHY", "PERSONALITY.PROTO.DOUBLE.EMPATHY", "PERSONALITY.PROTO.DOUBLE.ACCEPTANCE", "PERSONALITY.PROTO.DOUBLE.RESPECT"], "type": "grounds"},
+    {"from": "SYSTEMS.PEOPLE.CREATIVITY", "to": ["PERSONALITY.PROTO.STORY.FREEFORM", "PERSONALITY.PROTO.STORY.THEMATIC"], "type": "grounds"},
+    {"from": "SYSTEMS.LEAD.MODELS", "to": ["PERSONALITY.PROTO.DOUBLE.PARTNERS", "PERSONALITY.PROTO.MULTI.FAMILY"], "type": "grounds"},
+    {"from": "SYSTEMS.LEAD.SITUATIONAL", "to": ["PERSONALITY.OPS.GROUP_ADJUST"], "type": "grounds"},
+    {"from": "SYSTEMS.LEAD.SERVANT", "to": ["PERSONALITY.OPS.RESPECT_BOUNDARY"], "type": "grounds"},
+    {"from": "SYSTEMS.FOUND.FEEDBACK", "to": ["PERSONALITY.PROTO.STORY.ORDERED"], "type": "analogous", "note": "feedback loop structure ↔ ordered story steps"},
+    {"from": "SYSTEMS.PAT.SCURVE", "to": ["STATS.DIST.NEGBIN"], "type": "analogous", "note": "S-curve via cumulative prob curves"},
+    {"from": "SYSTEMS.PAT.TIPPING", "to": ["STATS.DIST.BAYES"], "type": "supports", "note": "Bayesian updating → evidence accumulation toward tipping θ"},
+    {"from": "SYSTEMS.FOUND.BOUNDARY", "to": ["LOGIC.GEOM.DEF.HOMOTH"], "type": "analogous", "note": "system boundary ↔ geometric scope / homothety scaling"}
+  ],
+  "prov": {
+    "author": "BREND",
+    "created_utc": "2026-04-07T00:00:00Z",
+    "basis": "Consolidated from SYSTEMS-CORE v2.0. Densified v2.1: stripped training-weight defs/facts, kept thm IDs, all xlinks preserved.",
+    "notes": ["xlinks resolve once PERSONALITY.json loaded."]
+  },
+  "hash": "sha256:538f03f1aa75262a3526def40ad24f6d6adeeb96d750c1a24e82ba066454af39"
+}

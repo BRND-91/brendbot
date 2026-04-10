@@ -1,0 +1,56 @@
+{
+  "id": "LOGIC",
+  "version": "v3.0",
+  "created_utc": "2026-04-07T00:00:00Z",
+  "author": "BREND",
+  "desc": "Formal logic, formal languages, meta-controls, geometry.",
+  "deps": [],
+  "defs": [
+    {"id": "LOGIC.META.DRIFT", "t": "DriftControl", "d": "Invariant normalization preservation across transformations.", "s": ["BOOK.LOGIC"]},
+    {"id": "GEOM.DEF.NINEPT", "t": "NinePointCircle", "d": "Circle through midpoints of sides, feet of altitudes, midpoints of vertex-to-orthocenter segments.", "s": ["BOOK.GEOM"]}
+  ],
+  "facts": [
+    {"topic": "LOGIC_META", "items": [
+      {"n": "provenance_tags", "d": "All outputs tagged T1/T2/I1/I2/SRCv2 per GOVERNANCE.provenance_policy.tags.", "s": ["GOVERNANCE"]},
+      {"n": "geom_fallacies", "d": "Common proof errors: division by zero hidden in algebra, degenerate-case oversight, unjustified assumption, circular reasoning.", "s": ["BOOK.GEOM"]}
+    ]}
+  ],
+  "thms": [
+    {"id": "th.ceva", "stmt": "(BD/DC)·(CE/EA)·(AF/FB)=1 ↔ cevians AD,BE,CF concurrent.", "s": ["BOOK.GEOM"]},
+    {"id": "th.menelaus", "stmt": "(BX/XC)·(CY/YA)·(AZ/ZB)=−1 ↔ X,Y,Z collinear on sides/extensions.", "s": ["BOOK.GEOM"]},
+    {"id": "th.ptolemy", "stmt": "Cyclic quad ABCD: AC·BD=AB·CD+BC·AD.", "s": ["BOOK.GEOM"]},
+    {"id": "th.morley", "stmt": "Trisectors of triangle angles meet pairwise in equilateral triangle.", "s": ["BOOK.GEOM"]},
+    {"id": "th.napoleon", "stmt": "Equilateral triangles outward on sides → centers form equilateral triangle.", "s": ["BOOK.GEOM"]},
+    {"id": "th.nine_point", "stmt": "Side midpoints, altitude feet, vertex-to-orthocenter midpoints concyclic.", "s": ["BOOK.GEOM"]},
+    {"id": "th.brahmagupta", "stmt": "Cyclic quad area=√((s−a)(s−b)(s−c)(s−d)), s=semiperimeter.", "s": ["BOOK.GEOM"]},
+    {"id": "th.euler_line", "stmt": "O,G,H collinear (non-equilateral △); OG:GH=1:2.", "s": ["BOOK.GEOM"]},
+    {"id": "th.inscribed_angle", "stmt": "∠APB=½∠AOB (same arc).", "s": ["BOOK.GEOM"]},
+    {"id": "th.simson", "stmt": "P on circumcircle ↔ feet of perps from P to sides collinear.", "s": ["BOOK.GEOM"]},
+    {"id": "th.spiral_center", "stmt": "Unique center S: spiral similarity (rot+homothety) about S maps AB→CD.", "s": ["BOOK.GEOM"]},
+    {"id": "th.monge", "stmt": "Three circles → three external similitude centers collinear.", "s": ["BOOK.GEOM"]},
+    {"id": "th.rad_axis", "stmt": "Three circles → three pairwise radical axes concurrent.", "s": ["BOOK.GEOM"]},
+    {"id": "th.pitot", "stmt": "Quadrilateral has inscribed circle ↔ AB+CD=BC+DA.", "s": ["BOOK.GEOM"]},
+    {"id": "th.fagnano", "stmt": "Orthic triangle = min-perimeter triangle inscribed in acute triangle.", "s": ["BOOK.GEOM"]},
+    {"id": "th.golden_cut", "stmt": "AB/AX=AX/XB → AB/AX=φ; φ=(1+√5)/2; φ²=φ+1.", "s": ["BOOK.GEOM"]}
+  ],
+  "xlinks": [
+    {"from": "LOGIC.SYN.CNF", "to": ["STATS.FOUND.SIGMA"], "type": "underpins", "note": "Event sigma-algebra encoded as CNF"},
+    {"from": "LOGIC.SEM.SAT", "to": ["STATS.FOUND.P"], "type": "underpins", "note": "Probability maps satisfaction to [0,1]"},
+    {"from": "LOGIC.SYN.VAR", "to": ["STATS.FOUND.RV"], "type": "underpins", "note": "RVs as logic vars bound by assignment"},
+    {"from": "LOGIC.SYN.CONJ", "to": ["STATS.FOUND.IND", "STATS.FOUND.COND"], "type": "underpins"},
+    {"from": "LOGIC.PRF.RES", "to": ["SYSTEMS.FOUNDATIONS.feedback_loops"], "type": "analogous", "note": "Resolution chaining ~ causal chain reasoning"},
+    {"from": "GEOM.DEF.HOMOTH", "to": ["SYSTEMS.FOUNDATIONS.system_boundaries"], "type": "analogous", "note": "Homothety as spatial metaphor for scope scaling"},
+    {"from": "LOGIC.META.DRIFT", "to": ["GOVERNANCE.autogate.FabricationGate"], "type": "supports", "note": "Drift control basis for anti-fabrication"}
+  ],
+  "prov": {
+    "author": "BREND",
+    "created_utc": "2026-04-07T00:00:00Z",
+    "basis": "Consolidated from MATH-LOG-CORE and geometry sources. v3.0 densified: stripped training-weight-redundant FOL defs, abbreviated keys, tabular format.",
+    "src_map": {
+      "BOOK.LOGIC": "First-order logic textbook",
+      "BOOK.GEOM": "Geometry problem-solving reference",
+      "GOVERNANCE": "GOVERNANCE.json"
+    }
+  },
+  "hash": "recompute-required"
+}

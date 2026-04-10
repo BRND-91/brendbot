@@ -25,7 +25,15 @@ async def run() -> None:
         logger.error("DISCORD_TOKEN not set! Add it to your .env file.")
         sys.exit(1)
 
-    pool = SessionPool(model=cfg.claude_model, bot_name=cfg.bot_name)
+    async def on_text(chat_id: str, text: str) -> None:
+        """Send Claude's text response back to Discord."""
+        from brendbot.discord import send_message
+        try:
+            await send_message(chat_id, text)
+        except Exception:
+            logger.exception("Failed to send text response to %s", chat_id)
+
+    pool = SessionPool(model=cfg.claude_model, bot_name=cfg.bot_name, on_text=on_text)
 
     async def on_message(
         platform: str,
@@ -36,23 +44,11 @@ async def run() -> None:
         reply_to_id: str = "",
         reply_to_text: str = "",
         reply_to_author: str = "",
+        context_messages: list = [],
+        is_direct_mention: bool = False,
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
-
-        # In groups, only respond to @mentions or name mentions
-        if is_group:
-            # Auto-detect bot ID from Discord connection (no .env needed)
-            bot_id = cfg.discord_bot_id or listener.bot_id
-            mentioned = cfg.bot_name.lower() in text.lower()
-            if bot_id:
-                mentioned = mentioned or f"<@{bot_id}>" in text
-            logger.info(
-                "Mention check: bot_name=%r bot_id=%r mentioned=%s text=%r",
-                cfg.bot_name, bot_id, mentioned, text[:100],
-            )
-            if not mentioned:
-                return
 
         logger.info("Routing message from %s (tier=%s, is_group=%s)", sender_id, tier, is_group)
         try:
@@ -67,6 +63,8 @@ async def run() -> None:
                 reply_to_id=reply_to_id,
                 reply_to_text=reply_to_text,
                 reply_to_author=reply_to_author,
+                context_messages=context_messages,
+                is_direct_mention=is_direct_mention,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

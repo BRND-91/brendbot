@@ -1,0 +1,65 @@
+{
+  "id": "MANIFEST",
+  "version": "v2.1",
+  "created_utc": "2026-04-07T00:00:00Z",
+  "author": "BREND",
+  "governance": "GOVERNANCE.json",
+  "scopeGates": "GOVERNANCE.autogate",
+  "modules": [
+    {"id": "LOGIC",      "file": "LOGIC.json",      "version": "v2.1", "deps": [],                  "hash": "sha256:573c1d7373fa9af5a2f717c8b0a61770e091aea1b6c5c93c40d672fe30a12f88"},
+    {"id": "STATS",      "file": "STATS.json",      "version": "v2.1", "deps": ["LOGIC"],            "hash": "sha256:f3d601d67dcd2c8f086f3de80719cdf88b761776a937a2a34fd988fb991e45e2"},
+    {"id": "SYSTEMS",    "file": "SYSTEMS.json",    "version": "v2.1", "deps": ["LOGIC","STATS"],    "hash": "sha256:1bc29c567400f830369e79a746850ae814cc03cf4601725718f35a78396a4df9"},
+    {"id": "PERSONALITY","file": "PERSONALITY.json","version": "v2.1", "deps": ["SYSTEMS"],          "hash": "sha256:70dd9cbbb7c7ff74af9217c2ddb8de264c9a340804fa2754f7695193d4b4396e"},
+    {"id": "BUILDSCI",   "file": "BUILDSCI.json",   "version": "v2.1", "deps": ["LOGIC","SYSTEMS"],  "hash": "sha256:f698d73a691454c58f5b53ec87083a5365c1c316a32952a4030611873c4594e6"},
+    {"id": "GOVERNANCE", "file": "GOVERNANCE.json", "version": "v2.1", "deps": [],                  "hash": "sha256:3aa88ffb95eebf639f281e7569d107cf2f94988ecd12dd66e6aef271e1736fd1"},
+    {"id": "IMAGEGEN",   "file": "IMAGEGEN.json",   "version": "v1.1", "deps": [],                  "hash": "sha256:71447e68f911f53a5c16a6a61c929fa74e3d314767c57f31b4f057eaa6edb0bd"}
+  ],
+  "load_order": ["LOGIC","STATS","SYSTEMS","PERSONALITY","BUILDSCI","GOVERNANCE","IMAGEGEN"],
+  "crosslinks": {
+    "LOGIC->STATS": [
+      "Syntax underpins sigma-algebra event encoding",
+      "SEM.SAT maps to probability measure P",
+      "CNF/DNF encode event formulas",
+      "SYN.VAR bound by assignment models random variables"
+    ],
+    "LOGIC->BUILDSCI": [
+      "Proof methods underpin diagnostic reasoning",
+      "Geometry theorems support spatial enclosure modeling"
+    ],
+    "LOGIC->SYSTEMS": [
+      "Theorem structure underpins formal system pattern statements",
+      "Geometry spatial metaphors for flows/boundaries/topology"
+    ],
+    "SYSTEMS->PERSONALITY": [
+      "oscillation <-> groupAdjust",
+      "overshootCollapse <-> riskGate",
+      "tippingPoints <-> spontaneousEmergence",
+      "forresterEffect <-> groupAdjust + familyGroupMediation",
+      "emotionalIntelligence <-> calibrateEmpathy",
+      "leadershipModels <-> partnersTherapy + familyGroupMediation",
+      "situationalLeadership <-> groupAdjust",
+      "servantLeadership <-> respectBoundary",
+      "feedbackLoops <-> orderedSteps"
+    ],
+    "SYSTEMS->STATS": [
+      "Feedback loop modeling via probability measures",
+      "Tipping thresholds as statistical threshold events",
+      "Oscillation frequency modeled via distributions"
+    ],
+    "SYSTEMS->BUILDSCI": [
+      "Feedback loops in HVAC and moisture dynamics",
+      "Stocks/flows model heat, moisture, air accumulation",
+      "Tipping points in condensation and IAQ thresholds",
+      "Overshoot/collapse in heating system cycling"
+    ]
+  },
+  "fused_hash": {
+    "inputs": ["LOGIC","STATS","SYSTEMS","PERSONALITY","BUILDSCI","GOVERNANCE","IMAGEGEN"],
+    "algorithm": "sha256",
+    "value": "sha256:055b9dcc8f066d7101983978b15591f287d8fac87093afbd4b2b275a5f8077b2",
+    "policy": "Recompute on any module edit. See GOVERNANCE.hash_chain."
+  },
+  "provenance": {
+    "tags": ["T1","T2","I1","I2","SRCv2"]
+  }
+}

@@ -1,0 +1,192 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["google-genai>=1.0", "httpx"]
+# ///
+"""Generate an image with Imagen and send it to a Discord channel.
+
+Usage: generate-image <channel_id> <prompt> [--caption <text>] [--reply-to <message_id>] [--model <model_id>] [--dry-run]
+
+Reads DISCORD_TOKEN from environment or .env file.
+GCP project: project-c8f6fa31-5aef-432f-8ad
+Uses ADC credentials (gcloud auth application-default login).
+
+Model options:
+  imagen-4.0-generate-001         (default) style + subject + composition
+  imagen-4.0-fast-generate-001    simple single-concept prompts only, pass --model to use
+  imagen-4.0-ultra-generate-001   final renders, rate-limited, pass --model to use
+
+Flags:
+  --dry-run    Print constraint analysis and selected model; do not call API or send image.
+
+Constraint heuristic:
+  Scans prompt for style keywords (ukiyo-e, watercolor, etc.), spatial terms (foreground,
+  from above, etc.), and interaction verbs (holding, carrying, punching, etc.).
+  Warns if 2+ categories hit; high failure risk at 3.
+"""
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+
+GCP_PROJECT = "project-c8f6fa31-5aef-432f-8ad"
+GCP_LOCATION = "us-central1"
+IMAGEN_MODEL = "imagen-4.0-generate-001"
+
+STYLE_KEYWORDS = [
+    "ukiyo-e", "woodblock", "watercolor", "oil painting", "pixel art", "manga",
+    "anime", "ink wash", "gouache", "linocut", "etching", "charcoal", "pastel",
+    "acrylic", "impressionist", "expressionist", "art nouveau", "art deco",
+    "junji ito", "studio ghibli", "retro", "vintage", "photorealistic", "8-bit",
+    "16-bit", "vaporwave", "cyberpunk", "steampunk", "noir",
+]
+
+SPATIAL_KEYWORDS = [
+    "foreground", "background", "midground", "from above", "from below",
+    "aerial", "bird's eye", "street level", "overhead", "close-up", "wide shot",
+    "dutch angle", "low angle", "high angle", "over the shoulder", "fisheye",
+    "depth of field", "silhouette", "interior", "exterior", "vanishing point",
+    "toward the camera", "rising behind", "in the distance", "in front of",
+    "behind", "above", "below", "approaching", "receding",
+]
+
+INTERACTION_KEYWORDS = [
+    "holding", "carrying", "punching", "grabbing", "touching", "reaching",
+    "embracing", "fighting", "lifting", "throwing", "catching", "pulling",
+    "pushing", "striking", "hugging", "clasping", "grasping", "dragging",
+    "rescuing", "attacking", "blocking", "pointing at", "slung over",
+    "slumped over", "hanging from", "clinging to", "supported by",
+]
+
+
+def analyze_constraints(prompt: str) -> dict:
+    p = prompt.lower()
+    style_hits = [kw for kw in STYLE_KEYWORDS if kw in p]
+    spatial_hits = [kw for kw in SPATIAL_KEYWORDS if kw in p]
+    interaction_hits = [kw for kw in INTERACTION_KEYWORDS if kw in p]
+    categories_hit = sum([bool(style_hits), bool(spatial_hits), bool(interaction_hits)])
+    return {
+        "style": style_hits,
+        "spatial": spatial_hits,
+        "interaction": interaction_hits,
+        "categories_hit": categories_hit,
+    }
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print(
+            "Usage: generate-image <channel_id> <prompt> [--caption <text>] [--reply-to <msg_id>] [--model <model_id>] [--aspect-ratio <ratio>] [--dry-run]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    channel_id = sys.argv[1]
+    prompt = sys.argv[2]
+
+    caption = ""
+    if "--caption" in sys.argv:
+        idx = sys.argv.index("--caption")
+        if idx + 1 < len(sys.argv):
+            caption = sys.argv[idx + 1]
+
+    reply_to = None
+    if "--reply-to" in sys.argv:
+        idx = sys.argv.index("--reply-to")
+        if idx + 1 < len(sys.argv):
+            reply_to = sys.argv[idx + 1]
+
+    model = IMAGEN_MODEL
+    model_explicit = "--model" in sys.argv
+    if model_explicit:
+        idx = sys.argv.index("--model")
+        if idx + 1 < len(sys.argv):
+            model = sys.argv[idx + 1]
+
+    aspect_ratio = "16:9"
+    if "--aspect-ratio" in sys.argv:
+        idx = sys.argv.index("--aspect-ratio")
+        if idx + 1 < len(sys.argv):
+            aspect_ratio = sys.argv[idx + 1]
+
+    dry_run = "--dry-run" in sys.argv
+
+    # Constraint analysis
+    analysis = analyze_constraints(prompt)
+    categories_hit = analysis["categories_hit"]
+
+    if dry_run or categories_hit >= 2:
+        print(f"Constraint analysis:")
+        print(f"  style     ({len(analysis['style'])}): {analysis['style'] or 'none'}")
+        print(f"  spatial   ({len(analysis['spatial'])}): {analysis['spatial'] or 'none'}")
+        print(f"  interaction ({len(analysis['interaction'])}): {analysis['interaction'] or 'none'}")
+        print(f"  categories hit: {categories_hit}/3")
+        if categories_hit >= 3:
+            print(f"  WARNING: all 3 constraint categories active — high failure risk. Consider decomposing.")
+        elif categories_hit == 2:
+            print(f"  NOTE: 2 constraint categories active — possible.")
+        print(f"  model: {model}")
+        if dry_run:
+            return
+
+    # Load .env if DISCORD_TOKEN not set
+    for env_path in [
+        Path(__file__).parent.parent / ".env",
+        Path.home() / "brendbot" / ".env",
+    ]:
+        if env_path.exists() and not os.getenv("DISCORD_TOKEN"):
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+
+    # Generate image
+    try:
+        import google.genai as genai
+
+        client = genai.Client(
+            vertexai=True,
+            project=GCP_PROJECT,
+            location=GCP_LOCATION,
+        )
+        response = client.models.generate_images(
+            model=model,
+            prompt=prompt,
+            config=genai.types.GenerateImagesConfig(
+                number_of_images=1,
+                output_mime_type="image/png",
+                aspect_ratio=aspect_ratio,
+            ),
+        )
+        image_bytes = response.generated_images[0].image.image_bytes
+    except Exception as e:
+        print(f"Error generating image: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Write to temp file and send
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(image_bytes)
+        tmp_path = f.name
+
+    try:
+        send_script = str(Path(__file__).parent / "send-discord")
+        args = [send_script, channel_id, caption or ""]
+        args += ["--file", tmp_path]
+        if reply_to:
+            args += ["--reply-to", reply_to]
+
+        import subprocess
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Error sending: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        print(result.stdout.strip())
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

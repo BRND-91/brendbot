@@ -1,0 +1,143 @@
+{
+  "id": "IMAGEGEN",
+  "version": "v1.4-dense",
+
+  "default_framing": {
+    "ar": "16:9",
+    "never_use": ["9:16", "3:4"],
+    "flag": "--aspect-ratio"
+  },
+
+  "model_tiers": {
+    "fast": {
+      "id": "imagen-4.0-fast-generate-001",
+      "use": "Single subject, no named style, no composition. Concept drafts only.",
+      "fail": "Style+subject stacked (spacecraft+moon+ukiyo-e) → unrelated output."
+    },
+    "standard": {
+      "id": "imagen-4.0-generate-001",
+      "use": "Default. Style + subject + composition."
+    },
+    "ultra": {
+      "id": "imagen-4.0-ultra-generate-001",
+      "use": "Final renders only. Better non-photorealistic style adherence. Rate limited, expensive — reserve for last pass.",
+      "note": "Materially better Junji Ito / manga linework vs standard."
+    }
+  },
+
+  "safety_filter_map": {
+    "blocks": [
+      {
+        "trigger": "Named real-person likeness",
+        "behavior": "Returns None. No image. No error.",
+        "workaround": "Replace name with physical description. Block is name-keyed not appearance-keyed.",
+        "workaround_rel": "high"
+      }
+    ],
+    "suspected": [
+      "Named terrorist attacks with specific casualty framing",
+      "Named minors in distress",
+      "Explicit physical harm to identified real persons"
+    ],
+    "disclosure": "All safety blocks must be reported in same response: trigger identified, workaround used, result.",
+    "named_person_transparency": "Do not silently substitute description for named person. Disclose block, offer workaround explicitly."
+  },
+
+  "safety_gate_protocol": {
+    "model": "ternary",
+    "states": {
+      "pass": "Depicted content clearly within bounds. Generate.",
+      "ask": "Sensitive topic named, depicted content unspecified. Ask what should be depicted.",
+      "block": "Depicted content explicitly involves harm to humans (torture, degradation, sexual abuse, violence against identified persons). Stylization does not convert block to pass."
+    },
+    "rule": "Gate fires on depicted content, not topic name. Ambiguous sensitive-topic → ask, not block."
+  },
+
+  "photorealism_bias": {
+    "rule": "Style label alone insufficient. Each style needs 2-3 structural override terms.",
+    "override_terms": ["non-photographic", "painted canvas", "visible brushwork", "no photographic rendering", "illustration throughout"],
+    "named_landmark_effect": "Named landmarks pull photorealistic rendering independent of style. Use generic desc instead: 'two enormous skyscrapers, one with fire and smoke'.",
+    "ip_character_effect": "Named IP characters carry canonical visual style as implicit hard constraint competing with style directives."
+  },
+
+  "element_dropping": {
+    "rule": "3+ hard constraints stacked → exponential element omission, silent.",
+    "mitigation": "ALL-CAPS critical elements. Explicit compositional priority ('primary subject:', 'anchor element:').",
+    "most_vulnerable": "Large structural elements (towers, buildings) dropped first when figure+action+style compete."
+  },
+
+  "physical_interaction": {
+    "reliable": ["Arm resting across shoulders", "Standing side by side with spatial separation", "Silhouette proximity, no contact specified"],
+    "unreliable": ["Carrying / slung over shoulder", "Hand gripping another figure", "Punching through surface toward figure"],
+    "note": "No img2img on Vertex AI. Each iteration is fresh — decomposition cuts constraint budget but does not lock prior output."
+  },
+
+  "ip_character_anchor": {
+    "strategies": [
+      {"name": "accept_ip_style", "desc": "Name character, drop conflicting style directive, build in canonical style. Most reliable."},
+      {"name": "strip_ip_name", "desc": "Replace name with physical description. Style directives apply cleanly. Tradeoff: not recognizable as specific IP."},
+      {"name": "negative_framing", "desc": "'not anime, not DBZ style' — partially suppresses canonical prior.", "rel": "low"}
+    ]
+  },
+
+  "style_library": {
+    "junji_ito": {
+      "req_overrides": ["manga linework", "ink crosshatching", "non-photographic", "Junji Ito"],
+      "fail_modes": ["Blends to photorealism without all 4 terms", "Photorealistic faces if 'manga linework' omitted"],
+      "tier": "ultra final / standard iteration",
+      "note": "Full clean output not yet achieved."
+    },
+    "baroque": {
+      "req_overrides": ["oil painting", "visible brushwork", "chiaroscuro", "painterly", "non-photographic"],
+      "fail_modes": ["Too photorealistic without 'visible brushwork'+'painterly' both present", "Drifts goth/dark medieval without explicit palette."],
+      "tier": "standard"
+    },
+    "ukiyo_e": {
+      "req_overrides": ["ukiyo-e woodblock print", "flat color planes", "bold outlines", "no gradient shading", "no photorealistic depth"],
+      "fail_modes": ["Paper grain overlay added uninstructed — collapses form", "Gradient shading bleeds without explicit prohibition", "Named IP overrides woodblock style"],
+      "tier": "standard"
+    },
+    "psychedelic": {
+      "req_overrides": ["supersaturated colors", "psychedelic color palette", "color bleed", "vivid hallucinogenic"],
+      "fail_modes": ["'acid trip' alone → too abstract, loses scene coherence", "Figures dissolve under colorization+form budget competition"],
+      "mitigation": "'vibrant psychedelic colorization OVER coherent figures and scene' — lock forms first, colorization secondary.",
+      "tier": "standard"
+    },
+    "uncanny_valley_playful": {
+      "req_overrides": ["uncanny valley", "almost-correct anatomy", "deliberately off proportions", "playful"],
+      "fail_modes": ["Defaults to full horror OR full cute — balance is unstable. Specify both attributes explicitly."],
+      "tier": "standard",
+      "note": "Not yet achieved cleanly."
+    }
+  },
+
+  "prompt_templates": {
+    "memorial_poster": {
+      "use": "Character + companion beside landmark event.",
+      "template": "[Style] memorial tribute poster. [CHARACTER DESC], [defining visual]. Stands beside [COMPANION DESC]. [GESTURE — arm on shoulder preferred over carry]. [LANDMARK generic desc], [environmental detail]. [Style] illustration style throughout, [structural style rules], no photographic rendering, no text, no calligraphy.",
+      "note": "'Throughout' is load-bearing — forces style consistency across scene layers."
+    },
+    "figure_plus_scene": {
+      "use": "Single figure, complex background, style maintained.",
+      "template": "[Art style]. [FIGURE: gender, build, hair, expression, clothing — no IP name]. [POSE — avoid contact]. [BACKGROUND: generic, not named]. [Style structural terms]. No photographic rendering. No text."
+    },
+    "horror_manga": {
+      "use": "Junji Ito horror scene.",
+      "template": "Junji Ito manga style. Black and white manga linework, ink crosshatching, dense stippling, non-photographic. [SCENE: figure + setting]. Body horror: [specific distortion — spirals, eye multiplication, elongation]. Stark black ink on white ground. No color. No photorealistic rendering.",
+      "note": "All 4 required override terms required. Ultra tier for final."
+    },
+    "multi_element_anchored": {
+      "use": "Scene with 3+ critical elements.",
+      "template": "PRIMARY SUBJECT: [element — ALL CAPS]. BACKGROUND: [CRITICAL ARCHITECTURE — ALL CAPS]. MIDGROUND: [secondary figures]. FOREGROUND: [detail]. [Style]. [Structural terms]. No photographic rendering. No text.",
+      "note": "ALL-CAPS reduces element dropping. Max 2 hard constraints per layer."
+    }
+  },
+
+  "active_gaps": [
+    "Junji Ito clean output not yet achieved — refine override term stack with ultra tier",
+    "Psychedelic colorization over coherent forms — exact prompt not confirmed",
+    "Uncanny valley / playful register — not yet tested directly",
+    "Named landmark photorealism pull — no reliable workaround beyond generic description",
+    "seb's woodblock prompt patterns not yet fully documented here"
+  ]
+}

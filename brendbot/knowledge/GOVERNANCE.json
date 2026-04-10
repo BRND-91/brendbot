@@ -1,0 +1,89 @@
+{
+  "id": "GOVERNANCE",
+  "version": "v2.0",
+  "autogate": {
+    "gates": {
+      "ScopeGate":       {"rule": "src -> natural scope; polysemy_density >= min_threshold", "fail": "drop"},
+      "CategoryGate":    {"rule": "NOT(magazine) AND NOT(lifestyle) AND NOT(advocacy_bias)", "fail": "drop"},
+      "BiasGate":        {"rule": "predictive_bleed(src) <= mean + k*SD", "fail": "replace_inband"},
+      "ContentGate":     {"rule": "linked_matter = factual_domain AND NOT(opinion) AND NOT(sponsored)", "fail": "drop"},
+      "ProvenanceGate":  {"rule": "orig(src) -> pass ALL gates above", "fail": "drop"},
+      "FabricationGate": {"rule": "each output claim -> resolves to def/fact/thm in loaded module OR flagged as inference+confidence", "fail": "flag_and_caveat", "note": "Primary anti-fabrication gate. Unresolved claims must not be presented as grounded."}
+    },
+    "block_log": {"fields": ["utc","gate_id","src","reason","disposition","appeal_status"], "retention": "permanent", "artifact": "autogate.log"}
+  },
+  "provenance": {
+    "tags": {
+      "T1": "Direct transcription from primary source",
+      "T2": "Derived/synthesized from primary source",
+      "I1": "Inferred from cross-module reasoning",
+      "I2": "Inferred low-confidence — must be caveated",
+      "SRCv2": "Source verified against second reference"
+    },
+    "rules": [
+      "Every def/fact: >= 1 src ref",
+      "Every thm: >= 1 src ref + provenance tag",
+      "I2 outputs: explicit uncertainty language required",
+      "xlinks: bidirectional, both ends must resolve"
+    ]
+  },
+  "dialect": {
+    "version": "DIALECT-CORE.v2.0",
+    "ambiguity": {
+      "negation": "Double negation resolved before output. Negation scope explicit.",
+      "hedges": "possibly/likely/may -> tag I1 or I2",
+      "universals": "all/every/always -> explicit domain scope required",
+      "unverified": "No src resolves -> output [UNVERIFIED — no source in loaded modules]"
+    },
+    "vocab": {
+      "term_lock": "Defined terms in defs[] used consistently. Synonyms require crosswalk entry.",
+      "controlled_vocab": "Domain terms must appear in a module defs[] before use in facts/thms."
+    },
+    "edit_surface": {
+      "policy": "core_or_crossmap_only",
+      "enforcement": "schema validator + hash recompute on edit"
+    }
+  },
+  "hash_chain": {
+    "algorithm": "sha256",
+    "policy": [
+      "Each module: self-hash over sorted JSON content",
+      "MANIFEST.fused_hash: over all module hashes in load_order",
+      "Edit -> invalidates module hash + fused hash",
+      "Hash mismatch = tamper alert"
+    ],
+    "status": "TO_IMPLEMENT",
+    "artifact": "hash.chain"
+  },
+  "audit": {
+    "cases": "TC01-TC25",
+    "freq_days": 30,
+    "scope": ["xlinks resolve bidirectionally", "src refs present in prov.src_map", "autogate block_log current", "hash chain integrity", "dialect ambiguity checks on sample outputs"]
+  },
+  "gaps": [
+    {"id":"GOV-001","title":"AutoGate block log","prio":"P0","status":"OPEN","artifact":"autogate.log"},
+    {"id":"GOV-002","title":"Hash chain implementation","prio":"P0","status":"OPEN","artifact":"hash.chain"},
+    {"id":"GOV-003","title":"Edit-surface enforcement","prio":"P1","status":"OPEN","artifact":"surface.policy"},
+    {"id":"SCHEMA-001","title":"Dialect exceptions embed","prio":"P0","status":"OPEN","artifact":"schema.exceptions"},
+    {"id":"SCHEMA-002","title":"Validation object","prio":"P0","status":"OPEN","artifact":"schema.validation"},
+    {"id":"DOMAIN-001","title":"Climate data","prio":"P0","status":"OPEN","artifact":"climate.map"},
+    {"id":"DOMAIN-002","title":"Fenestration detail","prio":"P1","status":"OPEN","artifact":"window.schema"},
+    {"id":"DOMAIN-003","title":"Leakage module","prio":"P0","status":"OPEN","artifact":"blowerdoor.module"},
+    {"id":"DOMAIN-004","title":"SIR/Payback/NPV","prio":"P0","status":"OPEN","artifact":"econ.module"},
+    {"id":"STATS-001","title":"Continuous distributions","prio":"P1","status":"OPEN","artifact":"dist.lib"},
+    {"id":"STATS-002","title":"Uncertainty propagation","prio":"P1","status":"OPEN","artifact":"uncert.module"},
+    {"id":"DATA-001","title":"Data lineage","prio":"P0","status":"OPEN","artifact":"lineage.graph"},
+    {"id":"DATA-002","title":"Error taxonomy","prio":"P0","status":"OPEN","artifact":"error.catalog"},
+    {"id":"INST-001","title":"Calibration logs","prio":"P0","status":"OPEN","artifact":"cal.log"},
+    {"id":"COMPL-001","title":"Standards map","prio":"P1","status":"OPEN","artifact":"standards.map"},
+    {"id":"SEC-001","title":"RBAC and consent","prio":"P1","status":"OPEN","artifact":"rbac.policy"},
+    {"id":"TEST-001","title":"Test harness","prio":"P0","status":"OPEN","artifact":"test.harness"},
+    {"id":"MATH-001","title":"Dimensional analysis","prio":"P0","status":"OPEN","artifact":"units.lib"},
+    {"id":"LANG-001","title":"Ambiguity controls","prio":"P0","status":"OPEN","artifact":"ambiguity.rules"},
+    {"id":"ONTO-001","title":"Controlled vocab","prio":"P1","status":"OPEN","artifact":"vocab.lock"},
+    {"id":"FLOW-001","title":"Conversation state machine","prio":"P0","status":"OPEN","artifact":"state.machine"},
+    {"id":"KPI-001","title":"Output KPIs","prio":"P1","status":"OPEN","artifact":"kpi.deck"},
+    {"id":"GEOM-001","title":"Classical loci","prio":"P3","status":"OPEN","artifact":"geom.ref"}
+  ],
+  "hash": "sha256:TO_SET"
+}

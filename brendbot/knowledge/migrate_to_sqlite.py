@@ -38,6 +38,7 @@ def create_schema(conn):
         CREATE TABLE governance_gates (id TEXT PRIMARY KEY, rule TEXT, fail_action TEXT, note TEXT);
         CREATE TABLE governance_provenance (tag TEXT PRIMARY KEY, meaning TEXT);
         CREATE VIRTUAL TABLE fts_knowledge USING fts5(module_id, entry_type, term, description, source);
+        CREATE TABLE imagegen_config (section TEXT PRIMARY KEY, data JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
     """)
 
 
@@ -130,6 +131,28 @@ def migrate_governance(conn):
     return rows
 
 
+def migrate_imagegen_config(conn):
+    """Populate imagegen_config table from IMAGEGEN.json top-level keys."""
+    path = KNOWLEDGE_DIR / "IMAGEGEN.json"
+    if not path.exists():
+        print("  SKIP imagegen_config (IMAGEGEN.json not found)")
+        return 0
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    # Skip metadata fields; store every substantive top-level section as a row
+    skip_keys = {"id", "version"}
+    rows = 0
+    for key, value in data.items():
+        if key in skip_keys:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO imagegen_config (section, data) VALUES (?, ?)",
+            (key, json.dumps(value))
+        )
+        rows += 1
+    return rows
+
+
 def main():
     if DB_PATH.exists():
         DB_PATH.unlink()
@@ -147,6 +170,10 @@ def main():
     gov_count = migrate_governance(conn)
     print(f"  GOVERNANCE: {gov_count} rows")
     total += gov_count
+
+    ig_count = migrate_imagegen_config(conn)
+    print(f"  imagegen_config: {ig_count} rows")
+    total += ig_count
 
     conn.commit()
     conn.close()

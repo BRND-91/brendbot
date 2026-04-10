@@ -10,6 +10,7 @@ Usage:
     kb-query gates                   List all governance gates
     kb-query xlinks <MODULE>         List crosslinks for a module
     kb-query topics <MODULE>         List available fact topics in a module
+    kb-query imagegen <section>      Get IMAGEGEN config section (use 'all' for all, 'sections' to list)
 
 Examples:
     kb-query search "R-value"
@@ -164,6 +165,33 @@ def cmd_xlinks(module):
         print(f"{fr} --[{lt}]--> {to}: {note}")
 
 
+def cmd_imagegen(section):
+    conn = get_conn()
+    if section == "sections":
+        rows = conn.execute("SELECT section FROM imagegen_config ORDER BY section").fetchall()
+        if not rows:
+            print("No imagegen_config sections found. Run migrate_to_sqlite.py first.")
+            return
+        for (s,) in rows:
+            print(s)
+        return
+    if section == "all":
+        rows = conn.execute("SELECT section, data FROM imagegen_config ORDER BY section").fetchall()
+        if not rows:
+            print("No imagegen_config data found. Run migrate_to_sqlite.py first.")
+            return
+        import json
+        for s, d in rows:
+            print(f"=== {s} ===")
+            print(d)
+        return
+    row = conn.execute("SELECT data FROM imagegen_config WHERE section=?", (section,)).fetchone()
+    if not row:
+        print(f"Section '{section}' not found. Use 'kb-query imagegen sections' to list available sections.")
+        return
+    print(row[0])
+
+
 def cmd_topics(module):
     conn = get_conn()
     rows = conn.execute(
@@ -201,6 +229,8 @@ def main():
         cmd_xlinks(sys.argv[2])
     elif cmd == "topics" and len(sys.argv) >= 3:
         cmd_topics(sys.argv[2])
+    elif cmd == "imagegen" and len(sys.argv) >= 3:
+        cmd_imagegen(sys.argv[2])
     else:
         print(__doc__)
         sys.exit(1)

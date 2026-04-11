@@ -1,17 +1,42 @@
 {
   "id": "GOVERNANCE",
-  "version": "v2.0",
+  "version": "v2.1",
+  "defs": [
+    {"id": "GOVERNANCE.autogate.ReferenceGate", "t": "ReferenceGate", "d": "All xlink/uses/triggers targets resolve to existing IDs.", "s": "validate.py"},
+    {"id": "GOVERNANCE.autogate.SchemaGate", "t": "SchemaGate", "d": "Every def has id+term, every thm has id+statement, every xlink has from+to.", "s": "validate.py"},
+    {"id": "GOVERNANCE.autogate.HashGate", "t": "HashGate", "d": "Module hash matches sha256 of content; mismatch = tamper alert.", "s": "validate.py"},
+    {"id": "GOVERNANCE.autogate.DependencyGate", "t": "DependencyGate", "d": "Module deps resolve to MANIFEST entries.", "s": "validate.py"},
+    {"id": "GOVERNANCE.autogate.ScopeGate", "t": "ScopeGate", "d": "Source natural scope must match query domain.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.CategoryGate", "t": "CategoryGate", "d": "Exclude magazine, lifestyle, advocacy-biased sources.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.BiasGate", "t": "BiasGate", "d": "Downweight sources with predictive bleed.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.ContentGate", "t": "ContentGate", "d": "Linked content must be factual domain material.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.ProvenanceGate", "t": "ProvenanceGate", "d": "Original source must pass all upstream gates.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.PremiseGate", "t": "PremiseGate", "d": "Verify sender claims against modules before building on them.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.FabricationGate", "t": "FabricationGate", "d": "Assign provenance tier to each output claim.", "s": "GOVERNANCE"},
+    {"id": "GOVERNANCE.autogate.NoMatchFlag", "t": "NoMatchFlag", "d": "kb-query emits NO_MODULE_MATCH when domain module returns no results.", "s": "kb-query"}
+  ],
   "autogate": {
-    "gates": {
-      "ScopeGate":       {"rule": "src -> natural scope; polysemy_density >= min_threshold", "fail": "drop"},
-      "CategoryGate":    {"rule": "NOT(magazine) AND NOT(lifestyle) AND NOT(advocacy_bias)", "fail": "drop"},
-      "BiasGate":        {"rule": "predictive_bleed(src) <= mean + k*SD", "fail": "replace_inband"},
-      "ContentGate":     {"rule": "linked_matter = factual_domain AND NOT(opinion) AND NOT(sponsored)", "fail": "drop"},
-      "ProvenanceGate":  {"rule": "orig(src) -> pass ALL gates above", "fail": "drop"},
-      "PremiseGate":     {"rule": "each sender factual claim -> verify against def/fact/thm in loaded modules BEFORE building on it. Match -> proceed. Conflict -> flag conflict, provide grounded value, ask sender to clarify. No match -> flag as unverified, ask sender for source or reasoning.", "fail": "flag_and_ask", "note": "Input validation gate. Fires during Interpret phase. Prevents accepting false premises. Unverified claims are not adopted, agreed with, or built upon without explicit caveat. Curiosity over rejection: ask, probe, learn."},
-      "FabricationGate": {"rule": "each output claim -> assign provenance tier. Tier 1: resolves to def/fact/thm in loaded module -> present as grounded, no flag. Tier 2: derived via reasoning from module content -> show derivation chain, mark [T2-INFERRED]. Tier 3: domain module exists but claim does not resolve -> mark [!] UNGROUNDED, state that grounded material does not cover this point. No domain module loaded -> respond normally, no tier obligation. Tier inheritance: any conclusion built on a Tier 3 premise inherits Tier 3 regardless of intermediate reasoning quality.", "fail": "flag_and_caveat", "note": "Primary anti-fabrication gate with tiered provenance. Unresolved claims in module-covered domains must not be presented as grounded. Tier inheritance prevents burying ungrounded premises under sound reasoning. Complementary to PremiseGate: PremiseGate validates input, FabricationGate validates output."}
+    "_design_note": "Gates are partitioned into machine-checkable (enforced by validate.py at edit time) and LLM-interpreted (natural language guidance for Claude at runtime). Pseudo-formal notation removed from gates that have no computable implementation.",
+    "machine_enforced": {
+      "ReferenceGate":   {"rule": "All xlink/uses/triggers targets resolve to existing IDs", "enforcer": "validate.py", "fail": "block_commit"},
+      "SchemaGate":      {"rule": "Every def has id+term, every thm has id+statement, every xlink has from+to", "enforcer": "validate.py", "fail": "block_commit"},
+      "HashGate":        {"rule": "Module hash matches sha256 of content; mismatch = tamper alert", "enforcer": "validate.py", "fail": "block_commit"},
+      "DependencyGate":  {"rule": "Module deps resolve to MANIFEST entries", "enforcer": "validate.py", "fail": "block_commit"}
     },
-    "block_log": {"fields": ["utc","gate_id","src","reason","disposition","appeal_status"], "retention": "permanent", "artifact": "autogate.log"}
+    "llm_interpreted": {
+      "ScopeGate":       {"guidance": "Prefer sources whose natural scope matches the query domain. Reject sources from lifestyle, advocacy, or sponsored contexts.", "fail": "drop"},
+      "CategoryGate":    {"guidance": "Exclude magazine, lifestyle, and advocacy-biased sources from factual claims.", "fail": "drop"},
+      "BiasGate":        {"guidance": "When a source shows predictive bleed (conclusions preceding evidence), downweight or replace with in-band alternative.", "fail": "replace_inband"},
+      "ContentGate":     {"guidance": "Linked content must be factual domain material. Reject opinion pieces and sponsored content as grounding sources.", "fail": "drop"},
+      "ProvenanceGate":  {"guidance": "Original source must pass scope, category, bias, and content checks before use.", "fail": "drop"},
+      "PremiseGate":     {"guidance": "Verify each sender factual claim against def/fact/thm in loaded modules before building on it. Match: proceed. Conflict: flag, provide grounded value, ask sender to clarify. No match: flag as unverified, ask for source. Do not adopt unverified claims without caveat. Curiosity over rejection.", "fail": "flag_and_ask"},
+      "FabricationGate": {"guidance": "Assign provenance tier to each output claim. T1: resolves to module entry, present as grounded. T2: derived from module content via reasoning, show chain, mark [T2-INFERRED]. T3: domain module exists but claim does not resolve, mark [!] UNGROUNDED. No domain module loaded: respond normally, no tier obligation. Tier inheritance: conclusion built on T3 premise inherits T3.", "fail": "flag_and_caveat"}
+    },
+    "retrieval_augmented": {
+      "_note": "These annotations are added by kb-query at retrieval time, not by Claude's judgment.",
+      "NoMatchFlag":     {"rule": "When kb-query returns zero results for a domain with a loaded module, output includes: [NO_MODULE_MATCH — all outputs T2+ by default]", "enforcer": "kb-query"}
+    },
+    "block_log": {"fields": ["utc","gate_id","src","reason","disposition","appeal_status"], "retention": "permanent", "artifact": "autogate.log", "status": "NOT_IMPLEMENTED"}
   },
   "provenance": {
     "tags": {
@@ -45,7 +70,7 @@
     },
     "edit_surface": {
       "policy": "core_or_crossmap_only",
-      "enforcement": "schema validator + hash recompute on edit"
+      "enforcement": "validate.py (reference resolution + schema + hash check)"
     }
   },
   "hash_chain": {
@@ -56,7 +81,7 @@
       "Edit -> invalidates module hash + fused hash",
       "Hash mismatch = tamper alert"
     ],
-    "status": "TO_IMPLEMENT",
+    "status": "PARTIAL — validate.py checks hash on edit; runtime chain not implemented",
     "artifact": "hash.chain"
   },
   "audit": {
@@ -89,5 +114,12 @@
     {"id":"KPI-001","title":"Output KPIs","prio":"P1","status":"OPEN","artifact":"kpi.deck"},
     {"id":"GEOM-001","title":"Classical loci","prio":"P3","status":"OPEN","artifact":"geom.ref"}
   ],
-  "hash": "sha256:TO_SET"
+  "prov": {
+    "src_map": {
+      "validate.py": "Machine-enforced gate — implemented in validate.py",
+      "GOVERNANCE": "Self-referential — gate defined in this module",
+      "kb-query": "Retrieval-time annotation — implemented in kb-query script"
+    }
+  },
+  "hash": "recompute-required"
 }

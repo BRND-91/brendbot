@@ -102,13 +102,13 @@
     {"from": "STATS.FOUND.SIGMA", "to": ["LOGIC.SYN.CNF", "LOGIC.SYN.DNF"], "type": "depends"},
     {"from": "STATS.FOUND.P", "to": ["LOGIC.SEM.SAT"], "type": "depends"},
     {"from": "STATS.FOUND.RV", "to": ["LOGIC.SYN.VAR", "LOGIC.SEM.ASSIGN"], "type": "depends"},
-    {"from": "STATS.DIST.BAYES", "to": ["SYSTEMS.PATTERNS.tipping_points"], "type": "supports", "note": "Bayesian updating models evidence accumulation toward tipping thresholds"},
-    {"from": "STATS.FOUND.IND", "to": ["SYSTEMS.PATTERNS.oscillation"], "type": "supports", "note": "Oscillation frequency modelable via probability measures over independent trials"}
+    {"from": "STATS.DIST.BAYES", "to": ["SYSTEMS.PAT.TIPPING"], "type": "supports", "note": "Bayesian updating models evidence accumulation toward tipping thresholds"},
+    {"from": "STATS.FOUND.IND", "to": ["SYSTEMS.PAT.OSCIL"], "type": "supports", "note": "Oscillation frequency modelable via probability measures over independent trials"}
   ],
   "prov": {
     "author": "BREND",
     "created_utc": "2026-04-07T00:00:00Z",
     "gap": "Continuous distributions (Normal, Lognormal, Triangular, Uniform) deferred to STATS-001 in GapInventory."
   },
-  "hash": "sha256:f4f234447f5b09831502ba8a0d2d49e4577d62cb047623d7bd7356c29abc5c69"
+  "hash": "recompute-required"
 }

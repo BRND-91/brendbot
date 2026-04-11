@@ -291,34 +291,42 @@ def record_bot_spoke(channel_id: str) -> None:
     _channel_last_spoke[channel_id] = time.time()
 
 
+_seeding_locks: dict[str, asyncio.Lock] = {}
+
 async def _ensure_seeded(channel: discord.abc.Messageable, channel_id: str) -> deque:
     """Return the context buffer for a channel, seeding from Discord API if first use."""
     if channel_id not in _channel_seeded:
-        buf: deque = deque(maxlen=CONTEXT_BUFFER_SIZE)
-        try:
-            history = []
-            async for m in channel.history(limit=CONTEXT_BUFFER_SIZE):
-                history.append(m)
-            for m in reversed(history):
-                seed_text = m.content or ""
-                if m.attachments:
-                    att_urls = " ".join(f"[attachment: {a.url}]" for a in m.attachments)
-                    seed_text = (seed_text + " " + att_urls).strip()
-                buf.append({
-                    "sender_id": str(m.author.id),
-                    "display_name": m.author.display_name,
-                    "text": seed_text,
-                    "message_id": str(m.id),
-                    "timestamp": m.created_at.timestamp(),
-                    "reply_to_id": str(m.reference.message_id) if m.reference else None,
-                    "has_keyword": any(kw in seed_text.lower() for kw in DOMAIN_KEYWORDS),
-                })
-            logger.debug("Seeded context buffer for channel %s (%d msgs)", channel_id, len(buf))
-        except Exception as e:
-            logger.warning("Failed to seed context for channel %s: %s", channel_id, e)
-            buf = deque(maxlen=CONTEXT_BUFFER_SIZE)
-        _channel_context[channel_id] = buf
-        _channel_seeded.add(channel_id)
+        # Per-channel lock prevents double-seeding from concurrent messages
+        if channel_id not in _seeding_locks:
+            _seeding_locks[channel_id] = asyncio.Lock()
+        async with _seeding_locks[channel_id]:
+            if channel_id in _channel_seeded:
+                return _channel_context[channel_id]
+            buf: deque = deque(maxlen=CONTEXT_BUFFER_SIZE)
+            try:
+                history = []
+                async for m in channel.history(limit=CONTEXT_BUFFER_SIZE):
+                    history.append(m)
+                for m in reversed(history):
+                    seed_text = m.content or ""
+                    if m.attachments:
+                        att_urls = " ".join(f"[attachment: {a.url}]" for a in m.attachments)
+                        seed_text = (seed_text + " " + att_urls).strip()
+                    buf.append({
+                        "sender_id": str(m.author.id),
+                        "display_name": m.author.display_name,
+                        "text": seed_text,
+                        "message_id": str(m.id),
+                        "timestamp": m.created_at.timestamp(),
+                        "reply_to_id": str(m.reference.message_id) if m.reference else None,
+                        "has_keyword": any(kw in seed_text.lower() for kw in DOMAIN_KEYWORDS),
+                    })
+                logger.debug("Seeded context buffer for channel %s (%d msgs)", channel_id, len(buf))
+            except Exception as e:
+                logger.warning("Failed to seed context for channel %s: %s", channel_id, e)
+                buf = deque(maxlen=CONTEXT_BUFFER_SIZE)
+            _channel_context[channel_id] = buf
+            _channel_seeded.add(channel_id)
     return _channel_context[channel_id]
 
 
@@ -442,7 +450,8 @@ class DiscordListener:
                         heuristic_pass = False  # hard drop
 
                 # Admin bypass: admin messages skip all gates
-                if sender_id == "369485175329128448":
+                cfg = get_config()
+                if sender_id == cfg.admin_discord_id:
                     heuristic_pass = True
                     use_haiku = False
 
@@ -507,7 +516,7 @@ class DiscordListener:
             # Filter context to admin messages + messages that address this bot.
             # Drops bot-to-bot noise and unaddressed human chatter from the
             # per-turn context block, reducing input token cost.
-            _ADMIN_ID = "369485175329128448"
+            _ADMIN_ID = get_config().admin_discord_id
             # Build thread-aware context: walk reply chain or fall back to recent relevant messages
             _THREAD_MAX = 10
             _THREAD_MAX_AGE = 900  # 15 minutes

@@ -61,10 +61,12 @@ def migrate_module(conn, module_id):
     data = json.loads(path.read_text(encoding="utf-8"))
     rows = 0
 
+    # src_map can be at top level or nested under prov
+    src_map = data.get("src_map") or data.get("prov", {}).get("src_map", {})
     conn.execute("INSERT OR REPLACE INTO modules VALUES (?,?,?,?,?)",
         (module_id, to_str(data.get("v") or data.get("version", "")),
          to_str(data.get("desc") or data.get("description", "")),
-         ",".join(data.get("deps", [])), json.dumps(data.get("src_map", {}))))
+         ",".join(data.get("deps", [])), json.dumps(src_map)))
 
     for d in data.get("defs", []):
         did = to_str(d.get("id", ""))

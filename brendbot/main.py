@@ -44,7 +44,7 @@ async def run() -> None:
         reply_to_id: str = "",
         reply_to_text: str = "",
         reply_to_author: str = "",
-        context_messages: list = [],
+        context_messages: list | None = None,
         is_direct_mention: bool = False,
         domain_hint: str = "",
     ) -> None:

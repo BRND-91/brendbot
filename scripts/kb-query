@@ -37,6 +37,57 @@ def get_conn():
     return sqlite3.connect(str(DB_PATH))
 
 
+_SRC_MAP_CACHE = None
+
+def _load_src_maps(conn):
+    """Load all src_map entries from modules table to identify unresolved sources."""
+    global _SRC_MAP_CACHE
+    if _SRC_MAP_CACHE is not None:
+        return _SRC_MAP_CACHE
+    _SRC_MAP_CACHE = {}
+    rows = conn.execute("SELECT id, source_map FROM modules").fetchall()
+    for mod_id, sm_json in rows:
+        if sm_json:
+            try:
+                import json
+                sm = json.loads(sm_json)
+                _SRC_MAP_CACHE.update(sm)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return _SRC_MAP_CACHE
+
+
+def _provenance_tag(source, conn=None):
+    """Return provenance tier tag based on source resolution status.
+
+    Checks both the source field and the src_map description for unresolved markers.
+    """
+    if not source:
+        return "[T2]"
+    unresolved_markers = ("unresolved", "flagged T2", "TO_SET")
+    # Check the source field itself
+    if any(m in source for m in unresolved_markers):
+        return "[T2]"
+    # Check if the src_map entry for this source is flagged
+    if conn is not None:
+        src_maps = _load_src_maps(conn)
+        desc = src_maps.get(source, "")
+        if any(m in desc for m in unresolved_markers):
+            return "[T2]"
+    return "[T1]"
+
+
+def _check_module_coverage(conn, terms):
+    """Check if query terms intersect a loaded module's domain.
+    Returns module_id if match found, None otherwise."""
+    modules = conn.execute("SELECT id, description FROM modules").fetchall()
+    terms_lower = terms.lower()
+    for mod_id, desc in modules:
+        if mod_id.lower() in terms_lower or (desc and any(w in terms_lower for w in desc.lower().split() if len(w) > 4)):
+            return mod_id
+    return None
+
+
 def cmd_search(terms):
     conn = get_conn()
     # Try FTS first. Quote the terms to prevent FTS5 operator parsing
@@ -62,13 +113,20 @@ def cmd_search(terms):
         ).fetchall()
 
     if not results:
-        print("No results.")
+        # Check if a module covers this domain — no match is defeasible evidence of absence
+        matched_module = _check_module_coverage(conn, terms)
+        if matched_module:
+            print(f"[NO_MODULE_MATCH] Module {matched_module} covers this domain but returned no results.")
+            print(f"All outputs for this query are T2+ by default.")
+        else:
+            print("No results.")
         return
 
-    # Compact format: one line per result, minimal separators.
+    # Compact format with provenance tier: one line per result, minimal separators.
     for mod, etype, term, desc, src in results:
+        tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
-        print(f"{mod}.{etype}:{term}={desc}{src_tag}")
+        print(f"{tier} {mod}.{etype}:{term}={desc}{src_tag}")
 
 
 def cmd_defs(module):
@@ -80,9 +138,10 @@ def cmd_defs(module):
     if not rows:
         print(f"No defs for {module}")
         return
-    # Compact: id:term=desc[|formal][|src]
+    # Compact with provenance tier: id:term=desc[|formal][|src]
     for did, term, desc, formal, src in rows:
-        line = f"{did}:{term}={desc}" if desc else f"{did}:{term}"
+        tier = _provenance_tag(src, conn)
+        line = f"{tier} {did}:{term}={desc}" if desc else f"{tier} {did}:{term}"
         if formal:
             line += f"|F:{formal}"
         if src:
@@ -105,10 +164,11 @@ def cmd_facts(module, topic=None):
     if not rows:
         print(f"No facts for {module}" + (f"/{topic}" if topic else ""))
         return
-    # Compact: topic.name=desc[|src]
+    # Compact with provenance tier: topic.name=desc[|src]
     for t, name, desc, src in rows:
+        tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
-        print(f"{t}.{name}={desc}{src_tag}")
+        print(f"{tier} {t}.{name}={desc}{src_tag}")
 
 
 def cmd_thms(module):
@@ -121,7 +181,8 @@ def cmd_thms(module):
         print(f"No thms for {module}")
         return
     for tid, desc, formal, src in rows:
-        line = f"{tid}={desc}" if desc else tid
+        tier = _provenance_tag(src, conn)
+        line = f"{tier} {tid}={desc}" if desc else f"{tier} {tid}"
         if formal:
             line += f"|F:{formal}"
         if src:

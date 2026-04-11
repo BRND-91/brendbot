@@ -1,10 +1,26 @@
 {
   "id": "SYSTEMS",
-  "version": "v2.1",
+  "version": "v2.2",
   "created_utc": "2026-04-07T00:00:00Z",
   "author": "BREND",
   "desc": "Systems thinking: foundations, dynamic patterns, governing rules, tools, leadership, people factors.",
   "deps": ["LOGIC", "STATS"],
+  "defs": [
+    {"id": "SYSTEMS.FOUND.FEEDBACK", "t": "FeedbackLoop", "d": "Circular causal chain; output feeds back as input. Reinforcing or balancing.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.FOUND.BOUNDARY", "t": "SystemBoundary", "d": "Demarcation of what is inside/outside the system of interest.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.FOUND.STOCKS", "t": "StocksAndFlows", "d": "Accumulations (stocks) changed by rates (flows); fundamental system structure.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PAT.OSCIL", "t": "Oscillation", "d": "Balancing loop with delay produces cycles around goal.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PAT.OVERSHOOT", "t": "OvershootCollapse", "d": "Load exceeds capacity with delayed feedback; decline after lag.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PAT.TIPPING", "t": "TippingPoint", "d": "Driving variable exceeds threshold; abrupt state transition.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PAT.SCURVE", "t": "SCurveGrowth", "d": "Growth rate follows logistic curve; approaches resource constraint.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PAT.FORRESTER", "t": "ForresterEffect", "d": "Demand signal variance amplifies monotonically upstream.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PEOPLE.EI", "t": "EmotionalIntelligence", "d": "Capacity to perceive, use, understand, and manage emotions.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.PEOPLE.CREATIVITY", "t": "Creativity", "d": "Novel recombination within constraints; divergent then convergent.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.LEAD.MODELS", "t": "LeadershipModels", "d": "Trait, behavioral, contingency, transformational frameworks.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.LEAD.SITUATIONAL", "t": "SituationalLeadership", "d": "Style adapts to follower readiness; directing → coaching → supporting → delegating.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.LEAD.SERVANT", "t": "ServantLeadership", "d": "Leader serves followers' needs first; authority derives from service.", "s": ["SYS.REF"]},
+    {"id": "SYSTEMS.RULE.DIMRET", "t": "DiminishingReturns", "d": "Marginal gain decreases as input increases past inflection.", "s": ["SYS.REF"]}
+  ],
   "thms": [
     {"id": "th.forrester_effect", "stmt": "demand signal variance → amplification increases monotonically upstream", "src": "SYSTEMS.2.1"},
     {"id": "th.s_curve", "stmt": "growth rate → logistic-like curve, → 0 as stock → R (resource constraint)", "src": "SYSTEMS.2.2"},
@@ -27,13 +43,17 @@
     {"from": "SYSTEMS.FOUND.FEEDBACK", "to": ["PERSONALITY.PROTO.STORY.ORDERED"], "type": "analogous", "note": "feedback loop structure ↔ ordered story steps"},
     {"from": "SYSTEMS.PAT.SCURVE", "to": ["STATS.DIST.NEGBIN"], "type": "analogous", "note": "S-curve via cumulative prob curves"},
     {"from": "SYSTEMS.PAT.TIPPING", "to": ["STATS.DIST.BAYES"], "type": "supports", "note": "Bayesian updating → evidence accumulation toward tipping θ"},
-    {"from": "SYSTEMS.FOUND.BOUNDARY", "to": ["LOGIC.GEOM.DEF.HOMOTH"], "type": "analogous", "note": "system boundary ↔ geometric scope / homothety scaling"}
+    {"from": "SYSTEMS.FOUND.BOUNDARY", "to": ["GEOM.DEF.HOMOTH"], "type": "analogous", "note": "system boundary ↔ geometric scope / homothety scaling"}
   ],
   "prov": {
     "author": "BREND",
     "created_utc": "2026-04-07T00:00:00Z",
-    "basis": "Consolidated from SYSTEMS-CORE v2.0. Densified v2.1: stripped training-weight defs/facts, kept thm IDs, all xlinks preserved.",
-    "notes": ["xlinks resolve once PERSONALITY.json loaded."]
+    "basis": "Consolidated from SYSTEMS-CORE v2.0. Densified v2.1: stripped training-weight defs/facts, kept thm IDs, all xlinks preserved. Restored v2.2: 14 minimal defs re-added to support xlinks from PERSONALITY, BUILDSCI, LOGIC, STATS.",
+    "notes": ["xlinks resolve once PERSONALITY.json loaded."],
+    "src_map": {
+      "SYS.REF": "MIT OCW 15.988, 'System Dynamics Self Study' (Forrester). https://ocw.mit.edu/courses/15-988-system-dynamics-self-study-fall-1998-spring-1999/ — feedback loops, stocks/flows, system dynamics | Canavesi & Minelli (2021), 'Servant Leadership: Systematic Literature Review', Empl Responsib Rights J 34(3):267-289, DOI:10.1007/s10672-021-09381-3 — leadership models",
+      "SYSTEMS.2.1": "Systems dynamics reference"
+    }
   },
-  "hash": "sha256:538f03f1aa75262a3526def40ad24f6d6adeeb96d750c1a24e82ba066454af39"
+  "hash": "recompute-required"
 }

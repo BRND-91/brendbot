@@ -260,7 +260,7 @@ def _score_message(
     # Domain keyword match in recent context — only if message itself didn't
     # already push past threshold AND context is available.
     if not domain_scored and recent_context:
-        context_text = " ".join(m.get("text", "") for m in recent_context[-5:]).lower()
+        context_text = " ".join(m.get("text", "") for m in recent_context[-5:] if m.get("has_keyword")).lower()
         for kw in DOMAIN_KEYWORDS:
             if kw in context_text:
                 result.domains.add(KEYWORD_TO_MODULE[kw])
@@ -310,6 +310,7 @@ async def _ensure_seeded(channel: discord.abc.Messageable, channel_id: str) -> d
                     "message_id": str(m.id),
                     "timestamp": m.created_at.timestamp(),
                     "reply_to_id": str(m.reference.message_id) if m.reference else None,
+                    "has_keyword": any(kw in seed_text.lower() for kw in DOMAIN_KEYWORDS),
                 })
             logger.debug("Seeded context buffer for channel %s (%d msgs)", channel_id, len(buf))
         except Exception as e:
@@ -383,6 +384,7 @@ class DiscordListener:
                 "message_id": msg_id,
                 "timestamp": message.created_at.timestamp(),
                 "reply_to_id": str(message.reference.message_id) if message.reference else None,
+                "has_keyword": any(kw in buf_text.lower() for kw in DOMAIN_KEYWORDS),
             })
 
             # Don't process responses to other bots unless they directly @mention or name-mention this bot.

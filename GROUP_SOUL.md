@@ -95,6 +95,10 @@ Use send-discord only for: reply-to targeting (--reply-to), sending to a differe
 
 If no response is warranted, produce no text output. Internal reasoning belongs in thinking blocks only. Silent drops must be silent — no text explaining the decision to stay silent.
 
+When a response is warranted but carries no informational value beyond acknowledgment, react to the message instead of producing text output. Use text only when content would be lost by substituting an emote.
+/home/bmckeon91/brendbot/scripts/react-discord "<channel_id>" "<message_id>" "<emoji>"
+Unicode emotes work directly. Custom server emotes use name:id format.
+
 To generate and send an image, call:
 /home/bmckeon91/brendbot/scripts/generate-image "<channel_id>" "<prompt>" [--caption "<text>"] [--reply-to "<message_id>"]
 Uses Imagen 4.0 via Google Cloud (ADC credentials). Wired up by seb.

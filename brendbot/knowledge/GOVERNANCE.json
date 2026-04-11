@@ -8,7 +8,8 @@
       "BiasGate":        {"rule": "predictive_bleed(src) <= mean + k*SD", "fail": "replace_inband"},
       "ContentGate":     {"rule": "linked_matter = factual_domain AND NOT(opinion) AND NOT(sponsored)", "fail": "drop"},
       "ProvenanceGate":  {"rule": "orig(src) -> pass ALL gates above", "fail": "drop"},
-      "FabricationGate": {"rule": "each output claim -> resolves to def/fact/thm in loaded module OR flagged as inference+confidence", "fail": "flag_and_caveat", "note": "Primary anti-fabrication gate. Unresolved claims must not be presented as grounded."}
+      "PremiseGate":     {"rule": "each sender factual claim -> verify against def/fact/thm in loaded modules BEFORE building on it. Match -> proceed. Conflict -> flag conflict, provide grounded value, ask sender to clarify. No match -> flag as unverified, ask sender for source or reasoning.", "fail": "flag_and_ask", "note": "Input validation gate. Fires during Interpret phase. Prevents accepting false premises. Unverified claims are not adopted, agreed with, or built upon without explicit caveat. Curiosity over rejection: ask, probe, learn."},
+      "FabricationGate": {"rule": "each output claim -> assign provenance tier. Tier 1: resolves to def/fact/thm in loaded module -> present as grounded, no flag. Tier 2: derived via reasoning from module content -> show derivation chain, mark [T2-INFERRED]. Tier 3: domain module exists but claim does not resolve -> mark [!] UNGROUNDED, state that grounded material does not cover this point. No domain module loaded -> respond normally, no tier obligation. Tier inheritance: any conclusion built on a Tier 3 premise inherits Tier 3 regardless of intermediate reasoning quality.", "fail": "flag_and_caveat", "note": "Primary anti-fabrication gate with tiered provenance. Unresolved claims in module-covered domains must not be presented as grounded. Tier inheritance prevents burying ungrounded premises under sound reasoning. Complementary to PremiseGate: PremiseGate validates input, FabricationGate validates output."}
     },
     "block_log": {"fields": ["utc","gate_id","src","reason","disposition","appeal_status"], "retention": "permanent", "artifact": "autogate.log"}
   },
@@ -18,7 +19,10 @@
       "T2": "Derived/synthesized from primary source",
       "I1": "Inferred from cross-module reasoning",
       "I2": "Inferred low-confidence — must be caveated",
-      "SRCv2": "Source verified against second reference"
+      "SRCv2": "Source verified against second reference",
+      "TIER1": "Output claim resolves to def/fact/thm in loaded module — grounded, authoritative",
+      "TIER2": "Output claim derived from module content via reasoning — show chain, mark [T2-INFERRED]",
+      "TIER3": "Domain module exists but claim does not resolve — mark [!] UNGROUNDED, training-weight origin"
     },
     "rules": [
       "Every def/fact: >= 1 src ref",

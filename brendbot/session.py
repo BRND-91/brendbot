@@ -63,26 +63,6 @@ TRANSCRIPTS_DIR = PROJECT_ROOT / "transcripts"
 # Haiku ambiguity classifier (local heuristic — no API call)
 # ---------------------------------------------------------------------------
 
-# Signals that suggest engagement even when domain keywords are absent.
-_ENGAGE_PATTERNS = (
-    # Direct address or name
-    "brend", "brendbot",
-    # Conversational openers likely directed at the bot
-    "what do you", "what do you think", "do you think", "do you know",
-    "can you", "could you", "would you", "tell me", "explain",
-    "what is", "what are", "how do", "how does", "why does", "why is",
-    "is it true", "is that", "have you", "did you",
-    # Soft requests
-    "help me", "help with", "show me", "give me", "find me",
-    "check ", "look at", "read this", "fix this",
-)
-
-# Patterns that are almost never worth engaging with.
-_NOISE_PATTERNS = (
-    "lol", "lmao", "haha", "hehe", "omg", "wtf", "brb", "gg", "oof",
-    "💀", "😂", "🤣", "👍", "❤️",
-)
-
 
 async def haiku_classify(payload: dict) -> dict:
     """
@@ -172,12 +152,14 @@ class Session:
         cwd: str,
         model: str = "sonnet",
         on_text: Optional[Any] = None,
+        chat_id: str = "",
     ) -> None:
         self.key = key
         self.tier = tier
         self.cwd = cwd
         self._model = model
         self._on_text = on_text  # async callable(chat_id, text) or None
+        self._chat_id = chat_id  # Discord channel/DM ID for on_text routing
         self._client: Optional[ClaudeSDKClient] = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
@@ -262,6 +244,13 @@ class Session:
 
     async def inject(self, text: str) -> None:
         await self._queue.put(text)
+
+    async def _fire_on_text(self, text: str) -> None:
+        """Send text to Discord via the on_text callback. Fire-and-forget."""
+        try:
+            await self._on_text(self._chat_id, text)
+        except Exception as exc:
+            logger.error("[%s] on_text callback failed: %s", self.key, exc)
 
     def log_turn(self, role: str, text: str, max_chars: int = 800) -> None:
         """Append a turn to the rolling log. Truncates long turns. Trims to _MAX_TURN_LOG."""
@@ -376,6 +365,12 @@ class Session:
                 elif isinstance(block, TextBlock):
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
+                    # Auto-route text to Discord via on_text callback.
+                    # This avoids burning a tool call on send-discord for
+                    # standard text replies. send-discord remains available
+                    # for special cases (image captions, reply-to targeting).
+                    if self._on_text and self._chat_id and block.text.strip():
+                        asyncio.create_task(self._fire_on_text(block.text))
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
                     pass  # Reactions disabled by admin directive.
@@ -542,17 +537,23 @@ class Session:
         Called every _CHECKPOINT_INTERVAL completed turns so manual ice picks
         always find a recent checkpoint on disk. Same path as the auto-restart
         write, same path as the init read — no ambiguity.
+
+        Format is compressed: one line per turn, user turns get more space
+        (400 chars) than assistant turns (200 chars) because user intent is
+        harder to reconstruct than bot output (which is grounded in modules).
         """
         if not self._turn_log:
             return
         try:
             summary_path = Path(self.cwd) / "CONTEXT_SUMMARY.md"
-            lines = [f"# CONTEXT SUMMARY — last {len(self._turn_log)} turns\n",
-                     f"Written at context_tokens={self._last_input_tokens}\n\n"]
+            lines = [f"# CTX {len(self._turn_log)}t @{self._last_input_tokens}tok\n"]
             for entry in self._turn_log:
                 role = entry.get("role", "unknown")
                 text = entry.get("text", "")
-                lines.append(f"[{role}] {text}\n\n")
+                # User turns carry more signal — give them more room.
+                cap = 400 if role == "user" else 200
+                truncated = text[:cap] + ("…" if len(text) > cap else "")
+                lines.append(f"{role[0]}:{truncated}\n")
             summary_path.write_text("".join(lines))
             logger.info("[%s] checkpoint written (%d turns, turn=%d)",
                         self.key, len(self._turn_log), self._completed_turn_count)
@@ -564,23 +565,14 @@ class Session:
 
         The old approach asked the bot to summarize while at 120K+ tokens —
         this pushed context to 150-170K and produced degraded output.
-        Now: write the raw turn log (already capped at _MAX_TURN_LOG × 800 chars)
-        and restart. The new session picks up CONTEXT_SUMMARY.md on init.
+        Now: write the compressed turn log and restart. The new session picks
+        up CONTEXT_SUMMARY.md on init.
         """
         if self._turn_log:
-            try:
-                summary_path = Path(self.cwd) / "CONTEXT_SUMMARY.md"
-                lines = [f"# CONTEXT SUMMARY — last {len(self._turn_log)} turns\n",
-                         f"Written at context_tokens={self._last_input_tokens}\n\n"]
-                for entry in self._turn_log:
-                    role = entry.get("role", "unknown")
-                    text = entry.get("text", "")
-                    lines.append(f"[{role}] {text}\n\n")
-                summary_path.write_text("".join(lines))
-                logger.info("[%s] CONTEXT_SUMMARY.md written (%d turns) — triggering clean restart",
-                            self.key, len(self._turn_log))
-            except Exception as exc:
-                logger.warning("[%s] CONTEXT_SUMMARY write failed: %s", self.key, exc)
+            # Reuse _write_checkpoint to avoid format duplication.
+            self._write_checkpoint()
+            logger.info("[%s] CONTEXT_SUMMARY.md written (%d turns) — triggering clean restart",
+                        self.key, len(self._turn_log))
 
         self._context_state = "restarting"
         if self._on_needs_restart:
@@ -623,7 +615,7 @@ class Session:
             fallback_model="haiku" if self._model != "haiku" else "sonnet",
             max_turns=turn_limit,
             max_buffer_size=10 * 1024 * 1024,
-            max_thinking_tokens=8000,
+            thinking={"type": "adaptive"},
             env=env,
         )
 
@@ -719,6 +711,7 @@ class SessionPool:
         reply_to_author: str = "",
         context_messages: list | None = None,
         is_direct_mention: bool = False,
+        domain_hint: str = "",
     ) -> None:
         """Route a message to the right session."""
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
@@ -763,10 +756,12 @@ class SessionPool:
                 f"{escape(reply_to_text)}</reply_to>"
             )
         type_attr = " type='group'" if is_group else ""
+        domain_attr = f" domain_hint='{escape(domain_hint)}'" if domain_hint else ""
         wrapped = (
             f"{context_block}"
             f"<message platform='{platform}' sender='{sender_id}' "
             f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}"
+            f"{domain_attr}"
             f" context_tokens='{session._last_input_tokens}'>"
             f"{reply_block}\n{text}\n</message>"
         )
@@ -805,6 +800,43 @@ class SessionPool:
             "send_command": send_cmd,
             "platform_name": "Discord",
         })
+
+        # Append static FUSED-CORE reference to system prompt.
+        # This avoids burning a conversation turn on content that is
+        # identical across all sessions and never changes at runtime.
+        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
+        kb_query_path = SCRIPTS_DIR / "kb-query"
+        manifest_path = knowledge_dir / "MANIFEST.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                load_order = manifest.get("load_order", [])
+                module_map = {m["id"]: m for m in manifest.get("modules", [])}
+                idx_lines = []
+                for module_id in load_order:
+                    desc = module_map.get(module_id, {}).get("desc", "")
+                    idx_lines.append(f"- {module_id}: {desc}")
+                if idx_lines:
+                    idx = "\n".join(idx_lines)
+                    prompt += (
+                        "\n\n## FUSED-CORE MODULES\n"
+                        f"{idx}\n\n"
+                        "## KNOWLEDGE QUERY TOOL\n"
+                        f"Use `{kb_query_path}` via Bash to query knowledge modules.\n"
+                        f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
+                        f"  {kb_query_path} defs <MODULE>          — list definitions\n"
+                        f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
+                        f"  {kb_query_path} thms <MODULE>          — list theorems\n"
+                        f"  {kb_query_path} def <ID>               — look up one definition\n"
+                        f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
+                        f"  {kb_query_path} gates                  — governance gates\n"
+                        "Use kb-query for all knowledge lookups (~200 bytes per result). "
+                        "Exception: IMAGEGEN.json via Read (non-standard structure).\n"
+                        "Do not answer from training weights when a module is available."
+                    )
+            except Exception as exc:
+                logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
+
         claude_md.write_text(prompt)
 
         # For group sessions, use admin tier (bot owner controls the server)
@@ -815,6 +847,7 @@ class SessionPool:
             cwd=str(transcript_dir),
             model=self._model,
             on_text=self._on_text,
+            chat_id=chat_id,
         )
         await session.start()
 
@@ -827,11 +860,24 @@ class SessionPool:
 
         session._on_needs_restart = _restart_cb
 
-        # Inject fragmented memory — essential files loaded, rest indexed for lazy-load.
-        # Falls back to monolithic MEMORY.md if memory/ dir doesn't exist yet.
+        # ── Startup injection: reasoning chain + reference block ─────────
+        # Essential memory fragments (behavior, identity) are injected as
+        # separate turns — they are reasoning premises, not reference data.
+        # Each distinct turn creates an attention anchor in conversation
+        # history, ensuring Claude encodes them as discrete logical inputs
+        # rather than scanning a single undifferentiated block.
+        #
+        # Reference material (memory index, context summary, knowledge
+        # tool index) is consolidated into one turn — these are lookup
+        # tables that don't require sequential logical processing.
+        #
+        # Net effect: 3 injections instead of 5-6 (saves ~2-3 suppressed
+        # acknowledgment turns from context) while preserving the
+        # premise→premise→reference reasoning chain.
+
+        # ── Phase 1: Essential reasoning premises (separate turns) ────────
         memory_dir = transcript_dir / "memory"
         if memory_dir.is_dir():
-            # Essential fragments: always loaded on start (~3-4KB total)
             _ESSENTIAL_FRAGMENTS = ("behavior.md", "identity.md")
             for frag_name in _ESSENTIAL_FRAGMENTS:
                 frag_path = memory_dir / frag_name
@@ -844,23 +890,6 @@ class SessionPool:
                         )
                     except Exception as exc:
                         logger.warning("Memory fragment %s injection failed: %s", frag_name, exc)
-
-            # Index of remaining fragments for on-demand query via kb-query memory
-            other_frags = [
-                f for f in sorted(memory_dir.iterdir())
-                if f.suffix == ".md" and f.name not in _ESSENTIAL_FRAGMENTS
-            ]
-            if other_frags:
-                index_lines = [f"- {f.stem}: {f}" for f in other_frags]
-                await session.inject(
-                    "<memory-index>\n" + "\n".join(index_lines) + "\n</memory-index>\n"
-                    "Additional memory fragments are available on disk. "
-                    "Use `kb-query memory <source>` to load the relevant fragment when a question touches that domain "
-                    "(e.g., `kb-query memory buildsci`, `kb-query memory tools`, `kb-query memory bots`). "
-                    "Do not Read .md files directly — use kb-query memory for indexed fragments. "
-                    "Do not load all fragments — only what the current question requires. "
-                    "Do not respond to this injection."
-                )
         else:
             # Fallback: monolithic MEMORY.md (pre-migration sessions)
             memory_md = transcript_dir / "MEMORY.md"
@@ -874,59 +903,48 @@ class SessionPool:
                 except Exception as exc:
                     logger.warning("MEMORY.md injection failed: %s", exc)
 
-        # Inject CONTEXT_SUMMARY.md if present — carries rolling turn log from prior session.
+        # ── Phase 2: Reference material (single consolidated turn) ────────
+        ref_sections: list[str] = []
+
+        # Memory fragment index (lazy-load pointers, not reasoning content)
+        if memory_dir.is_dir():
+            other_frags = [
+                f for f in sorted(memory_dir.iterdir())
+                if f.suffix == ".md" and f.name not in ("behavior.md", "identity.md")
+            ]
+            if other_frags:
+                index_lines = [f"- {f.stem}: {f}" for f in other_frags]
+                ref_sections.append(
+                    "<memory-index>\n" + "\n".join(index_lines) + "\n</memory-index>\n"
+                    "Use `kb-query memory <source>` to load fragments on demand. "
+                    "Do not Read .md files directly. Load only what the current question requires."
+                )
+
+        # Context summary from prior session
         context_summary = transcript_dir / "CONTEXT_SUMMARY.md"
         if context_summary.exists():
             try:
                 summary_content = context_summary.read_text()
-                await session.inject(
+                ref_sections.append(
                     f"<context-summary>\n{summary_content}\n</context-summary>\n"
-                    "The above is a summary of the most recent conversation turns from before this session started. "
-                    "Use it to maintain continuity. Do not respond to this injection."
+                    "Recent conversation turns from prior session. Use for continuity."
                 )
-                logger.info("CONTEXT_SUMMARY.md injected for %s", key)
-                # File is NOT deleted — next checkpoint write will overwrite it.
-                # Deleting here created a gap window: manual ice picks between
-                # deletion and next checkpoint write started cold.
+                logger.info("CONTEXT_SUMMARY.md included in ref block for %s", key)
             except Exception as exc:
-                logger.warning("CONTEXT_SUMMARY.md injection failed: %s", exc)
+                logger.warning("CONTEXT_SUMMARY.md read failed: %s", exc)
 
-        # Inject FUSED-CORE knowledge index.
-        # Primary access: kb-query via Bash (SQLite, ~200 bytes per query).
-        # Fallback: Read the JSON file (only for IMAGEGEN which has non-standard structure).
-        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
-        kb_query_path = SCRIPTS_DIR / "kb-query"
-        manifest_path = knowledge_dir / "MANIFEST.json"
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                load_order = manifest.get("load_order", [])
-                module_map = {m["id"]: m for m in manifest.get("modules", [])}
-                index_lines = []
-                for module_id in load_order:
-                    desc = module_map.get(module_id, {}).get("desc", "")
-                    index_lines.append(f"- {module_id}: {desc}")
-                if index_lines:
-                    index = "\n".join(index_lines)
-                    await session.inject(
-                        "<fused-core-index>\n" + index + "\n</fused-core-index>\n"
-                        + "<knowledge-query-tool>\n"
-                        + f"Use `{kb_query_path}` via Bash to query knowledge modules. Commands:\n"
-                        + f"  {kb_query_path} search \"<terms>\"      — full-text search across all modules\n"
-                        + f"  {kb_query_path} defs <MODULE>          — list definitions\n"
-                        + f"  {kb_query_path} facts <MODULE> [topic] — list facts (optionally by topic)\n"
-                        + f"  {kb_query_path} thms <MODULE>          — list theorems\n"
-                        + f"  {kb_query_path} def <ID>               — look up a specific definition\n"
-                        + f"  {kb_query_path} topics <MODULE>        — list available fact topics\n"
-                        + f"  {kb_query_path} gates                  — list governance gates\n"
-                        + "Each query returns ~200 bytes (vs 11KB for a full JSON read). "
-                        + "Use kb-query instead of Read for all knowledge lookups. "
-                        + "Exception: IMAGEGEN.json — read via Read tool (non-standard structure).\n"
-                        + "</knowledge-query-tool>\n"
-                        + "Do not answer from training weights when a module is available. Do not respond to this injection."
-                    )
-            except Exception as exc:
-                logger.warning("FUSED-CORE index injection failed: %s", exc)
+        # FUSED-CORE module index and kb-query instructions are now in the
+        # system prompt (CLAUDE.md), not injected as conversation turns.
+        # See _create() above where they're appended to the template.
+
+        if ref_sections:
+            combined_ref = "\n\n".join(ref_sections)
+            await session.inject(
+                f"<system-ref>\n{combined_ref}\n</system-ref>\n"
+                "Do not respond to this injection."
+            )
+            logger.info("Reference block injected for %s (%d bytes, %d sections)",
+                        key, len(combined_ref), len(ref_sections))
 
         return session
 

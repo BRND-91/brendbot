@@ -6,6 +6,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -111,41 +112,55 @@ async def send_message(channel_id: str, text: str) -> None:
         logger.error("Failed to send message to %s: %s", channel_id, e)
 
 
-def _load_domain_keywords() -> frozenset[str]:
-    """Build a keyword set from knowledge module descriptions and IDs."""
-    keywords: set[str] = set()
+def _load_domain_keywords() -> tuple[frozenset[str], dict[str, str]]:
+    """Build a keyword set and keyword->module mapping from knowledge modules.
 
+    Returns:
+        (all_keywords, keyword_to_module) where keyword_to_module maps each
+        keyword string to its source module ID (e.g. "insulation" -> "BUILDSCI").
+    """
     # Explicit human-readable terms per domain
-    static_terms = [
-        # LOGIC
-        "logic", "argument", "proof", "valid", "premise", "conclusion",
-        "inference", "reasoning", "deduction", "induction", "theorem",
-        "proposition", "syllogism", "formal language", "predicate",
-        # STATS
-        "probability", "statistics", "distribution", "bayesian", "random variable",
-        "variance", "likelihood", "confidence interval", "regression", "correlation",
-        "bayes", "bernoulli", "normal distribution", "standard deviation",
-        # SYSTEMS
-        "systems thinking", "feedback loop", "feedback", "tipping point",
-        "oscillation", "overshoot", "stocks and flows", "emergence", "complexity",
-        "pareto", "ashby", "goodhart", "diminishing returns", "delay",
-        "leadership", "servant leadership", "situational leadership",
-        "emotional intelligence", "forrester",
-        # PERSONALITY
-        "empathy", "interpersonal", "mediation", "therapy", "group dynamics",
-        "respect", "boundary", "calibrate", "risk gate",
-        # BUILDSCI
-        "building science", "insulation", "hvac", "air barrier", "vapor barrier",
-        "moisture", "thermal", "enclosure", "ventilation", "infiltration",
-        "r-value", "blower door", "energy efficiency", "condensation",
-        "building envelope", "duct", "mechanical ventilation", "combustion",
-        "indoor air quality", "iaq", "heat loss", "heat gain", "air sealing",
-        "hrv", "erv", "radiant", "conduction", "convection", "latent heat",
-        "sensible heat", "dew point", "relative humidity",
-        "fiberglass", "attic", "crawlspace", "pest", "shell tightening",
-        "air leakage", "weatherization", "envelope", "rim joist", "slab",
-    ]
-    keywords.update(static_terms)
+    _MODULE_TERMS: dict[str, list[str]] = {
+        "LOGIC": [
+            "logic", "argument", "proof", "valid", "premise", "conclusion",
+            "inference", "reasoning", "deduction", "induction", "theorem",
+            "proposition", "syllogism", "formal language", "predicate",
+        ],
+        "STATS": [
+            "probability", "statistics", "distribution", "bayesian", "random variable",
+            "variance", "likelihood", "confidence interval", "regression", "correlation",
+            "bayes", "bernoulli", "normal distribution", "standard deviation",
+        ],
+        "SYSTEMS": [
+            "systems thinking", "feedback loop", "feedback", "tipping point",
+            "oscillation", "overshoot", "stocks and flows", "emergence", "complexity",
+            "pareto", "ashby", "goodhart", "diminishing returns", "delay",
+            "leadership", "servant leadership", "situational leadership",
+            "emotional intelligence", "forrester",
+        ],
+        "PERSONALITY": [
+            "empathy", "interpersonal", "mediation", "therapy", "group dynamics",
+            "respect", "boundary", "calibrate", "risk gate",
+        ],
+        "BUILDSCI": [
+            "building science", "insulation", "hvac", "air barrier", "vapor barrier",
+            "moisture", "thermal", "enclosure", "ventilation", "infiltration",
+            "r-value", "blower door", "energy efficiency", "condensation",
+            "building envelope", "duct", "mechanical ventilation", "combustion",
+            "indoor air quality", "iaq", "heat loss", "heat gain", "air sealing",
+            "hrv", "erv", "radiant", "conduction", "convection", "latent heat",
+            "sensible heat", "dew point", "relative humidity",
+            "fiberglass", "attic", "crawlspace", "pest", "shell tightening",
+            "air leakage", "weatherization", "envelope", "rim joist", "slab",
+        ],
+    }
+
+    keyword_to_module: dict[str, str] = {}
+    all_keywords: set[str] = set()
+    for module_id, terms in _MODULE_TERMS.items():
+        for term in terms:
+            keyword_to_module[term] = module_id
+            all_keywords.add(term)
 
     # Supplement from manifest module descriptions
     try:
@@ -153,17 +168,47 @@ def _load_domain_keywords() -> frozenset[str]:
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text())
             for module in manifest.get("modules", []):
+                mod_id = module.get("id", "").upper()
                 desc = module.get("desc", "").lower()
-                # Extract multi-word and single meaningful terms
                 words = [w.strip(",.():") for w in desc.split() if len(w) > 4]
-                keywords.update(words)
+                for w in words:
+                    if w not in keyword_to_module:
+                        keyword_to_module[w] = mod_id
+                    all_keywords.add(w)
     except Exception as e:
         logger.warning("Failed to load manifest keywords: %s", e)
 
-    return frozenset(keywords)
+    return frozenset(all_keywords), keyword_to_module
 
 
-DOMAIN_KEYWORDS = _load_domain_keywords()
+DOMAIN_KEYWORDS, KEYWORD_TO_MODULE = _load_domain_keywords()
+
+
+@dataclass
+class EngageResult:
+    """Result from _score_message with score and matched domain modules."""
+    score: float = 0.0
+    domains: set[str] = field(default_factory=set)
+
+
+# Noise tokens that never warrant engagement on their own.
+_NOISE_TOKENS = frozenset({
+    "lol", "lmao", "haha", "hehe", "omg", "wtf", "brb", "gg", "oof",
+    "ok", "k", "yeah", "yep", "nah", "nope", "sure", "true", "same",
+    "nice", "rip", "wow", "based", "fr", "bet", "cope", "ratio",
+})
+
+# Conversational starters — built once at module load, not per call.
+_QUESTION_STARTERS = (
+    "tell me", "what ", "why ", "how ", "who ", "when ", "where ",
+    "do you", "can you", "would you", "could you", "are you",
+    "is it", "have you", "did you", "does it", "will you",
+)
+_DIRECTIVE_STARTERS = (
+    "operate", "respond", "explain", "describe", "show", "give",
+    "list", "help", "stop", "start", "run", "check", "look",
+    "find", "read", "write", "fix", "update", "act", "pretend",
+)
 
 
 def _score_message(
@@ -171,69 +216,70 @@ def _score_message(
     channel_id: str,
     is_reply_to_bot: bool,
     recent_context: list[dict] | None = None,
-) -> float:
+) -> EngageResult:
     """
     Score a message for engagement likelihood.
 
-    Returns a float >= 0. Thresholds:
-      >= 1.0 : high confidence, engage
-      >= 0.4 : soft signal, engage
-        < 0.4 : drop
+    Returns an EngageResult with:
+      score >= 1.0 : high confidence, engage
+      score >= 0.4 : soft signal, engage
+      score  < 0.4 : drop
+      domains: set of module IDs matched by keywords (e.g. {"BUILDSCI", "STATS"})
     """
-    score = 0.0
+    result = EngageResult()
     text_lower = text.lower()
-    word_count = len(text.split())
+    words = text.split()
+    word_count = len(words)
+
+    # Early noise rejection: single-token messages that are never worth engaging.
+    # Prevents these from reaching the Haiku classifier (saves subprocess cost).
+    if word_count <= 2 and all(w.lower().strip("?!.,") in _NOISE_TOKENS for w in words):
+        return result  # score=0.0, no domains
 
     # Direct reply to bot is a strong signal
     if is_reply_to_bot:
-        score += 1.0
+        result.score += 1.0
 
     # Recent thread participation lowers the bar — but only for messages with
-    # enough content to be plausibly relevant. Single-word fragments ("huh?",
-    # "lol", "ok") from non-addressed users are noise even in active threads.
+    # enough content to be plausibly relevant. Single-word fragments from
+    # non-addressed users are noise even in active threads.
     last_spoke = _channel_last_spoke.get(channel_id, 0.0)
-    if time.time() - last_spoke < RECENCY_WINDOW_SECONDS and word_count >= 3:
-        score += 0.3
+    recency_active = time.time() - last_spoke < RECENCY_WINDOW_SECONDS
+    if recency_active and word_count >= 3:
+        result.score += 0.3
 
-    # Domain keyword match in current message
+    # Domain keyword match in current message — collect ALL matching domains.
+    domain_scored = False
     for kw in DOMAIN_KEYWORDS:
         if kw in text_lower:
-            score += 0.4
-            break
+            result.domains.add(KEYWORD_TO_MODULE[kw])
+            if not domain_scored:
+                result.score += 0.4
+                domain_scored = True
 
-    # Domain keyword match in recent context (conversation is on-topic even if this message isn't)
-    if score < ENGAGE_THRESHOLD and recent_context:
+    # Domain keyword match in recent context — only if message itself didn't
+    # already push past threshold AND context is available.
+    if not domain_scored and recent_context:
         context_text = " ".join(m.get("text", "") for m in recent_context[-5:]).lower()
         for kw in DOMAIN_KEYWORDS:
             if kw in context_text:
-                score += 0.3
-                break
+                result.domains.add(KEYWORD_TO_MODULE[kw])
+                if not domain_scored:
+                    result.score += 0.3
+                    domain_scored = True
 
-    # Conversational signal: question or direct address in an active thread
-    # Only applied when recency is already contributing (bot recently spoke)
-    last_spoke = _channel_last_spoke.get(channel_id, 0.0)
-    if time.time() - last_spoke < RECENCY_WINDOW_SECONDS:
-        _QUESTION_STARTERS = (
-            "tell me", "what ", "why ", "how ", "who ", "when ", "where ",
-            "do you", "can you", "would you", "could you", "are you",
-            "is it", "have you", "did you", "does it", "will you",
-        )
-        _DIRECTIVE_STARTERS = (
-            "operate", "respond", "explain", "describe", "show", "give",
-            "list", "help", "stop", "start", "run", "check", "look",
-            "find", "read", "write", "fix", "update", "act", "pretend",
-        )
+    # Conversational signal: question or directive in an active thread.
+    # Only applied when recency is active (bot recently spoke).
+    if recency_active and word_count >= 3:
         is_conversational = (
-            word_count >= 3 and (
-                text_lower.endswith("?")
-                or any(text_lower.startswith(s) for s in _QUESTION_STARTERS)
-                or any(text_lower.startswith(s) for s in _DIRECTIVE_STARTERS)
-            )
+            text_lower.endswith("?")
+            or any(text_lower.startswith(s) for s in _QUESTION_STARTERS)
+            or any(text_lower.startswith(s) for s in _DIRECTIVE_STARTERS)
         )
         if is_conversational:
-            score += 0.2
+            result.score += 0.2
 
-    return score
+    return result
 
 
 ENGAGE_THRESHOLD = 0.4
@@ -350,6 +396,8 @@ class DiscordListener:
             mentioned = client.user and client.user.id in [m.id for m in message.mentions]
             name_mentioned = any(n in text.lower() for n in ["brendbot", "brend"])
 
+            matched_domains: set[str] = set()
+
             if message.guild:
                 # Stage 0: hard-pass on direct mention
                 if mentioned or name_mentioned:
@@ -370,14 +418,15 @@ class DiscordListener:
                             reply_to_bot = True
 
                     # Stage 1a: cheap heuristic scoring
-                    score = _score_message(
+                    engage_result = _score_message(
                         text,
                         channel_id,
                         reply_to_bot,
                         recent_context=context_snapshot,
                     )
 
-                    heuristic_pass = score >= ENGAGE_THRESHOLD
+                    heuristic_pass = engage_result.score >= ENGAGE_THRESHOLD
+                    matched_domains = engage_result.domains
 
                 # Admin bypass: admin messages skip the haiku gate
                 if sender_id == "369485175329128448":
@@ -487,6 +536,7 @@ class DiscordListener:
                 reply_to_author=reply_to_author,
                 context_messages=filtered_context,
                 is_direct_mention=is_direct_mention,
+                domain_hint=",".join(sorted(matched_domains)) if matched_domains else "",
             )
 
         @client.event

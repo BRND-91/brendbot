@@ -39,11 +39,13 @@ def get_conn():
 
 def cmd_search(terms):
     conn = get_conn()
-    # Try FTS first
+    # Try FTS first. Quote the terms to prevent FTS5 operator parsing
+    # (e.g. "R-value" would parse hyphen as NOT without quoting).
+    fts_terms = '"' + terms.replace('"', '""') + '"'
     results = conn.execute(
         "SELECT module_id, entry_type, term, description, source "
         "FROM fts_knowledge WHERE fts_knowledge MATCH ? LIMIT 20",
-        (terms,)
+        (fts_terms,)
     ).fetchall()
 
     if not results:
@@ -60,12 +62,13 @@ def cmd_search(terms):
         ).fetchall()
 
     if not results:
-        print("No results found.")
+        print("No results.")
         return
 
+    # Compact format: one line per result, minimal separators.
     for mod, etype, term, desc, src in results:
-        src_tag = f" [{src}]" if src else ""
-        print(f"[{mod}/{etype}] {term}: {desc}{src_tag}")
+        src_tag = f"|{src}" if src else ""
+        print(f"{mod}.{etype}:{term}={desc}{src_tag}")
 
 
 def cmd_defs(module):
@@ -75,17 +78,16 @@ def cmd_defs(module):
         (module.upper(),)
     ).fetchall()
     if not rows:
-        print(f"No definitions found for {module}")
+        print(f"No defs for {module}")
         return
+    # Compact: id:term=desc[|formal][|src]
     for did, term, desc, formal, src in rows:
-        parts = [f"{term or did}"]
+        line = f"{did}:{term}={desc}" if desc else f"{did}:{term}"
         if formal:
-            parts.append(f"  formula: {formal}")
-        if desc:
-            parts.append(f"  {desc}")
+            line += f"|F:{formal}"
         if src:
-            parts.append(f"  [{src}]")
-        print(" | ".join(parts))
+            line += f"|{src}"
+        print(line)
 
 
 def cmd_facts(module, topic=None):
@@ -101,11 +103,12 @@ def cmd_facts(module, topic=None):
             (module.upper(),)
         ).fetchall()
     if not rows:
-        print(f"No facts found for {module}" + (f" topic={topic}" if topic else ""))
+        print(f"No facts for {module}" + (f"/{topic}" if topic else ""))
         return
+    # Compact: topic.name=desc[|src]
     for t, name, desc, src in rows:
-        src_tag = f" [{src}]" if src else ""
-        print(f"[{t}] {name}: {desc}{src_tag}")
+        src_tag = f"|{src}" if src else ""
+        print(f"{t}.{name}={desc}{src_tag}")
 
 
 def cmd_thms(module):
@@ -115,17 +118,15 @@ def cmd_thms(module):
         (module.upper(),)
     ).fetchall()
     if not rows:
-        print(f"No theorems found for {module}")
+        print(f"No thms for {module}")
         return
     for tid, desc, formal, src in rows:
-        parts = [tid]
+        line = f"{tid}={desc}" if desc else tid
         if formal:
-            parts.append(formal)
-        if desc:
-            parts.append(desc)
+            line += f"|F:{formal}"
         if src:
-            parts.append(f"[{src}]")
-        print(" | ".join(parts))
+            line += f"|{src}"
+        print(line)
 
 
 def cmd_def_lookup(def_id):
@@ -148,10 +149,10 @@ def cmd_def_lookup(def_id):
 def cmd_gates():
     conn = get_conn()
     for gid, rule, fail, note in conn.execute("SELECT * FROM governance_gates ORDER BY id"):
-        parts = [f"{gid}: {rule} (fail: {fail})"]
+        line = f"{gid}:{rule}|fail={fail}"
         if note:
-            parts.append(f"  Note: {note}")
-        print("\n".join(parts))
+            line += f"|{note}"
+        print(line)
 
 
 def cmd_xlinks(module):

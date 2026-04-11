@@ -21,7 +21,7 @@ A Claude-powered Discord bot in ~300 lines of Python. Your computer is just a th
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/sammcgrail/brendbot.git
+git clone https://github.com/BRND-91/brendbot.git
 cd brendbot
 
 # Install uv (fast Python package manager) if you don't have it

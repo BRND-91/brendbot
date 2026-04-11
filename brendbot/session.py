@@ -76,12 +76,20 @@ async def haiku_classify(payload: dict) -> dict:
         f"{m.get('display_name', 'unknown')}: {m.get('text', '')}"
         for m in recent[-5:]
     )
+
+    engagement_path = PROJECT_ROOT / "ENGAGEMENT.md"
+    if engagement_path.exists():
+        classifier_rules = engagement_path.read_text()
+    else:
+        classifier_rules = (
+            "Should brendbot respond? YES if directly addressed or domain question. "
+            "NO if casual chat between others. Reply YES or NO only."
+        )
+
     prompt = (
-        "Should brendbot respond to this Discord message? "
-        "YES if: directly addresses brendbot/brend, asks a domain question "
-        "(building science, logic, stats, systems), or continues an active conversation. "
-        "NO if: casual chat between others, noise, messages to other bots. "
-        f"Context:\n{context_lines}\nNew message: {text}\n"
+        f"{classifier_rules}\n\n"
+        f"Recent context:\n{context_lines}\n"
+        f"New message: {text}\n"
         "Reply YES or NO only."
     )
     try:

@@ -282,7 +282,8 @@ def _score_message(
     return result
 
 
-ENGAGE_THRESHOLD = 0.4
+ENGAGE_THRESHOLD = 0.4      # bottom of middle band — below this, hard drop
+ENGAGE_HARD_PASS = 0.7      # at or above this, skip haiku and engage directly
 
 
 def record_bot_spoke(channel_id: str) -> None:
@@ -402,6 +403,7 @@ class DiscordListener:
 
             if message.guild:
                 # Stage 0: hard-pass on direct mention
+                use_haiku = False
                 if mentioned or name_mentioned:
                     heuristic_pass = True
                 else:
@@ -419,26 +421,40 @@ class DiscordListener:
                         if ref and str(ref.author.id) == self.bot_id:
                             reply_to_bot = True
 
-                    # Stage 1a: cheap heuristic scoring
+                    # Stage 1a: cheap heuristic scoring — three tiers:
+                    #   score >= ENGAGE_HARD_PASS : hard pass, skip haiku
+                    #   ENGAGE_THRESHOLD <= score < ENGAGE_HARD_PASS : middle band, haiku decides
+                    #   score < ENGAGE_THRESHOLD  : hard drop
                     engage_result = _score_message(
                         text,
                         channel_id,
                         reply_to_bot,
                         recent_context=context_snapshot,
                     )
-
-                    heuristic_pass = engage_result.score >= ENGAGE_THRESHOLD
                     matched_domains = engage_result.domains
 
-                # Admin bypass: admin messages skip the haiku gate
+                    if engage_result.score >= ENGAGE_HARD_PASS:
+                        heuristic_pass = True
+                    elif engage_result.score >= ENGAGE_THRESHOLD:
+                        heuristic_pass = False
+                        use_haiku = True  # ambiguous middle — classifier decides
+                    else:
+                        heuristic_pass = False  # hard drop
+
+                # Admin bypass: admin messages skip all gates
                 if sender_id == "369485175329128448":
                     heuristic_pass = True
+                    use_haiku = False
 
-                # Stage 2: Haiku ambiguity classifier
+                # Stage 2: Haiku ambiguity classifier (middle band only)
                 if not heuristic_pass:
-                    engage = await _haiku_gatecheck(text, context_snapshot)
-                    if not engage:
-                        # Silent drop, but buffer already updated
+                    if use_haiku:
+                        engage = await _haiku_gatecheck(text, context_snapshot)
+                        if not engage:
+                            # Silent drop, but buffer already updated
+                            return
+                    else:
+                        # Hard drop — below threshold, no classifier
                         return
 
             # Download and format attachments

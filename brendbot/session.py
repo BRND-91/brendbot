@@ -190,6 +190,13 @@ class Session:
             "CLAUDE.md", "MEMORY.md", "ai-image-shortfalls.md",
             "CONTEXT_SUMMARY.md",
         })
+        # Auto-reply buffering: collect text blocks during a turn, send on
+        # ResultMessage only if send-discord was not called explicitly.
+        # This prevents internal reasoning ("no response warranted") from
+        # leaking to Discord. The bot must produce text to reply — but only
+        # intentional responses reach the channel.
+        self._turn_text_buffer: list[str] = []
+        self._turn_used_send_discord: bool = False
         # Knowledge module → reaction emoji mapping
         self._MODULE_EMOTES: dict[str, str] = {
             "LOGIC":       "🔣",
@@ -365,16 +372,30 @@ class Session:
                 elif isinstance(block, TextBlock):
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
-                    # Auto-route text to Discord via on_text callback.
-                    # This avoids burning a tool call on send-discord for
-                    # standard text replies. send-discord remains available
-                    # for special cases (image captions, reply-to targeting).
-                    if self._on_text and self._chat_id and block.text.strip():
-                        asyncio.create_task(self._fire_on_text(block.text))
+                    # Buffer text for auto-route on turn completion.
+                    # Only sends if send-discord was not called explicitly.
+                    if block.text.strip():
+                        self._turn_text_buffer.append(block.text)
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
-                    pass  # Reactions disabled by admin directive.
+                    # Track if bot explicitly used send-discord this turn.
+                    if block.name == "Bash":
+                        tool_cmd = (block.input or {}).get("command", "")
+                        if "send-discord" in tool_cmd:
+                            self._turn_used_send_discord = True
         elif isinstance(message, ResultMessage):
+            # Auto-route buffered text to Discord if bot didn't use send-discord.
+            # This keeps internal reasoning ("no response warranted") in console
+            # while still auto-delivering intentional replies.
+            if (self._turn_text_buffer
+                    and not self._turn_used_send_discord
+                    and self._on_text
+                    and self._chat_id):
+                combined = "\n".join(self._turn_text_buffer)
+                asyncio.create_task(self._fire_on_text(combined))
+            self._turn_text_buffer.clear()
+            self._turn_used_send_discord = False
+
             cost = f" (${message.total_cost_usd:.4f})" if message.total_cost_usd else ""
             # Extract full context size from usage metadata.
             # input_tokens alone is only the non-cached portion — real context size

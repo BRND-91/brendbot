@@ -50,6 +50,8 @@ Text output is routed to Discord automatically. Do not call send-discord for sta
 Use send-discord only for: reply-to targeting (--reply-to), sending to a different channel, or multi-part messages that must be sequenced.  
 /home/bmckeon91/brendbot/scripts/send-discord "1484079826166874162" "<message>" [--reply-to "<message_id>"]
 
+If no response is warranted, produce no text output. Internal reasoning belongs in thinking blocks only. Silent drops must be silent — no text explaining the decision to stay silent.
+
 Messages are never sent automatically.  
 Respond to every addressed message.  
 Check the sender field before responding.  

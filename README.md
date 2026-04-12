@@ -142,7 +142,7 @@ This opens a browser link. Click it, log in with your Anthropic account (the one
 Now follow the [Quick Start](#quick-start) steps above — they work identically inside your Ubuntu terminal.
 
 ```bash
-git clone https://github.com/sammcgrail/brendbot.git
+git clone https://github.com/BRND-91/brendbot.git
 cd brendbot
 ./setup.sh
 ```
@@ -180,7 +180,7 @@ source ~/.bashrc
 claude login
 
 # Clone and set up
-git clone https://github.com/sammcgrail/brendbot.git
+git clone https://github.com/BRND-91/brendbot.git
 cd brendbot
 uv sync
 cp .env.example .env

@@ -28,7 +28,7 @@ _SPREADSHEET_CONTENT_TYPES = {
     "application/vnd.ms-excel",
     "application/vnd.ms-excel.sheet.macroenabled.12",
 }
-RECENCY_WINDOW_SECONDS = 300  # 5 minutes
+# RECENCY_WINDOW_SECONDS defined below from engagement.yaml
 CONTEXT_BUFFER_SIZE = 20  # messages per channel
 
 type MessageCallback = Callable[..., Coroutine[Any, Any, None]]
@@ -54,24 +54,58 @@ _NAME_PATTERN = re.compile(r"\b(brend|brendan|brendbot)\b", re.IGNORECASE)
 _BOT_NAMES = ("brendbot", "brendan", "brend")
 
 
-async def _haiku_gatecheck(text: str, context: list[dict]) -> bool:
+async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
     """
-    Lightweight ambiguity classifier.
-    Returns True if the message should escalate to full Claude.
+    Ambiguity classifier returning the full {engage, reason} dict so callers
+    can detect classifier errors and escalate rather than silently drop.
+
+    Error semantics: any failure path — exception during the SDK call,
+    auth error inside haiku_classify, or a malformed response — collapses
+    to {"engage": False, "reason": "error"}. Callers should treat
+    reason=="error" as "classifier unavailable, decide for yourself"
+    rather than as a NO from the classifier.
     """
     recent = context[-5:] if context else []
-
     try:
         from brendbot.session import haiku_classify
         decision = await haiku_classify({
             "message": text,
             "recent_context": recent,
         })
-        logger.info("Haiku gate: %s (message: %r)", decision.get("reason", "unknown"), text[:50])
-        return bool(decision.get("engage", False))
+        reason = decision.get("reason", "unknown")
+        logger.info("Haiku gate: %s (message: %r)", reason, text[:50])
+        return {
+            "engage": bool(decision.get("engage", False)),
+            "reason": reason,
+        }
     except Exception as e:
         logger.warning("Haiku gate failed: %s", e)
-        return False
+        return {"engage": False, "reason": "error"}
+
+
+# ── Haiku failure log ─────────────────────────────────────────────────────
+# Append-only record of every classifier outage. Read by an admin DM
+# notifier (TODO: hook to a Discord channel via cfg.admin_alert_channel
+# once that field exists in config.py — for now this file is the source
+# of truth for "did the gate fail today?").
+_HAIKU_FAILURE_LOG = Path(__file__).parent.parent / "logs" / "haiku_failures.log"
+
+
+def _log_haiku_failure(channel_id: str, text: str, score: float) -> None:
+    """Append a single line to logs/haiku_failures.log when the haiku
+    classifier returns reason='error'. Format: ISO timestamp, channel,
+    score, first 80 chars of message."""
+    try:
+        _HAIKU_FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        import datetime
+        ts = datetime.datetime.now().isoformat(timespec="seconds")
+        line = f"{ts}\t{channel_id}\t{score:.2f}\t{text[:80]!r}\n"
+        with _HAIKU_FAILURE_LOG.open("a") as f:
+            f.write(line)
+    except Exception as exc:
+        logger.warning("Failed to write haiku failure log: %s", exc)
+    # TODO: when cfg.admin_alert_channel is added, post a rate-limited
+    # alert (1/hr) to that channel here so outages aren't quiet.
 
 
 async def react_to_message(channel_id: str, message_id: str, emoji: str) -> None:
@@ -104,133 +138,120 @@ async def remove_reaction(channel_id: str, message_id: str, emoji: str) -> None:
         logger.warning("Failed to remove reaction from %s: %s", message_id, e)
 
 
-async def send_message(channel_id: str, text: str) -> None:
-    """Send a message to a Discord channel by ID."""
+async def send_message(channel_id: str, text: str) -> str | None:
+    """Send a message to a Discord channel by ID.
+    Returns the first chunk's message ID (str) so callers can log it for
+    feedback correlation, or None on failure / pre-ready dispatch."""
     if _discord_client is None:
         logger.warning("send_message called before client is ready")
-        return
+        return None
     channel = _discord_client.get_channel(int(channel_id))
     if channel is None:
         try:
             channel = await _discord_client.fetch_channel(int(channel_id))
         except Exception as e:
             logger.error("Could not fetch channel %s: %s", channel_id, e)
-            return
+            return None
     try:
+        first_msg_id: str | None = None
         for chunk in [text[i:i+2000] for i in range(0, len(text), 2000)]:
-            await channel.send(chunk)
+            sent = await channel.send(chunk)
+            if first_msg_id is None:
+                first_msg_id = str(sent.id)
         record_bot_spoke(channel_id)
+        return first_msg_id
     except Exception as e:
         logger.error("Failed to send message to %s: %s", channel_id, e)
+        return None
 
 
-def _load_domain_keywords() -> tuple[re.Pattern, dict[str, str]]:
-    """Build a compiled keyword regex and keyword->module mapping from knowledge modules.
+# ── Engagement config: single source of truth ────────────────────────────
+# All gating constants, scoring deltas, noise tokens, conversational starters,
+# and domain keywords come from engagement.yaml. The same file's
+# `classifier_prompt` block feeds the haiku ambiguity classifier in
+# session.py. Edit engagement.yaml — never patch these in code.
 
-    Returns:
-        (domain_pattern, keyword_to_module) where domain_pattern is a compiled
-        regex alternation of all keywords, and keyword_to_module maps each keyword
-        string to its source module ID (e.g. "insulation" -> "BUILDSCI").
+_ENGAGEMENT_YAML = Path(__file__).parent.parent / "engagement.yaml"
 
-    Using a single compiled regex instead of a frozenset loop gives correct
-    word-boundary semantics (e.g. "stats" won't match "statistics") and
-    reduces per-message work from O(n_keywords * len(text)) substring scans
-    to a single regex pass.
-    """
-    # Explicit human-readable terms per domain
-    _MODULE_TERMS: dict[str, list[str]] = {
-        "LOGIC": [
-            "logic", "argument", "proof", "valid", "premise", "conclusion",
-            "inference", "reasoning", "deduction", "induction", "theorem",
-            "proposition", "syllogism", "formal language", "predicate",
-        ],
-        "STATS": [
-            "probability", "statistics", "distribution", "bayesian", "random variable",
-            "variance", "likelihood", "confidence interval", "regression", "correlation",
-            "bayes", "bernoulli", "normal distribution", "standard deviation",
-        ],
-        "SYSTEMS": [
-            "systems thinking", "feedback loop", "feedback", "tipping point",
-            "oscillation", "overshoot", "stocks and flows", "emergence", "complexity",
-            "pareto", "ashby", "goodhart", "diminishing returns", "delay",
-            "leadership", "servant leadership", "situational leadership",
-            "emotional intelligence", "forrester",
-        ],
-        "PERSONALITY": [
-            "empathy", "interpersonal", "mediation", "therapy", "group dynamics",
-            "respect", "boundary", "calibrate", "risk gate",
-        ],
-        "BUILDSCI": [
-            "building science", "insulation", "hvac", "air barrier", "vapor barrier",
-            "moisture", "thermal", "enclosure", "ventilation", "infiltration",
-            "r-value", "blower door", "energy efficiency", "condensation",
-            "building envelope", "duct", "mechanical ventilation", "combustion",
-            "indoor air quality", "iaq", "heat loss", "heat gain", "air sealing",
-            "hrv", "erv", "radiant", "conduction", "convection", "latent heat",
-            "sensible heat", "dew point", "relative humidity",
-            "fiberglass", "attic", "crawlspace", "pest", "shell tightening",
-            "air leakage", "weatherization", "envelope", "rim joist", "slab",
-        ],
-    }
 
+def _load_engagement_config() -> dict:
+    """Load engagement.yaml. Hard-fails on missing/invalid file — there is no
+    sane default for engagement gating, and silently scoring everything to 0
+    would be worse than refusing to start."""
+    import yaml
+    if not _ENGAGEMENT_YAML.exists():
+        raise FileNotFoundError(
+            f"engagement.yaml not found at {_ENGAGEMENT_YAML}. "
+            "This file is required — it is the single source of truth for "
+            "engagement gating. See repo root for the canonical version."
+        )
+    with _ENGAGEMENT_YAML.open() as f:
+        cfg = yaml.safe_load(f)
+    required = {"thresholds", "scoring", "noise_tokens", "domains",
+                "question_starters", "directive_starters", "address_levels"}
+    missing = required - set(cfg.keys())
+    if missing:
+        raise ValueError(f"engagement.yaml missing required keys: {missing}")
+    return cfg
+
+
+_ENGAGEMENT_CFG = _load_engagement_config()
+
+# Threshold constants — read once at module load.
+ENGAGE_HARD_PASS = float(_ENGAGEMENT_CFG["thresholds"]["hard_pass"])
+ENGAGE_THRESHOLD = float(_ENGAGEMENT_CFG["thresholds"]["haiku_floor"])
+RECENCY_WINDOW_SECONDS = int(_ENGAGEMENT_CFG.get("recency_seconds", 300))
+
+# Address level cutoffs — passed downstream to enforce FUSED-CORE Budget Throttle.
+_ADDRESS_HIGH = float(_ENGAGEMENT_CFG["address_levels"]["high"])
+_ADDRESS_MODERATE = float(_ENGAGEMENT_CFG["address_levels"]["moderate"])
+
+# Scoring deltas.
+_SCORE_REPLY_TO_BOT = float(_ENGAGEMENT_CFG["scoring"]["reply_to_bot"])
+_SCORE_RECENCY = float(_ENGAGEMENT_CFG["scoring"]["recency_active"])
+_SCORE_DOMAIN = float(_ENGAGEMENT_CFG["scoring"]["domain_match"])
+_SCORE_DOMAIN_CTX = float(_ENGAGEMENT_CFG["scoring"]["domain_match_in_context"])
+_SCORE_CONVERSATIONAL = float(_ENGAGEMENT_CFG["scoring"]["conversational_in_thread"])
+SCORE_NAME_MENTIONED = float(_ENGAGEMENT_CFG["scoring"]["name_mentioned"])
+
+# Noise tokens — frozen set for O(1) lookup.
+_NOISE_TOKENS = frozenset(_ENGAGEMENT_CFG["noise_tokens"])
+
+# Conversational starters — preserve list ordering for startswith() checks.
+_QUESTION_STARTERS = tuple(_ENGAGEMENT_CFG["question_starters"])
+_DIRECTIVE_STARTERS = tuple(_ENGAGEMENT_CFG["directive_starters"])
+
+
+def _build_domain_pattern(domains: dict[str, list[str]]) -> tuple[re.Pattern, dict[str, str]]:
+    """Compile domain keywords into a single word-boundary regex.
+    Multi-word phrases sorted longest-first so they match before component words."""
     keyword_to_module: dict[str, str] = {}
-    for module_id, terms in _MODULE_TERMS.items():
+    for module_id, terms in domains.items():
         for term in terms:
-            keyword_to_module[term] = module_id
-
-    # Supplement from manifest module descriptions
-    try:
-        manifest_path = KNOWLEDGE_DIR / "MANIFEST.json"
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            for module in manifest.get("modules", []):
-                mod_id = module.get("id", "").upper()
-                desc = module.get("desc", "").lower()
-                words = [w.strip(",.():") for w in desc.split() if len(w) > 4]
-                for w in words:
-                    if w not in keyword_to_module:
-                        keyword_to_module[w] = mod_id
-    except Exception as e:
-        logger.warning("Failed to load manifest keywords: %s", e)
-
-    # Build a single compiled regex alternation. Multi-word phrases are sorted
-    # longest-first so they match before their component words (e.g. "feedback loop"
-    # before "feedback"). Word boundaries applied around each term.
+            keyword_to_module[term.lower()] = module_id.upper()
     sorted_kws = sorted(keyword_to_module.keys(), key=len, reverse=True)
     pattern_str = r"\b(?:" + "|".join(re.escape(k) for k in sorted_kws) + r")\b"
-    domain_pattern = re.compile(pattern_str, re.IGNORECASE)
-
-    return domain_pattern, keyword_to_module
+    return re.compile(pattern_str, re.IGNORECASE), keyword_to_module
 
 
-DOMAIN_PATTERN, KEYWORD_TO_MODULE = _load_domain_keywords()
+DOMAIN_PATTERN, KEYWORD_TO_MODULE = _build_domain_pattern(_ENGAGEMENT_CFG["domains"])
 
 
 @dataclass
 class EngageResult:
-    """Result from _score_message with score and matched domain modules."""
+    """Result from _score_message with score, matched domains, and address level."""
     score: float = 0.0
     domains: set[str] = field(default_factory=set)
+    address_level: str = "low"  # low | moderate | high — see FUSED-CORE Budget Throttle
 
 
-# Noise tokens that never warrant engagement on their own.
-_NOISE_TOKENS = frozenset({
-    "lol", "lmao", "haha", "hehe", "omg", "wtf", "brb", "gg", "oof",
-    "ok", "k", "yeah", "yep", "nah", "nope", "sure", "true", "same",
-    "nice", "rip", "wow", "based", "fr", "bet", "cope", "ratio",
-})
-
-# Conversational starters — built once at module load, not per call.
-_QUESTION_STARTERS = (
-    "tell me", "what ", "why ", "how ", "who ", "when ", "where ",
-    "do you", "can you", "would you", "could you", "are you",
-    "is it", "have you", "did you", "does it", "will you",
-)
-_DIRECTIVE_STARTERS = (
-    "operate", "respond", "explain", "describe", "show", "give",
-    "list", "help", "stop", "start", "run", "check", "look",
-    "find", "read", "write", "fix", "update", "act", "pretend",
-)
+def _classify_address(score: float, is_at_mention: bool) -> str:
+    """Map score → address level. @mention is always high regardless of score."""
+    if is_at_mention or score >= _ADDRESS_HIGH:
+        return "high"
+    if score >= _ADDRESS_MODERATE:
+        return "moderate"
+    return "low"
 
 
 def _score_message(
@@ -243,33 +264,30 @@ def _score_message(
     Score a message for engagement likelihood.
 
     Returns an EngageResult with:
-      score >= 1.0 : high confidence, engage
-      score >= 0.4 : soft signal, engage
-      score  < 0.4 : drop
-      domains: set of module IDs matched by keywords (e.g. {"BUILDSCI", "STATS"})
+      score >= ENGAGE_HARD_PASS : high confidence, engage without haiku
+      score >= ENGAGE_THRESHOLD : soft signal, escalate to haiku
+      score  < ENGAGE_THRESHOLD : drop
+      domains: set of module IDs matched by keywords
+      address_level: caller fills this via _classify_address after adding name boost
     """
     result = EngageResult()
     text_lower = text.lower()
     words = text.split()
     word_count = len(words)
 
-    # Early noise rejection: single-token messages that are never worth engaging.
+    # Early noise rejection: short messages composed entirely of noise tokens.
     if word_count <= 2 and all(w.lower().strip("?!.,") in _NOISE_TOKENS for w in words):
-        return result  # score=0.0, no domains
+        return result
 
-    # Direct reply to bot is a strong signal
     if is_reply_to_bot:
-        result.score += 1.0
+        result.score += _SCORE_REPLY_TO_BOT
 
-    # Recent thread participation lowers the bar — but only for messages with
-    # enough content to be plausibly relevant.
     last_spoke = _channel_last_spoke.get(channel_id, 0.0)
     recency_active = time.time() - last_spoke < RECENCY_WINDOW_SECONDS
     if recency_active and word_count >= 3:
-        result.score += 0.3
+        result.score += _SCORE_RECENCY
 
     # Domain keyword match via compiled regex — single pass, word-boundary aware.
-    # Collects ALL matching domains in one scan.
     domain_scored = False
     for m in DOMAIN_PATTERN.finditer(text_lower):
         kw = m.group(0).lower()
@@ -277,10 +295,10 @@ def _score_message(
         if module:
             result.domains.add(module)
             if not domain_scored:
-                result.score += 0.4
+                result.score += _SCORE_DOMAIN
                 domain_scored = True
 
-    # Domain keyword match in recent context — only if current message didn't match.
+    # Domain match in recent context — fallback only if current message didn't match.
     if not domain_scored and recent_context:
         context_text = " ".join(
             m.get("text", "") for m in recent_context[-5:] if m.get("has_keyword")
@@ -291,10 +309,9 @@ def _score_message(
             if module:
                 result.domains.add(module)
                 if not domain_scored:
-                    result.score += 0.3
+                    result.score += _SCORE_DOMAIN_CTX
                     domain_scored = True
 
-    # Conversational signal: question or directive in an active thread.
     if recency_active and word_count >= 3:
         is_conversational = (
             text_lower.endswith("?")
@@ -302,13 +319,9 @@ def _score_message(
             or any(text_lower.startswith(s) for s in _DIRECTIVE_STARTERS)
         )
         if is_conversational:
-            result.score += 0.2
+            result.score += _SCORE_CONVERSATIONAL
 
     return result
-
-
-ENGAGE_THRESHOLD = 0.4      # bottom of middle band — below this, hard drop
-ENGAGE_HARD_PASS = 0.9      # at or above this, skip haiku and engage directly
 
 
 def record_bot_spoke(channel_id: str) -> None:
@@ -370,6 +383,7 @@ class DiscordListener:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
+        intents.reactions = True  # admin feedback emote handler in on_raw_reaction_add
 
         client = discord.Client(intents=intents)
         self._client = client
@@ -434,8 +448,6 @@ class DiscordListener:
             mentioned = client.user and client.user.id in [m.id for m in message.mentions]
             name_mentioned = bool(_NAME_PATTERN.search(text))
 
-            matched_domains: set[str] = set()
-
             # ── Fetch reply reference once ────────────────────────────────────
             # If this message is a reply, fetch the referenced message a single
             # time here and reuse it for both reply-chain detection (engagement
@@ -452,6 +464,12 @@ class DiscordListener:
                     except Exception:
                         reply_ref = None
 
+            # Defaults for the DM path (no engagement gate runs in DMs).
+            # DMs are always treated as direct address — full tool budget.
+            address_level = "high"
+            matched_domains: set[str] = set()
+            final_score: float | None = None  # set in guild path; None in DMs
+
             if message.guild:
                 # ── Name-triggered path ───────────────────────────────────────
                 # Direct @mention: hard pass — the bot was explicitly addressed.
@@ -460,6 +478,13 @@ class DiscordListener:
                 if mentioned:
                     heuristic_pass = True
                     use_haiku = False
+                    # @mention is unconditionally high address regardless of score.
+                    address_level = "high"
+                    matched_domains = set()
+                    # Score not computed on @mention path; use sentinel so the
+                    # feedback log can distinguish "mention bypass" from
+                    # "scored 0" at audit time.
+                    final_score = None
                 else:
                     # ── Ambient path — reply-chain + heuristic scoring ────────
                     # Name-mentioned messages enter here and are scored normally.
@@ -475,11 +500,16 @@ class DiscordListener:
                         recent_context=context_snapshot,
                     )
                     # Name mention boosts score — sufficient signal that the message
-                    # is directed at the bot, but not a bypass.
+                    # is directed at the bot, but not a bypass. Boost magnitude
+                    # comes from engagement.yaml (SCORE_NAME_MENTIONED).
                     if name_mentioned:
-                        engage_result.score += 0.4
+                        engage_result.score += SCORE_NAME_MENTIONED
 
                     matched_domains = engage_result.domains
+                    address_level = _classify_address(
+                        engage_result.score, is_at_mention=False
+                    )
+                    final_score = engage_result.score
 
                     if engage_result.score >= ENGAGE_HARD_PASS:
                         heuristic_pass = True
@@ -495,10 +525,29 @@ class DiscordListener:
                 # Admin tier governs trust and permissions only, not engagement bypass.
 
                 # Haiku ambiguity classifier — middle band of ambient path only.
-                # On haiku fail, react with an emote rather than dropping silently.
+                # On haiku fail-LOUD: classifier API errors escalate any score
+                # >= 0.6 to engage anyway, and log to logs/haiku_failures.log so
+                # outages don't silently drop ambiguous messages (regression seen
+                # 2026-04-12 when API auth was misconfigured for ~1 minute).
                 if not heuristic_pass:
                     if use_haiku:
-                        engage = await _haiku_gatecheck(text, context_snapshot)
+                        haiku_result = await _haiku_gatecheck_with_reason(
+                            text, context_snapshot
+                        )
+                        engage = haiku_result["engage"]
+                        if haiku_result["reason"] == "error":
+                            _log_haiku_failure(
+                                channel_id, text, engage_result.score
+                            )
+                            # Fail-loud escalation: if score was already close to
+                            # the hard-pass band, treat the classifier outage as
+                            # "engage" rather than silently dropping.
+                            if engage_result.score >= 0.6:
+                                engage = True
+                                logger.warning(
+                                    "Haiku failed but score=%.2f — escalating to engage",
+                                    engage_result.score,
+                                )
                         if not engage:
                             await react_to_message(
                                 channel_id, str(message.id), "👀"
@@ -591,6 +640,8 @@ class DiscordListener:
                 context_messages=filtered_context,
                 is_direct_mention=is_direct_mention,
                 domain_hint=",".join(sorted(matched_domains)) if matched_domains else "",
+                address_level=address_level,
+                score=final_score,
             )
 
         @client.event
@@ -602,6 +653,46 @@ class DiscordListener:
         async def on_resumed() -> None:
             logger.info("Reconnected to Discord")
             self._ready.set()
+
+        @client.event
+        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+            """Admin-only feedback channel.
+
+            Filters: (1) reactor must be the configured admin, (2) emoji
+            must be in FEEDBACK_REACTIONS, (3) message must have been
+            posted by this bot. All three conditions silent-drop on miss.
+            Surviving events append a row to logs/feedback_events.jsonl.
+
+            Uses raw reactions so feedback works on bot messages from
+            sessions older than the discord.py message cache.
+            """
+            from brendbot.feedback import FEEDBACK_REACTIONS, log_feedback_event
+            cfg = get_config()
+            if str(payload.user_id) != cfg.admin_discord_id:
+                return
+            emoji_name = str(payload.emoji)
+            if emoji_name not in FEEDBACK_REACTIONS:
+                return
+            # Verify the reacted-to message was posted by the bot. fetch_message
+            # is required because raw events don't include message author.
+            try:
+                channel = client.get_channel(payload.channel_id) or await client.fetch_channel(payload.channel_id)
+                msg = await channel.fetch_message(payload.message_id)
+            except Exception as e:
+                logger.debug("reaction lookup failed for %s: %s", payload.message_id, e)
+                return
+            if not (client.user and msg.author.id == client.user.id):
+                return
+            log_feedback_event(
+                channel_id=str(payload.channel_id),
+                bot_message_id=str(payload.message_id),
+                emoji=emoji_name,
+                admin_id=str(payload.user_id),
+            )
+            logger.info(
+                "Feedback recorded: %s on %s by admin",
+                FEEDBACK_REACTIONS[emoji_name], payload.message_id,
+            )
 
         logger.info("Starting Discord bot...")
         try:

@@ -78,10 +78,17 @@ async def haiku_classify(payload: dict) -> dict:
         for m in recent[-5:]
     )
 
-    engagement_path = PROJECT_ROOT / "ENGAGEMENT.md"
-    if engagement_path.exists():
-        classifier_rules = engagement_path.read_text()
-    else:
+    # Classifier rules come from engagement.yaml's classifier_prompt block.
+    # Single source of truth: discord.py uses the same yaml for heuristic
+    # scoring and this function uses it for the LLM ambiguity gate.
+    # Hard-coded fallback only for the case where the yaml load itself
+    # failed at module init (which would have prevented startup anyway).
+    try:
+        from brendbot.discord import _ENGAGEMENT_CFG
+        classifier_rules = _ENGAGEMENT_CFG.get("classifier_prompt", "").strip()
+    except Exception:
+        classifier_rules = ""
+    if not classifier_rules:
         classifier_rules = (
             "Should brendbot respond? YES if directly addressed or domain question. "
             "NO if casual chat between others. Reply YES or NO only."
@@ -168,6 +175,10 @@ class Session:
         self._error_count = 0
         self.running = False
         self.current_sender_tier: str | None = None
+        # Address level for the current turn (low/moderate/high). Set by
+        # SessionPool.route_message before each inject. Read by
+        # _permission_check to enforce FUSED-CORE Budget Throttle caps.
+        self.current_address_level: str = "high"
         self._last_input_tokens: int = 0
         self._context_state: str = "normal"
         self._soft_warning_sent: bool = False
@@ -203,6 +214,18 @@ class Session:
         self._completed_turn_count: int = 0
         self._turn_modules_queried: set[str] = set()
         self._turn_kb_query_used: bool = False
+        # Turn metadata for feedback logging — set by SessionPool.route_message
+        # before each inject and read by _fire_on_text after send_message
+        # returns the bot_message_id.
+        self._turn_user_message_id: str = ""
+        self._turn_user_text: str = ""
+        self._turn_score: float | None = None
+        self._turn_domains: list[str] = []
+        # Serializes turn boundaries: ensures _fire_on_text + state reset
+        # for turn N completes before query() for turn N+1 dispatches.
+        # Fixes the duplicate `turn complete` race observed when two messages
+        # land while a result is still being handled.
+        self._turn_lock: asyncio.Lock = asyncio.Lock()
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -234,10 +257,54 @@ class Session:
         await self._queue.put(text)
 
     async def _fire_on_text(self, text: str) -> None:
-        try:
-            await self._on_text(self._chat_id, text)
-        except Exception as exc:
-            logger.error("[%s] on_text callback failed: %s", self.key, exc)
+        """Send a turn's response to Discord with feedback-log side effects.
+
+        Order: extract leading branch tag → strip from chat-bound text →
+        call on_text(chat_id, stripped_text) which returns the posted
+        message ID → log to bot_responses.jsonl → if there was a tag,
+        also log to branch_audit.jsonl.
+
+        Holds self._turn_lock for the entire send + log sequence so the
+        next query() in _run_loop cannot dispatch turn N+1 until turn N's
+        feedback writes have completed. This is the actual serialization
+        the duplicate `turn complete` race fix requires — wrapping
+        _client.query() alone in _run_loop is insufficient because
+        _fire_on_text is fire-and-forget from _receive_loop.
+
+        All log writes are best-effort; failures never break the chat path.
+        """
+        from brendbot.feedback import (
+            extract_branch_tag,
+            log_bot_response,
+            log_branch_audit,
+        )
+        async with self._turn_lock:
+            branch_tag, stripped = extract_branch_tag(text)
+            try:
+                bot_message_id = await self._on_text(self._chat_id, stripped)
+            except Exception as exc:
+                logger.error("[%s] on_text callback failed: %s", self.key, exc)
+                return
+            if not bot_message_id:
+                # Send failed or pre-ready dispatch — nothing to correlate against.
+                return
+            log_bot_response(
+                channel_id=self._chat_id,
+                bot_message_id=bot_message_id,
+                user_message_id=self._turn_user_message_id,
+                user_text=self._turn_user_text,
+                score=self._turn_score,
+                domains=self._turn_domains,
+                address_level=self.current_address_level,
+                branch_tag=branch_tag,
+            )
+            if branch_tag:
+                log_branch_audit(
+                    channel_id=self._chat_id,
+                    bot_message_id=bot_message_id,
+                    branch=branch_tag,
+                    response_text=stripped,
+                )
 
     def log_turn(self, role: str, text: str, max_chars: int = 800) -> None:
         self._turn_log.append({"role": role, "text": text[:max_chars]})
@@ -275,7 +342,8 @@ class Session:
                     continue
                 try:
                     assert self._client is not None
-                    await self._client.query(msg)
+                    async with self._turn_lock:
+                        await self._client.query(msg)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -394,8 +462,14 @@ class Session:
                     elif (self._last_input_tokens >= _CONTEXT_SOFT_WARNING
                           and not self._soft_warning_sent):
                         self._soft_warning_sent = True
+                        # Promote soft warning to threshold_hit so the receiver
+                        # loop fires _trigger_clean_restart() at end of this
+                        # turn — preempts the 400k mid-turn ambush by
+                        # restarting at ~320k while we still have headroom.
+                        if self._context_state == "normal":
+                            self._context_state = "threshold_hit"
                         logger.info(
-                            "[%s] context at %d tokens — soft warning threshold",
+                            "[%s] context at %d tokens — soft warning, preemptive restart queued",
                             self.key, self._last_input_tokens,
                         )
             logger.info(
@@ -593,6 +667,29 @@ class Session:
                 )
 
         self._tool_call_count += 1
+
+        # Address-level budget cap (FUSED-CORE Budget Throttle enforcement).
+        # Maps to the levels defined in engagement.yaml address_levels:
+        #   high     → full budget (_TOOL_CALL_BUDGET)
+        #   moderate → 3 tool calls per turn
+        #   low      → 0 tool calls (text-only response)
+        # The model is also told this in the <message> XML, but the model
+        # follows instructions inconsistently — this is the enforcement layer.
+        _ADDRESS_BUDGETS = {"high": _TOOL_CALL_BUDGET, "moderate": 3, "low": 0}
+        addr_cap = _ADDRESS_BUDGETS.get(self.current_address_level, _TOOL_CALL_BUDGET)
+        if self._tool_call_count > addr_cap:
+            logger.info(
+                "[%s] Address-level budget exceeded (%d/%d, level=%s) — blocking",
+                self.key, self._tool_call_count, addr_cap, self.current_address_level,
+            )
+            return PermissionResultDeny(
+                message=(
+                    f"Address level '{self.current_address_level}' caps tool calls at "
+                    f"{addr_cap} per turn ({self._tool_call_count} attempted). "
+                    "Stop tool use and respond with what is known."
+                )
+            )
+
         if self._tool_call_count > _TOOL_CALL_BUDGET:
             logger.warning(
                 "[%s] Tool call budget exceeded (%d/%d) — blocking",
@@ -653,6 +750,89 @@ class SessionPool:
         self._lock = asyncio.Lock()          # guards _sessions dict reads/writes
         self._creation_locks: dict[str, asyncio.Lock] = {}  # per-key; serialises _create()
 
+        # ── Static prompt-fragment cache ──────────────────────────────────
+        # SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, and the MANIFEST.json
+        # knowledge-index block were read from disk on every _create() call.
+        # That's 4 file reads per session spawn, and the manifest also
+        # parsed JSON every time. Cached here at pool init; refreshed via
+        # SIGHUP if the host process catches one (handler wired in main.py).
+        self._cached_soul = _load_template("SOUL.md")
+        self._cached_group_soul = _load_template("GROUP_SOUL.md")
+        self._cached_fused_core: str = ""
+        try:
+            fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
+            if fused_core_path.exists():
+                self._cached_fused_core = fused_core_path.read_text()
+        except Exception as exc:
+            logger.warning("FUSED-CORE.md cache load failed: %s", exc)
+        self._cached_kb_index_block: str = self._build_kb_index_block()
+
+    def _build_kb_index_block(self) -> str:
+        """Build the FUSED-CORE MODULES + KNOWLEDGE QUERY TOOL block once.
+        Returns empty string if MANIFEST.json missing or unreadable —
+        _create() handles the empty case by skipping the append."""
+        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
+        kb_query_path = SCRIPTS_DIR / "kb-query"
+        manifest_path = knowledge_dir / "MANIFEST.json"
+        if not manifest_path.exists():
+            return ""
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            load_order = manifest.get("load_order", [])
+            module_map = {m["id"]: m for m in manifest.get("modules", [])}
+            idx_lines = []
+            for module_id in load_order:
+                desc = module_map.get(module_id, {}).get("desc", "")
+                idx_lines.append(f"- {module_id}: {desc}")
+            if not idx_lines:
+                return ""
+            idx = "\n".join(idx_lines)
+            return (
+                "\n\n## FUSED-CORE MODULES\n"
+                f"{idx}\n\n"
+                "## KNOWLEDGE QUERY TOOL\n"
+                f"Use `{kb_query_path}` via Bash to query knowledge modules.\n"
+                f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
+                f"  {kb_query_path} defs <MODULE>          — list definitions\n"
+                f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
+                f"  {kb_query_path} thms <MODULE>          — core theorems\n"
+                f"  {kb_query_path} thms <MODULE> --extended — all theorems (incl. geometry etc.)\n"
+                f"  {kb_query_path} def <ID>               — look up one definition\n"
+                f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
+                f"  {kb_query_path} gates                  — governance gates\n"
+                f"  {kb_query_path} imgstyle <id|label>    — image style descriptor set\n"
+                f"  {kb_query_path} imgstyle list          — list all styles\n"
+                f"  {kb_query_path} imgfail <class>        — remediation for render failure\n"
+                f"  {kb_query_path} imgfail list           — list all failure classes\n"
+                f"  {kb_query_path} imglog recent [N]      — recent render outcomes\n"
+                "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
+                "Do not answer from training weights when a module is available.\n\n"
+                "## MODULE PRIORITY\n"
+                "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
+                "Extended theorems (geometry, spatial) are available via --extended flag\n"
+                "but cost more context. Only query extended when the question explicitly\n"
+                "involves spatial reasoning, geometry proofs, or dimensional analysis."
+            )
+        except Exception as exc:
+            logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
+            return ""
+
+    def refresh_cache(self) -> None:
+        """Re-read all cached prompt fragments. Wire to SIGHUP in main.py
+        so live edits to SOUL.md / FUSED-CORE.md / MANIFEST.json take
+        effect on the next _create() without a full process restart."""
+        self._cached_soul = _load_template("SOUL.md")
+        self._cached_group_soul = _load_template("GROUP_SOUL.md")
+        try:
+            fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
+            self._cached_fused_core = (
+                fused_core_path.read_text() if fused_core_path.exists() else ""
+            )
+        except Exception as exc:
+            logger.warning("FUSED-CORE.md refresh failed: %s", exc)
+        self._cached_kb_index_block = self._build_kb_index_block()
+        logger.info("SessionPool cache refreshed")
+
     async def route_message(
         self,
         platform: str,
@@ -668,6 +848,8 @@ class SessionPool:
         context_messages: list | None = None,
         is_direct_mention: bool = False,
         domain_hint: str = "",
+        address_level: str = "high",
+        score: float | None = None,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -725,16 +907,27 @@ class SessionPool:
             )
         type_attr = " type='group'" if is_group else ""
         domain_attr = f" domain_hint='{escape(domain_hint)}'" if domain_hint else ""
+        # address_level surfaces FUSED-CORE Budget Throttle to the model AND is
+        # used by _permission_check to cap the per-turn Bash budget below.
+        addr_attr = f" address_level='{escape(address_level)}'"
         wrapped = (
             f"{context_block}"
             f"<message platform='{platform}' sender='{sender_id}' "
             f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}"
-            f"{domain_attr}"
+            f"{domain_attr}{addr_attr}"
             f" context_tokens='{session._last_input_tokens}'>"
             f"{reply_block}\n{text}\n</message>"
         )
 
         session.current_sender_tier = tier
+        # Stash address level on the session so _permission_check can read it
+        # when enforcing per-turn tool budgets. Reset on every new turn.
+        session.current_address_level = address_level
+        # Stash turn metadata for feedback logging in _fire_on_text.
+        session._turn_user_message_id = message_id
+        session._turn_user_text = text
+        session._turn_score = score
+        session._turn_domains = sorted(domain_hint.split(",")) if domain_hint else []
         session.log_turn("user", text)
         session._tool_call_count = 0
         session._turn_modules_queried = set()
@@ -759,7 +952,9 @@ class SessionPool:
         kb_db_path = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 
         template_file = "GROUP_SOUL.md" if is_group else "SOUL.md"
-        template = _load_template(template_file)
+        # Read from SessionPool cache instead of hitting disk on every spawn.
+        # Refreshable via SessionPool.refresh_cache() (SIGHUP-wired in main.py).
+        template = self._cached_group_soul if is_group else self._cached_soul
         prompt = _render(template, {
             "bot_name": self._bot_name,
             "send_command": send_cmd,
@@ -769,58 +964,13 @@ class SessionPool:
             "platform_name": "Discord",
         })
 
-        # Append FUSED-CORE.md content to system prompt so it's always present
-        # without burning a conversation turn on an injection.
-        fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
-        if fused_core_path.exists():
-            try:
-                prompt += "\n\n" + fused_core_path.read_text()
-            except Exception as exc:
-                logger.warning("FUSED-CORE.md read failed: %s", exc)
+        # Append cached FUSED-CORE.md content (was a per-spawn disk read).
+        if self._cached_fused_core:
+            prompt += "\n\n" + self._cached_fused_core
 
-        # Append knowledge module index and kb-query instructions.
-        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
-        kb_query_path = SCRIPTS_DIR / "kb-query"
-        manifest_path = knowledge_dir / "MANIFEST.json"
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                load_order = manifest.get("load_order", [])
-                module_map = {m["id"]: m for m in manifest.get("modules", [])}
-                idx_lines = []
-                for module_id in load_order:
-                    desc = module_map.get(module_id, {}).get("desc", "")
-                    idx_lines.append(f"- {module_id}: {desc}")
-                if idx_lines:
-                    idx = "\n".join(idx_lines)
-                    prompt += (
-                        "\n\n## FUSED-CORE MODULES\n"
-                        f"{idx}\n\n"
-                        "## KNOWLEDGE QUERY TOOL\n"
-                        f"Use `{kb_query_path}` via Bash to query knowledge modules.\n"
-                        f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
-                        f"  {kb_query_path} defs <MODULE>          — list definitions\n"
-                        f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
-                        f"  {kb_query_path} thms <MODULE>          — core theorems\n"
-                        f"  {kb_query_path} thms <MODULE> --extended — all theorems (incl. geometry etc.)\n"
-                        f"  {kb_query_path} def <ID>               — look up one definition\n"
-                        f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
-                        f"  {kb_query_path} gates                  — governance gates\n"
-                        f"  {kb_query_path} imgstyle <id|label>    — image style descriptor set\n"
-                        f"  {kb_query_path} imgstyle list          — list all styles\n"
-                        f"  {kb_query_path} imgfail <class>        — remediation for render failure\n"
-                        f"  {kb_query_path} imgfail list           — list all failure classes\n"
-                        f"  {kb_query_path} imglog recent [N]      — recent render outcomes\n"
-                        "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
-                        "Do not answer from training weights when a module is available.\n\n"
-                        "## MODULE PRIORITY\n"
-                        "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
-                        "Extended theorems (geometry, spatial) are available via --extended flag\n"
-                        "but cost more context. Only query extended when the question explicitly\n"
-                        "involves spatial reasoning, geometry proofs, or dimensional analysis."
-                    )
-            except Exception as exc:
-                logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
+        # Append cached knowledge index block (was a per-spawn JSON parse).
+        if self._cached_kb_index_block:
+            prompt += self._cached_kb_index_block
 
         claude_md.write_text(prompt)
 

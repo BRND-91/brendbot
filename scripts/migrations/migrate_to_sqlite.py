@@ -2,9 +2,9 @@
 Migrate FUSED-CORE JSON knowledge modules to SQLite.
 
 Usage (from project root):
-    python brendbot/knowledge/migrate_to_sqlite.py
+    python scripts/migrations/migrate_to_sqlite.py
 
-Creates knowledge.db in the same directory. Each module's defs, facts, and
+Creates knowledge.db inside brendbot/knowledge/. Each module's defs, facts, and
 theorems become rows in normalized tables. A single kb-query SELECT returns
 ~200 bytes instead of reading an 11KB JSON file into context (55x improvement).
 """
@@ -14,7 +14,10 @@ import re
 import sqlite3
 from pathlib import Path
 
-KNOWLEDGE_DIR = Path(__file__).resolve().parent
+# Script lives in scripts/migrations/; knowledge data lives in brendbot/knowledge/.
+# Walk up two levels from this file to project root, then into the package.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+KNOWLEDGE_DIR = PROJECT_ROOT / "brendbot" / "knowledge"
 DB_PATH = KNOWLEDGE_DIR / "knowledge.db"
 
 DATA_MODULES = ["LOGIC", "STATS", "SYSTEMS", "PERSONALITY", "BUILDSCI", "IMAGEGEN"]

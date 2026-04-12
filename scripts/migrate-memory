@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""
+Migrate root-level MEMORY.md ## PERSISTENT entries into the SQLite
+memory_fragments table (source='persistent', tag from [tag] prefix).
+
+Run once from the project root after any MEMORY.md update:
+    python scripts/migrate-memory
+
+Safe to re-run — existing entries with the same source/tag/content are skipped.
+New entries are appended. Entries removed from MEMORY.md are NOT deleted from
+the DB; remove them manually via sqlite3 if needed.
+"""
+
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MEMORY_MD = PROJECT_ROOT / "MEMORY.md"
+DB_PATH = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
+
+TAG_PATTERN = re.compile(r"^\[([^\]]+)\]\s+(.+)$")
+
+
+def main() -> None:
+    if not MEMORY_MD.exists():
+        print(f"No MEMORY.md found at {MEMORY_MD}")
+        sys.exit(0)
+
+    if not DB_PATH.exists():
+        print(f"knowledge.db not found at {DB_PATH}. Run migrate_to_sqlite.py first.")
+        sys.exit(1)
+
+    text = MEMORY_MD.read_text(encoding="utf-8")
+
+    # Only parse lines inside ## PERSISTENT section
+    in_persistent = False
+    entries: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        if line.strip() == "## PERSISTENT":
+            in_persistent = True
+            continue
+        if in_persistent:
+            if line.startswith("## "):
+                break  # next section — stop
+            m = TAG_PATTERN.match(line.strip())
+            if m:
+                entries.append((m.group(1), m.group(2).strip()))
+
+    if not entries:
+        print("No ## PERSISTENT entries found in MEMORY.md")
+        sys.exit(0)
+
+    conn = sqlite3.connect(str(DB_PATH))
+
+    # Ensure memory_fragments table exists (may be missing on older DBs)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_fragments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            content TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_fragments (source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_tag ON memory_fragments (tag)")
+
+    inserted = 0
+    skipped = 0
+    for tag, content in entries:
+        existing = conn.execute(
+            "SELECT id FROM memory_fragments WHERE source=? AND tag=? AND content=?",
+            ("persistent", tag, content),
+        ).fetchone()
+        if existing:
+            skipped += 1
+        else:
+            conn.execute(
+                "INSERT INTO memory_fragments (source, tag, content) VALUES (?, ?, ?)",
+                ("persistent", tag, content),
+            )
+            inserted += 1
+
+    conn.commit()
+    conn.close()
+    print(f"Done. {inserted} entries inserted, {skipped} already present.")
+    print(f"Query with: kb-query memory persistent")
+
+
+if __name__ == "__main__":
+    main()

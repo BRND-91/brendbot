@@ -6,6 +6,10 @@
 """Send a Discord message to a channel via the Discord REST API.
 
 Usage: send-discord <channel_id> <message> [--reply-to <message_id>] [--file <path>]
+                                            [--thread-from <message_id>] [--thread-name <name>]
+
+  --thread-from <message_id>  Create a thread on that message and post content there.
+  --thread-name <name>        Name for the created thread (default: "Details").
 
 Reads DISCORD_TOKEN from environment or .env file.
 """
@@ -51,6 +55,18 @@ def main() -> None:
         if idx + 1 < len(sys.argv):
             file_path = sys.argv[idx + 1]
 
+    thread_from = None
+    if "--thread-from" in sys.argv:
+        idx = sys.argv.index("--thread-from")
+        if idx + 1 < len(sys.argv):
+            thread_from = sys.argv[idx + 1]
+
+    thread_name = "Details"
+    if "--thread-name" in sys.argv:
+        idx = sys.argv.index("--thread-name")
+        if idx + 1 < len(sys.argv):
+            thread_name = sys.argv[idx + 1]
+
     # Fix escaped exclamation marks
     text = text.replace("\\!", "!")
 
@@ -76,6 +92,24 @@ def main() -> None:
         "Authorization": f"Bot {token}",
         "Content-Type": "application/json",
     }
+
+    # If --thread-from: create a thread on that message, then post content into it
+    if thread_from:
+        thread_resp = httpx.post(
+            f"{base_url}/messages/{thread_from}/threads",
+            json={"name": thread_name, "auto_archive_duration": 1440},
+            headers=headers,
+            timeout=15,
+        )
+        thread_resp.raise_for_status()
+        thread_channel_id = thread_resp.json()["id"]
+        thread_url = f"https://discord.com/api/v10/channels/{thread_channel_id}"
+        chunks = _split(text, 2000)
+        for chunk in chunks:
+            r = httpx.post(f"{thread_url}/messages", json={"content": chunk}, headers=headers, timeout=30)
+            r.raise_for_status()
+        print(f"Sent to thread {thread_channel_id} (from message {thread_from})")
+        return
 
     # Typing indicator
     try:

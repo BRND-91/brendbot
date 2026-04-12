@@ -1,10 +1,13 @@
 {
   "id": "IMAGEGEN",
-  "version": "v1.4-dense",
+  "version": "v2.0-consolidated",
 
   "default_framing": {
-    "ar": "16:9",
-    "never_use": ["9:16", "3:4"],
+    "ar_portrait": "9:16",
+    "ar_square": "1:1",
+    "ar_landscape": "16:9",
+    "default": "9:16",
+    "note": "16:9 produces white bars — avoid unless subject explicitly requires landscape",
     "flag": "--aspect-ratio"
   },
 
@@ -54,8 +57,7 @@
   },
 
   "photorealism_bias": {
-    "rule": "Style label alone insufficient. Each style needs 2-3 structural override terms.",
-    "override_terms": ["non-photographic", "painted canvas", "visible brushwork", "no photographic rendering", "illustration throughout"],
+    "rule": "Style label alone insufficient. Each style needs structural override terms — see style_library entries.",
     "named_landmark_effect": "Named landmarks pull photorealistic rendering independent of style. Use generic desc instead: 'two enormous skyscrapers, one with fire and smoke'.",
     "ip_character_effect": "Named IP characters carry canonical visual style as implicit hard constraint competing with style directives."
   },
@@ -81,60 +83,78 @@
   },
 
   "style_library": {
+    "_note": "req_overrides split into core (3 terms max, always include) and supplemental (add only if constraint budget allows). Exceeding core is a conscious tradeoff against element_dropping.",
     "junji_ito": {
-      "req_overrides": ["manga linework", "ink crosshatching", "non-photographic", "Junji Ito"],
-      "fail_modes": ["Blends to photorealism without all 4 terms", "Photorealistic faces if 'manga linework' omitted"],
+      "core": ["manga linework", "ink crosshatching", "non-photographic"],
+      "supplemental": ["Junji Ito", "dense stippling"],
+      "fail_modes": ["Blends to photorealism without all core terms", "Photorealistic faces if 'manga linework' omitted"],
       "tier": "ultra final / standard iteration",
       "note": "Full clean output not yet achieved."
     },
     "baroque": {
-      "req_overrides": ["oil painting", "visible brushwork", "chiaroscuro", "painterly", "non-photographic"],
-      "fail_modes": ["Too photorealistic without 'visible brushwork'+'painterly' both present", "Drifts goth/dark medieval without explicit palette."],
+      "core": ["oil painting", "visible brushwork", "non-photographic"],
+      "supplemental": ["chiaroscuro", "painterly"],
+      "fail_modes": ["Too photorealistic without core terms both present", "Drifts goth/dark medieval without explicit palette"],
       "tier": "standard"
     },
     "ukiyo_e": {
-      "req_overrides": ["ukiyo-e woodblock print", "flat color planes", "bold outlines", "no gradient shading", "no photorealistic depth"],
-      "fail_modes": ["Paper grain overlay added uninstructed — collapses form", "Gradient shading bleeds without explicit prohibition", "Named IP overrides woodblock style"],
+      "core": ["ukiyo-e woodblock print", "flat color planes", "no gradient shading"],
+      "supplemental": ["bold outlines", "no photorealistic depth"],
+      "fail_modes": ["Paper grain overlay added uninstructed — collapses form", "Named IP overrides woodblock style"],
       "tier": "standard"
     },
     "psychedelic": {
-      "req_overrides": ["supersaturated colors", "psychedelic color palette", "color bleed", "vivid hallucinogenic"],
-      "fail_modes": ["'acid trip' alone → too abstract, loses scene coherence", "Figures dissolve under colorization+form budget competition"],
+      "core": ["supersaturated colors", "vivid hallucinogenic", "coherent figures"],
+      "supplemental": ["psychedelic color palette", "color bleed"],
       "mitigation": "'vibrant psychedelic colorization OVER coherent figures and scene' — lock forms first, colorization secondary.",
+      "fail_modes": ["'acid trip' alone → too abstract, loses scene coherence", "Figures dissolve under colorization+form budget competition"],
       "tier": "standard"
     },
-    "uncanny_valley_playful": {
-      "req_overrides": ["uncanny valley", "almost-correct anatomy", "deliberately off proportions", "playful"],
-      "fail_modes": ["Defaults to full horror OR full cute — balance is unstable. Specify both attributes explicitly."],
+    "art_deco": {
+      "core": ["Art Deco", "geometric ornamental", "non-photographic"],
+      "supplemental": ["gold and black palette", "angular symmetry", "streamlined forms", "decorative motifs"],
+      "fail_modes": [],
       "tier": "standard",
-      "note": "Not yet achieved cleanly."
+      "note": "Not yet tested directly — fail modes unconfirmed."
+    },
+    "uncanny_valley_playful": {
+      "core": ["uncanny valley", "almost-correct anatomy", "playful"],
+      "supplemental": ["deliberately off proportions"],
+      "fail_modes": ["Defaults to full horror OR full cute — specify both attributes explicitly"],
+      "tier": "standard",
+      "note": "Not yet tested directly."
     }
   },
 
   "prompt_templates": {
+    "_note": "Style terms removed from template bodies. Each template carries a style_ref pointing to the relevant style_library entry. Pull core terms from there — do not re-inline them.",
     "memorial_poster": {
+      "style_ref": "style_library[chosen_style].core",
       "use": "Character + companion beside landmark event.",
-      "template": "[Style] memorial tribute poster. [CHARACTER DESC], [defining visual]. Stands beside [COMPANION DESC]. [GESTURE — arm on shoulder preferred over carry]. [LANDMARK generic desc], [environmental detail]. [Style] illustration style throughout, [structural style rules], no photographic rendering, no text, no calligraphy.",
-      "note": "'Throughout' is load-bearing — forces style consistency across scene layers."
+      "template": "[Style] memorial tribute poster. [CHARACTER DESC], [defining visual]. Stands beside [COMPANION DESC]. [GESTURE — arm on shoulder preferred over carry]. [LANDMARK generic desc], [environmental detail]. No photographic rendering. No text, no calligraphy.",
+      "note": "Add style core terms from style_library. 'Throughout' is load-bearing — forces style consistency across scene layers."
     },
     "figure_plus_scene": {
+      "style_ref": "style_library[chosen_style].core",
       "use": "Single figure, complex background, style maintained.",
-      "template": "[Art style]. [FIGURE: gender, build, hair, expression, clothing — no IP name]. [POSE — avoid contact]. [BACKGROUND: generic, not named]. [Style structural terms]. No photographic rendering. No text."
+      "template": "[FIGURE: gender, build, hair, expression, clothing — no IP name]. [POSE — avoid contact]. [BACKGROUND: generic, not named]. No photographic rendering. No text."
     },
     "horror_manga": {
+      "style_ref": "style_library.junji_ito.core",
       "use": "Junji Ito horror scene.",
-      "template": "Junji Ito manga style. Black and white manga linework, ink crosshatching, dense stippling, non-photographic. [SCENE: figure + setting]. Body horror: [specific distortion — spirals, eye multiplication, elongation]. Stark black ink on white ground. No color. No photorealistic rendering.",
-      "note": "All 4 required override terms required. Ultra tier for final."
+      "template": "[SCENE: figure + setting]. Body horror: [specific distortion — spirals, eye multiplication, elongation]. Stark black ink on white ground. No color. No photorealistic rendering.",
+      "note": "All junji_ito core terms required. Ultra tier for final."
     },
     "multi_element_anchored": {
+      "style_ref": "style_library[chosen_style].core",
       "use": "Scene with 3+ critical elements.",
-      "template": "PRIMARY SUBJECT: [element — ALL CAPS]. BACKGROUND: [CRITICAL ARCHITECTURE — ALL CAPS]. MIDGROUND: [secondary figures]. FOREGROUND: [detail]. [Style]. [Structural terms]. No photographic rendering. No text.",
+      "template": "PRIMARY SUBJECT: [element — ALL CAPS]. BACKGROUND: [CRITICAL ARCHITECTURE — ALL CAPS]. MIDGROUND: [secondary figures]. FOREGROUND: [detail]. No photographic rendering. No text.",
       "note": "ALL-CAPS reduces element dropping. Max 2 hard constraints per layer."
     }
   },
 
   "active_gaps": [
-    "Junji Ito clean output not yet achieved — refine override term stack with ultra tier",
+    "Junji Ito clean output not yet achieved — refine core term stack with ultra tier",
     "Psychedelic colorization over coherent forms — exact prompt not confirmed",
     "Uncanny valley / playful register — not yet tested directly",
     "Named landmark photorealism pull — no reliable workaround beyond generic description",

@@ -49,10 +49,6 @@ try:
 except (ImportError, AttributeError):
     pass
 
-# FUSED-CORE knowledge loader removed — knowledge access now via SQLite (kb-query).
-# The old loader baked all module content into CLAUDE.md; the new approach uses
-# targeted queries that return ~200 bytes instead of 11KB per module.
-
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -60,16 +56,21 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIPTS_DIR = PROJECT_ROOT / "transcripts"
 
 # ---------------------------------------------------------------------------
-# Haiku ambiguity classifier (local heuristic — no API call)
+# Haiku ambiguity classifier — direct Anthropic API (no subprocess)
 # ---------------------------------------------------------------------------
 
 
 async def haiku_classify(payload: dict) -> dict:
     """
-    Second-pass engagement classifier via Claude CLI (OAuth, no API key charge).
+    Engagement classifier via direct Anthropic API call.
+
+    Uses claude-haiku-4-5 with max_tokens=1 for a YES/NO decision.
+    No subprocess spawned — far lower latency and overhead than the CLI path.
 
     Returns {"engage": bool, "reason": str}.
     """
+    import anthropic
+
     text = payload.get("message", "")
     recent = payload.get("recent_context", [])
     context_lines = "\n".join(
@@ -92,19 +93,19 @@ async def haiku_classify(payload: dict) -> dict:
         f"New message: {text}\n"
         "Reply YES or NO only."
     )
+
     try:
-        proc = await asyncio.subprocess.create_subprocess_exec(
-            "claude", "-m", "claude-haiku-4-5", "-p", prompt,
-            "--max-turns", "1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        client = anthropic.AsyncAnthropic()
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": prompt}],
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        answer = stdout.decode().strip().upper()
-        engage = "YES" in answer[:10]
-        return {"engage": engage, "reason": f"haiku:{answer[:20]}"}
+        answer = response.content[0].text.strip().upper() if response.content else "NO"
+        engage = answer.startswith("Y")
+        return {"engage": engage, "reason": f"api:{answer[:4]}"}
     except Exception as e:
-        logger.warning("haiku_classify error: %s", e)
+        logger.warning("haiku_classify API error: %s", e)
         return {"engage": False, "reason": "error"}
 
 
@@ -128,25 +129,18 @@ def _render(template: str, variables: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 # Hard restart when input tokens exceed this value.
-# 400_000 = 40% of Claude Sonnet's 1M context window — fires before
-# "lost in the middle" degradation degrades response quality.
 _CONTEXT_REFRESH_THRESHOLD = 400_000
 
-# Soft warning threshold — bot is told to stop reading modules and work
-# from what's already in context.
+# Soft warning threshold.
 _CONTEXT_SOFT_WARNING = 320_000
 
 # Max turns to retain in the rolling turn log.
-# At refresh, the last _MAX_TURN_LOG turns are written to CONTEXT_SUMMARY.md
-# so they survive ice picks and session restarts.
 _MAX_TURN_LOG = 30
 
 # Hard cap on Bash calls within a single user-message turn.
-# Prevents runaway tool loops from spiking context into restart territory.
 _TOOL_CALL_BUDGET = 8
 
-# Write a rolling checkpoint every N completed turns so manual ice picks
-# don't wipe session context. At 5 turns × ~800 chars each = ~4KB max.
+# Write a rolling checkpoint every N completed turns.
 _CHECKPOINT_INTERVAL = 5
 
 
@@ -166,8 +160,8 @@ class Session:
         self.tier = tier
         self.cwd = cwd
         self._model = model
-        self._on_text = on_text  # async callable(chat_id, text) or None
-        self._chat_id = chat_id  # Discord channel/DM ID for on_text routing
+        self._on_text = on_text
+        self._chat_id = chat_id
         self._client: Optional[ClaudeSDKClient] = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
@@ -175,37 +169,20 @@ class Session:
         self.running = False
         self.current_sender_tier: str | None = None
         self._last_input_tokens: int = 0
-        # Context refresh state machine.
-        # "normal"         → no refresh needed
-        # "threshold_hit"  → threshold exceeded; raw log written, restart triggered
-        # "restarting"     → restart triggered; terminal for this session instance
         self._context_state: str = "normal"
-        self._soft_warning_sent: bool = False  # True after 80K warning injected
-        self._on_needs_restart: Optional[Any] = None  # async callable() — set by SessionPool
-        # Reaction tracking — set per turn, cleared on ResultMessage
-        self._react_fn: Optional[Any] = None   # async callable(channel_id, msg_id, emoji)
+        self._soft_warning_sent: bool = False
+        self._on_needs_restart: Optional[Any] = None
+        self._react_fn: Optional[Any] = None
         self._react_channel: str = ""
         self._react_msg_id: str = ""
-        # Phase-based reaction (direct mentions only, fires once per turn):
-        # 👁️  immediate on message receipt (seen)
-        # 🧠  first user-facing tool call (working)
-        # ✅  ResultMessage after any user-facing work (done)
-        # Housekeeping-only turns: just 👁️, no further emoji
         self._react_phase: int = 0
-        # Housekeeping path fragments — Read/Grep/Glob on these = no emoji
         self._HOUSEKEEPING_PATH_FRAGMENTS = frozenset({
             "session.py", "discord.py", "__init__.py",
             "CLAUDE.md", "MEMORY.md", "ai-image-shortfalls.md",
             "CONTEXT_SUMMARY.md",
         })
-        # Auto-reply buffering: collect text blocks during a turn, send on
-        # ResultMessage only if send-discord was not called explicitly.
-        # This prevents internal reasoning ("no response warranted") from
-        # leaking to Discord. The bot must produce text to reply — but only
-        # intentional responses reach the channel.
         self._turn_text_buffer: list[str] = []
         self._turn_used_send_discord: bool = False
-        # Knowledge module → reaction emoji mapping
         self._MODULE_EMOTES: dict[str, str] = {
             "LOGIC":       "🔣",
             "STATS":       "📊",
@@ -215,25 +192,14 @@ class Session:
             "GOVERNANCE":  "⚖️",
             "IMAGEGEN":    "🎨",
         }
-        self._NEUTRAL_EMOTE = "⬛"   # shown when >3 modules are loaded
+        self._NEUTRAL_EMOTE = "⬛"
         self._MAX_MODULE_EMOTES = 3
-        # Per-turn reaction state
-        self._unreact_fn: Optional[Any] = None  # async callable(channel_id, msg_id, emoji)
+        self._unreact_fn: Optional[Any] = None
         self._active_reactions: set[str] = set()
         self._module_emote_count: int = 0
-        # Rolling turn log: list of {"role": str, "text": str} dicts.
-        # Capped at _MAX_TURN_LOG entries. Written to CONTEXT_SUMMARY.md on
-        # MEMORY refresh so turns survive ice picks and session restarts.
         self._turn_log: list[dict] = []
-        # Per-turn Bash call budget. Reset on each incoming user message.
-        # Prevents runaway tool loops from ballooning context.
         self._tool_call_count: int = 0
-        # Completed turn counter — drives rolling checkpoint writes.
         self._completed_turn_count: int = 0
-        # ── P2: Gate compliance tracking ──────────────────────────────────
-        # Per-turn tracking of which modules were queried and whether
-        # domain grounding was active. Written into checkpoint entries
-        # so gate compliance is empirically observable.
         self._turn_modules_queried: set[str] = set()
         self._turn_kb_query_used: bool = False
 
@@ -267,14 +233,12 @@ class Session:
         await self._queue.put(text)
 
     async def _fire_on_text(self, text: str) -> None:
-        """Send text to Discord via the on_text callback. Fire-and-forget."""
         try:
             await self._on_text(self._chat_id, text)
         except Exception as exc:
             logger.error("[%s] on_text callback failed: %s", self.key, exc)
 
     def log_turn(self, role: str, text: str, max_chars: int = 800) -> None:
-        """Append a turn to the rolling log. Truncates long turns. Trims to _MAX_TURN_LOG."""
         self._turn_log.append({"role": role, "text": text[:max_chars]})
         if len(self._turn_log) > _MAX_TURN_LOG:
             self._turn_log = self._turn_log[-_MAX_TURN_LOG:]
@@ -288,9 +252,6 @@ class Session:
         try:
             transport = getattr(self._client, "_transport", None)
             if transport and hasattr(transport, "close"):
-                # Let the SDK handle graceful shutdown → SIGTERM → SIGKILL.
-                # Do NOT manually call process.terminate() first — that races
-                # with the message reader and produces spurious exit-143 errors.
                 close_result = transport.close()
                 if asyncio.iscoroutine(close_result):
                     await close_result
@@ -310,7 +271,6 @@ class Session:
                 except asyncio.TimeoutError:
                     continue
                 if self._context_state == "restarting":
-                    # Session is about to be replaced — drop all queued messages.
                     continue
                 try:
                     assert self._client is not None
@@ -338,8 +298,6 @@ class Session:
         try:
             assert self._client is not None
             async for message in self._client.receive_messages():
-                # Capture state before _handle() to drive context refresh transitions below.
-                prior_context_state = self._context_state
                 try:
                     self._handle(message)
                 except Exception as e:
@@ -350,13 +308,10 @@ class Session:
                     if self._completed_turn_count == 1 or self._completed_turn_count % _CHECKPOINT_INTERVAL == 0:
                         self._write_checkpoint()
                     if self._context_state == "threshold_hit":
-                        # Threshold exceeded — write raw log and restart immediately.
                         await self._trigger_clean_restart()
         except asyncio.CancelledError:
             pass
         except ProcessError as e:
-            # SIGTERM (143) and SIGKILL (137) are expected exit codes from our
-            # own shutdown path — not real crashes. Log at debug, not error.
             if getattr(e, "exit_code", None) in (137, 143):
                 logger.debug("Session %s subprocess exited via signal (exit %d) — clean shutdown", self.key, e.exit_code)
             else:
@@ -370,8 +325,6 @@ class Session:
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, ThinkingBlock):
-                    # Externalize thinking to a persistent log file so reasoning
-                    # is visible outside the subprocess context.
                     try:
                         import datetime
                         thoughts_path = Path(self.cwd) / "thoughts.log"
@@ -380,27 +333,21 @@ class Session:
                             f.write(f"\n--- [{ts}] turn {self._completed_turn_count} ---\n")
                             f.write(block.thinking)
                             f.write("\n")
-                        logger.debug("[%s] thinking block written to thoughts.log", self.key)
                     except Exception as exc:
                         logger.warning("[%s] thoughts.log write failed: %s", self.key, exc)
                 elif isinstance(block, TextBlock):
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
-                    # Buffer text for auto-route on turn completion.
-                    # Only sends if send-discord was not called explicitly.
                     if block.text.strip():
                         self._turn_text_buffer.append(block.text)
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
-                    # Track if bot explicitly used send-discord this turn.
                     if block.name == "Bash":
                         tool_cmd = (block.input or {}).get("command", "")
                         if "send-discord" in tool_cmd:
                             self._turn_used_send_discord = True
-                        # P2: Track kb-query usage and which modules were queried.
                         if "kb-query" in tool_cmd:
                             self._turn_kb_query_used = True
-                            # Extract module from commands like: kb-query defs BUILDSCI
                             import re as _re
                             _mod_match = _re.search(
                                 r'kb-query\s+(?:defs|facts|thms|topics|xlinks)\s+(\w+)',
@@ -409,9 +356,6 @@ class Session:
                             if _mod_match:
                                 self._turn_modules_queried.add(_mod_match.group(1).upper())
         elif isinstance(message, ResultMessage):
-            # Auto-route buffered text to Discord if bot didn't use send-discord.
-            # This keeps internal reasoning ("no response warranted") in console
-            # while still auto-delivering intentional replies.
             if (self._turn_text_buffer
                     and not self._turn_used_send_discord
                     and self._on_text
@@ -422,9 +366,6 @@ class Session:
             self._turn_used_send_discord = False
 
             cost = f" (${message.total_cost_usd:.4f})" if message.total_cost_usd else ""
-            # Extract full context size from usage metadata.
-            # input_tokens alone is only the non-cached portion — real context size
-            # requires summing all three: input + cache_read + cache_creation.
             usage = message.usage or {}
             if isinstance(usage, dict) and usage:
                 input_tokens = usage.get("input_tokens", 0) or 0
@@ -451,7 +392,6 @@ class Session:
                 "[%s] turn complete%s (context_tokens=%d)",
                 self.key, cost, self._last_input_tokens,
             )
-            # Write token status file so the bot can read its own context usage.
             try:
                 import pathlib
                 status_path = pathlib.Path(self.cwd) / "context_status.txt"
@@ -459,7 +399,6 @@ class Session:
                 status_path.write_text(f"{self._last_input_tokens} {pct}\n")
             except Exception:
                 pass
-            # Clear all reactions from this turn (clean slate on completion)
             if self._react_msg_id and self._active_reactions:
                 reactions_to_clear = set(self._active_reactions)
                 unreact_fn = self._unreact_fn
@@ -473,20 +412,17 @@ class Session:
                             except Exception as e:
                                 logger.debug("Unreaction cleanup error %s: %s", emoji, e)
                 asyncio.create_task(_do_clear())
-            # Clear turn state
             self._react_phase = 0
             self._react_msg_id = ""
             self._active_reactions = set()
             self._module_emote_count = 0
 
-            # ── P2: Snapshot gate compliance into last assistant turn ──
             if self._turn_log:
                 last = self._turn_log[-1]
                 if last.get("role") == "assistant":
                     if self._turn_modules_queried:
                         last["kb_modules"] = sorted(self._turn_modules_queried)
                     last["kb_grounded"] = self._turn_kb_query_used
-            # Context refresh state transition handled in _receive_loop after _handle() returns.
 
     def set_reaction_target(
         self,
@@ -495,7 +431,6 @@ class Session:
         channel_id: str,
         message_id: str,
     ) -> None:
-        """Register the Discord message to react to for the upcoming turn."""
         self._react_fn = react_fn
         self._unreact_fn = unreact_fn
         self._react_channel = channel_id
@@ -505,7 +440,6 @@ class Session:
         self._module_emote_count = 0
 
     async def _react(self, emoji: str) -> None:
-        """Fire a single reaction if target is set, tracking it in _active_reactions."""
         if self._react_fn and self._react_channel and self._react_msg_id:
             try:
                 await self._react_fn(self._react_channel, self._react_msg_id, emoji)
@@ -514,7 +448,6 @@ class Session:
                 logger.debug("Reaction error: %s", e)
 
     async def _unreact(self, emoji: str) -> None:
-        """Remove a reaction if unreact_fn is set."""
         if self._unreact_fn and self._react_channel and self._react_msg_id:
             try:
                 await self._unreact_fn(self._react_channel, self._react_msg_id, emoji)
@@ -523,11 +456,8 @@ class Session:
                 logger.debug("Unreaction error: %s", e)
 
     def _is_housekeeping_tool_call(self, tool_name: str, tool_input: dict) -> bool:
-        """Return True if this tool call is internal housekeeping (suppress progress emoji)."""
-        # These tools are always user-facing
         if tool_name in ("Bash", "Write", "Edit", "WebSearch", "WebFetch", "NotebookEdit"):
             return False
-        # Read/Grep/Glob: housekeeping if path targets own config/source files
         path = (
             tool_input.get("file_path", "")
             or tool_input.get("path", "")
@@ -537,24 +467,13 @@ class Session:
         return any(frag in path for frag in self._HOUSEKEEPING_PATH_FRAGMENTS)
 
     async def _advance_reaction_phase(self, tool_name: str, tool_input: dict) -> None:
-        """Update reactions based on tool type.
-
-        Reaction lifecycle (direct mentions only):
-          👁️  immediate at message receipt (fires in route_message)
-          Module emotes (🔣📊⚙️🫀🏗️⚖️🎨) — up to _MAX_MODULE_EMOTES stacked
-          ⬛  if >3 distinct modules loaded (replaces all module emotes)
-          🧠  non-module user-facing tool work
-          On turn complete: all reactions removed (clean slate)
-          Housekeeping-only turns: just 👁️, removed on complete
-        """
         if not self._react_msg_id:
             return
         if self._is_housekeeping_tool_call(tool_name, tool_input):
             return
 
-        self._react_phase = 1  # mark user-facing work happened
+        self._react_phase = 1
 
-        # Detect knowledge module read
         path = (
             tool_input.get("file_path", "")
             or tool_input.get("path", "")
@@ -568,34 +487,22 @@ class Session:
 
         if module_emote:
             if module_emote in self._active_reactions:
-                return  # already shown, idempotent
+                return
             if self._NEUTRAL_EMOTE in self._active_reactions:
-                return  # already in overflow state
+                return
             if self._module_emote_count < self._MAX_MODULE_EMOTES:
                 self._module_emote_count += 1
                 await self._react(module_emote)
             else:
-                # >3 modules: clear individual emotes, show neutral
                 for emote in list(self._active_reactions):
                     if emote in self._MODULE_EMOTES.values():
                         await self._unreact(emote)
                 await self._react(self._NEUTRAL_EMOTE)
         else:
-            # Non-module user-facing work
             if "🧠" not in self._active_reactions:
                 await self._react("🧠")
 
     def _write_checkpoint(self) -> None:
-        """Write rolling checkpoint to CONTEXT_SUMMARY.md.
-
-        Called every _CHECKPOINT_INTERVAL completed turns so manual ice picks
-        always find a recent checkpoint on disk. Same path as the auto-restart
-        write, same path as the init read — no ambiguity.
-
-        Format is compressed: one line per turn, user turns get more space
-        (400 chars) than assistant turns (200 chars) because user intent is
-        harder to reconstruct than bot output (which is grounded in modules).
-        """
         if not self._turn_log:
             return
         try:
@@ -604,10 +511,8 @@ class Session:
             for entry in self._turn_log:
                 role = entry.get("role", "unknown")
                 text = entry.get("text", "")
-                # User turns carry more signal — give them more room.
                 cap = 400 if role == "user" else 200
                 truncated = text[:cap] + ("…" if len(text) > cap else "")
-                # P2: Append gate compliance tag for grounded assistant turns.
                 gate_tag = ""
                 if role == "assistant" and entry.get("kb_grounded"):
                     mods = entry.get("kb_modules", [])
@@ -620,15 +525,7 @@ class Session:
             logger.warning("[%s] checkpoint write failed: %s", self.key, exc)
 
     async def _trigger_clean_restart(self) -> None:
-        """Write raw turn log and restart immediately. No summarization turn.
-
-        The old approach asked the bot to summarize while at 120K+ tokens —
-        this pushed context to 150-170K and produced degraded output.
-        Now: write the compressed turn log and restart. The new session picks
-        up CONTEXT_SUMMARY.md on init.
-        """
         if self._turn_log:
-            # Reuse _write_checkpoint to avoid format duplication.
             self._write_checkpoint()
             logger.info("[%s] CONTEXT_SUMMARY.md written (%d turns) — triggering clean restart",
                         self.key, len(self._turn_log))
@@ -640,18 +537,11 @@ class Session:
     def _build_options(self) -> ClaudeAgentOptions:
         import os
 
-        is_root = os.getuid() == 0
-
         if self.tier == "admin":
             tools = [
                 "Read", "Write", "Edit", "Bash", "Glob", "Grep",
                 "WebSearch", "WebFetch", "Task", "NotebookEdit",
             ]
-            # acceptEdits on all platforms — bypassPermissions skips can_use_tool
-            # entirely, which means the per-turn tool budget never fires.
-            # acceptEdits triggers the callback for non-edit tools (Bash, etc.)
-            # so the budget is enforced. The callback returns Allow for admin
-            # unless the budget is exceeded.
             perm_mode = "acceptEdits"
             turn_limit = 200
         elif self.tier == "trusted":
@@ -685,7 +575,6 @@ class Session:
     async def _permission_check(
         self, tool_name: str, tool_input: dict[str, Any], context: Any
     ) -> PermissionResultAllow | PermissionResultDeny:
-        # Block all tiers from editing CLAUDE.md
         if tool_name in ("Write", "Edit"):
             path = tool_input.get("file_path", "")
             if "CLAUDE.md" in path:
@@ -693,9 +582,6 @@ class Session:
                     message="CLAUDE.md is managed by admin only"
                 )
 
-        # Per-turn total tool call budget — applies to all tiers.
-        # Covers Bash, Glob, Grep, Read, Edit, and all others.
-        # Prevents runaway tool chains from spiking context into restart territory.
         self._tool_call_count += 1
         if self._tool_call_count > _TOOL_CALL_BUDGET:
             logger.warning(
@@ -772,7 +658,6 @@ class SessionPool:
         is_direct_mention: bool = False,
         domain_hint: str = "",
     ) -> None:
-        """Route a message to the right session."""
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
         async with self._lock:
@@ -787,10 +672,6 @@ class SessionPool:
                 session = await self._create(key, tier, platform, chat_id, is_group)
                 self._sessions[key] = session
 
-        # Build optional context block from recent channel messages.
-        # Only injected on session start — subsequent turns already have
-        # this content in conversation history. Injecting every turn was
-        # causing O(n²) token growth (20-message block * n turns).
         context_block = ""
         if context_messages and is_new_session:
             lines = []
@@ -805,7 +686,6 @@ class SessionPool:
                 )
             context_block = "\n<channel_context>\n" + "\n".join(lines) + "\n</channel_context>\n"
 
-        # Wrap message with metadata
         msg_id_attr = f" message_id='{message_id}'" if message_id else ""
         reply_block = ""
         if reply_to_id:
@@ -826,46 +706,48 @@ class SessionPool:
         )
 
         session.current_sender_tier = tier
-
-        # Log user turn for cross-reset continuity
         session.log_turn("user", text)
-
-        # Reset per-turn tool call budget for the incoming message.
         session._tool_call_count = 0
-        # P2: Reset gate compliance tracking for the new turn.
         session._turn_modules_queried = set()
         session._turn_kb_query_used = False
-
-        # Reactions disabled by admin directive.
-        # set_reaction_target / _react calls removed.
 
         await session.inject(wrapped)
 
     async def _create(
         self, key: str, tier: str, platform: str, chat_id: str, is_group: bool
     ) -> Session:
-        # Create transcript directory
         safe_id = chat_id.replace("+", "_").replace("/", "_").replace("=", "")
         prefix = "group_" if is_group else ""
         transcript_dir = TRANSCRIPTS_DIR / platform / f"{prefix}{safe_id}"
         transcript_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write CLAUDE.md if it doesn't exist
         claude_md = transcript_dir / "CLAUDE.md"
-        # Always regenerate CLAUDE.md from template so behavioral changes
-        # in GROUP_SOUL.md / SOUL.md propagate without manual cleanup.
+        # Build send_command and companion script paths — all resolved at runtime
+        # from SCRIPTS_DIR so hardcoded paths never appear in soul files.
         send_cmd = f'{SCRIPTS_DIR}/send-discord "{chat_id}" "<message>"'
+        react_cmd = f'{SCRIPTS_DIR}/react-discord "{chat_id}"'
+        generate_image_cmd = f'{SCRIPTS_DIR}/generate-image "{chat_id}"'
+
         template_file = "GROUP_SOUL.md" if is_group else "SOUL.md"
         template = _load_template(template_file)
         prompt = _render(template, {
             "bot_name": self._bot_name,
             "send_command": send_cmd,
+            "react_command": react_cmd,
+            "generate_image_command": generate_image_cmd,
             "platform_name": "Discord",
         })
 
-        # Append static FUSED-CORE reference to system prompt.
-        # This avoids burning a conversation turn on content that is
-        # identical across all sessions and never changes at runtime.
+        # Append FUSED-CORE.md content to system prompt so it's always present
+        # without burning a conversation turn on an injection.
+        fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
+        if fused_core_path.exists():
+            try:
+                prompt += "\n\n" + fused_core_path.read_text()
+            except Exception as exc:
+                logger.warning("FUSED-CORE.md read failed: %s", exc)
+
+        # Append knowledge module index and kb-query instructions.
         knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
         kb_query_path = SCRIPTS_DIR / "kb-query"
         manifest_path = knowledge_dir / "MANIFEST.json"
@@ -907,7 +789,6 @@ class SessionPool:
 
         claude_md.write_text(prompt)
 
-        # For group sessions, use admin tier (bot owner controls the server)
         session_tier = "admin" if is_group else tier
         session = Session(
             key=key,
@@ -919,8 +800,6 @@ class SessionPool:
         )
         await session.start()
 
-        # Wire restart callback: when context overflows, session summarizes and
-        # triggers pool to kill/recreate it with a clean context.
         _key, _tier, _platform, _chat_id, _is_group = key, tier, platform, chat_id, is_group
 
         async def _restart_cb() -> None:
@@ -928,22 +807,7 @@ class SessionPool:
 
         session._on_needs_restart = _restart_cb
 
-        # ── Startup injection: reasoning chain + reference block ─────────
-        # Essential memory fragments (behavior, identity) are injected as
-        # separate turns — they are reasoning premises, not reference data.
-        # Each distinct turn creates an attention anchor in conversation
-        # history, ensuring Claude encodes them as discrete logical inputs
-        # rather than scanning a single undifferentiated block.
-        #
-        # Reference material (memory index, context summary, knowledge
-        # tool index) is consolidated into one turn — these are lookup
-        # tables that don't require sequential logical processing.
-        #
-        # Net effect: 3 injections instead of 5-6 (saves ~2-3 suppressed
-        # acknowledgment turns from context) while preserving the
-        # premise→premise→reference reasoning chain.
-
-        # ── Phase 1: Essential reasoning premises (separate turns) ────────
+        # ── Startup injection: reasoning chain + reference block ──────────
         memory_dir = transcript_dir / "memory"
         if memory_dir.is_dir():
             _ESSENTIAL_FRAGMENTS = ("behavior.md", "identity.md")
@@ -959,7 +823,6 @@ class SessionPool:
                     except Exception as exc:
                         logger.warning("Memory fragment %s injection failed: %s", frag_name, exc)
         else:
-            # Fallback: monolithic MEMORY.md (pre-migration sessions)
             memory_md = transcript_dir / "MEMORY.md"
             if memory_md.exists():
                 try:
@@ -974,7 +837,6 @@ class SessionPool:
         # ── Phase 2: Reference material (single consolidated turn) ────────
         ref_sections: list[str] = []
 
-        # Memory fragment index (lazy-load pointers, not reasoning content)
         if memory_dir.is_dir():
             other_frags = [
                 f for f in sorted(memory_dir.iterdir())
@@ -988,7 +850,6 @@ class SessionPool:
                     "Do not Read .md files directly. Load only what the current question requires."
                 )
 
-        # Context summary from prior session
         context_summary = transcript_dir / "CONTEXT_SUMMARY.md"
         if context_summary.exists():
             try:
@@ -1000,10 +861,6 @@ class SessionPool:
                 logger.info("CONTEXT_SUMMARY.md included in ref block for %s", key)
             except Exception as exc:
                 logger.warning("CONTEXT_SUMMARY.md read failed: %s", exc)
-
-        # FUSED-CORE module index and kb-query instructions are now in the
-        # system prompt (CLAUDE.md), not injected as conversation turns.
-        # See _create() above where they're appended to the template.
 
         if ref_sections:
             combined_ref = "\n\n".join(ref_sections)
@@ -1019,12 +876,6 @@ class SessionPool:
     async def _restart_session(
         self, key: str, tier: str, platform: str, chat_id: str, is_group: bool
     ) -> None:
-        """Kill the current session and recreate it with a clean context.
-
-        Called after a successful summarization turn. The new session picks up
-        CONTEXT_SUMMARY.md and MEMORY.md on init, giving it continuity with a
-        fraction of the original token cost.
-        """
         logger.info("Restarting session %s after context refresh", key)
         async with self._lock:
             old_session = self._sessions.pop(key, None)

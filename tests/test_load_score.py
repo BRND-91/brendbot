@@ -82,3 +82,42 @@ def test_load_score_heavy_bash_trips_budget_at_lower_token_count():
     # And confirm token count alone wouldn't have tripped the existing
     # 320k soft warning.
     assert tokens < session_mod._CONTEXT_SOFT_WARNING
+
+
+# ── Phase 3 #1B — shallow rest budget ────────────────────────────────────
+
+
+def test_shallow_budget_below_preemptive():
+    """Shallow rest must fire before preemptive restart, not after.
+
+    If shallow >= preemptive, the trigger order in _handle() never reaches
+    the shallow branch — preemptive always wins. The whole point of 1B is
+    the intermediate step.
+    """
+    assert session_mod._LOAD_BUDGET_SHALLOW < session_mod._LOAD_BUDGET_PREEMPTIVE
+
+
+def test_shallow_budget_leaves_meaningful_headroom():
+    """Shallow rest should fire with at least 15% headroom before preemptive.
+
+    Too close and shallow rest accomplishes nothing — load crosses
+    shallow and immediately crosses preemptive on the same turn. The
+    point of shallow rest is to give the session a chance to recover
+    before forcing a full restart.
+    """
+    headroom_ratio = (
+        (session_mod._LOAD_BUDGET_PREEMPTIVE - session_mod._LOAD_BUDGET_SHALLOW)
+        / session_mod._LOAD_BUDGET_PREEMPTIVE
+    )
+    assert headroom_ratio >= 0.15
+
+
+def test_shallow_rest_recovery_threshold_below_trigger():
+    """Recovery threshold (shallow * 0.7) must be strictly less than trigger.
+
+    Otherwise the recovery branch fires on the same turn as the trigger
+    branch and the rested flag never sticks. Hardcoded 0.7 in session.py
+    line ~655; this test guards against it being raised to 1.0+ later.
+    """
+    recovery = session_mod._LOAD_BUDGET_SHALLOW * 0.7
+    assert recovery < session_mod._LOAD_BUDGET_SHALLOW

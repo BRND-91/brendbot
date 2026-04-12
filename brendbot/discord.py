@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Coroutine
@@ -41,6 +42,17 @@ _channel_seeded: set[str] = set()  # channels whose buffers have been seeded fro
 
 # Module-level client reference for send_message and seeding
 _discord_client: discord.Client | None = None
+
+# Name trigger pattern — word-boundary match for all three trigger forms, case-insensitive.
+# Compiled once at module load. Covers: "brend", "brendan", "brendbot".
+# Used in both the bot-message filter and the main engagement gate.
+_NAME_PATTERN = re.compile(r"\b(brend|brendan|brendbot)\b", re.IGNORECASE)
+
+# Context-filter name strings — used in _relevant() for context window filtering.
+# Kept in sync with _NAME_PATTERN intentionally; separate because _relevant()
+# operates on pre-lowercased strings via simple containment checks.
+_BOT_NAMES = ("brendbot", "brendan", "brend")
+
 
 async def _haiku_gatecheck(text: str, context: list[dict]) -> bool:
     """
@@ -112,12 +124,18 @@ async def send_message(channel_id: str, text: str) -> None:
         logger.error("Failed to send message to %s: %s", channel_id, e)
 
 
-def _load_domain_keywords() -> tuple[frozenset[str], dict[str, str]]:
-    """Build a keyword set and keyword->module mapping from knowledge modules.
+def _load_domain_keywords() -> tuple[re.Pattern, dict[str, str]]:
+    """Build a compiled keyword regex and keyword->module mapping from knowledge modules.
 
     Returns:
-        (all_keywords, keyword_to_module) where keyword_to_module maps each
-        keyword string to its source module ID (e.g. "insulation" -> "BUILDSCI").
+        (domain_pattern, keyword_to_module) where domain_pattern is a compiled
+        regex alternation of all keywords, and keyword_to_module maps each keyword
+        string to its source module ID (e.g. "insulation" -> "BUILDSCI").
+
+    Using a single compiled regex instead of a frozenset loop gives correct
+    word-boundary semantics (e.g. "stats" won't match "statistics") and
+    reduces per-message work from O(n_keywords * len(text)) substring scans
+    to a single regex pass.
     """
     # Explicit human-readable terms per domain
     _MODULE_TERMS: dict[str, list[str]] = {
@@ -156,11 +174,9 @@ def _load_domain_keywords() -> tuple[frozenset[str], dict[str, str]]:
     }
 
     keyword_to_module: dict[str, str] = {}
-    all_keywords: set[str] = set()
     for module_id, terms in _MODULE_TERMS.items():
         for term in terms:
             keyword_to_module[term] = module_id
-            all_keywords.add(term)
 
     # Supplement from manifest module descriptions
     try:
@@ -174,14 +190,20 @@ def _load_domain_keywords() -> tuple[frozenset[str], dict[str, str]]:
                 for w in words:
                     if w not in keyword_to_module:
                         keyword_to_module[w] = mod_id
-                    all_keywords.add(w)
     except Exception as e:
         logger.warning("Failed to load manifest keywords: %s", e)
 
-    return frozenset(all_keywords), keyword_to_module
+    # Build a single compiled regex alternation. Multi-word phrases are sorted
+    # longest-first so they match before their component words (e.g. "feedback loop"
+    # before "feedback"). Word boundaries applied around each term.
+    sorted_kws = sorted(keyword_to_module.keys(), key=len, reverse=True)
+    pattern_str = r"\b(?:" + "|".join(re.escape(k) for k in sorted_kws) + r")\b"
+    domain_pattern = re.compile(pattern_str, re.IGNORECASE)
+
+    return domain_pattern, keyword_to_module
 
 
-DOMAIN_KEYWORDS, KEYWORD_TO_MODULE = _load_domain_keywords()
+DOMAIN_PATTERN, KEYWORD_TO_MODULE = _load_domain_keywords()
 
 
 @dataclass
@@ -232,7 +254,6 @@ def _score_message(
     word_count = len(words)
 
     # Early noise rejection: single-token messages that are never worth engaging.
-    # Prevents these from reaching the Haiku classifier (saves subprocess cost).
     if word_count <= 2 and all(w.lower().strip("?!.,") in _NOISE_TOKENS for w in words):
         return result  # score=0.0, no domains
 
@@ -241,35 +262,39 @@ def _score_message(
         result.score += 1.0
 
     # Recent thread participation lowers the bar — but only for messages with
-    # enough content to be plausibly relevant. Single-word fragments from
-    # non-addressed users are noise even in active threads.
+    # enough content to be plausibly relevant.
     last_spoke = _channel_last_spoke.get(channel_id, 0.0)
     recency_active = time.time() - last_spoke < RECENCY_WINDOW_SECONDS
     if recency_active and word_count >= 3:
         result.score += 0.3
 
-    # Domain keyword match in current message — collect ALL matching domains.
+    # Domain keyword match via compiled regex — single pass, word-boundary aware.
+    # Collects ALL matching domains in one scan.
     domain_scored = False
-    for kw in DOMAIN_KEYWORDS:
-        if kw in text_lower:
-            result.domains.add(KEYWORD_TO_MODULE[kw])
+    for m in DOMAIN_PATTERN.finditer(text_lower):
+        kw = m.group(0).lower()
+        module = KEYWORD_TO_MODULE.get(kw)
+        if module:
+            result.domains.add(module)
             if not domain_scored:
                 result.score += 0.4
                 domain_scored = True
 
-    # Domain keyword match in recent context — only if message itself didn't
-    # already push past threshold AND context is available.
+    # Domain keyword match in recent context — only if current message didn't match.
     if not domain_scored and recent_context:
-        context_text = " ".join(m.get("text", "") for m in recent_context[-5:] if m.get("has_keyword")).lower()
-        for kw in DOMAIN_KEYWORDS:
-            if kw in context_text:
-                result.domains.add(KEYWORD_TO_MODULE[kw])
+        context_text = " ".join(
+            m.get("text", "") for m in recent_context[-5:] if m.get("has_keyword")
+        ).lower()
+        for m in DOMAIN_PATTERN.finditer(context_text):
+            kw = m.group(0).lower()
+            module = KEYWORD_TO_MODULE.get(kw)
+            if module:
+                result.domains.add(module)
                 if not domain_scored:
                     result.score += 0.3
                     domain_scored = True
 
     # Conversational signal: question or directive in an active thread.
-    # Only applied when recency is active (bot recently spoke).
     if recency_active and word_count >= 3:
         is_conversational = (
             text_lower.endswith("?")
@@ -319,7 +344,7 @@ async def _ensure_seeded(channel: discord.abc.Messageable, channel_id: str) -> d
                         "message_id": str(m.id),
                         "timestamp": m.created_at.timestamp(),
                         "reply_to_id": str(m.reference.message_id) if m.reference else None,
-                        "has_keyword": any(kw in seed_text.lower() for kw in DOMAIN_KEYWORDS),
+                        "has_keyword": bool(DOMAIN_PATTERN.search(seed_text.lower())),
                     })
                 logger.debug("Seeded context buffer for channel %s (%d msgs)", channel_id, len(buf))
             except Exception as e:
@@ -393,46 +418,57 @@ class DiscordListener:
                 "message_id": msg_id,
                 "timestamp": message.created_at.timestamp(),
                 "reply_to_id": str(message.reference.message_id) if message.reference else None,
-                "has_keyword": any(kw in buf_text.lower() for kw in DOMAIN_KEYWORDS),
+                "has_keyword": bool(DOMAIN_PATTERN.search(buf_text.lower())),
             })
 
-            # Don't process responses to other bots unless they directly @mention or name-mention this bot.
+            # Don't process responses to other bots unless they directly @mention
+            # or name-mention this bot. Name check uses word-boundary regex to
+            # avoid false positives from bot output containing "brend" as a fragment.
             if message.author.bot:
                 directly_mentioned = client.user and client.user.id in [m.id for m in message.mentions]
-                name_mentioned_by_bot = any(n in text.lower() for n in ["brendbot", "brend"])
+                name_mentioned_by_bot = bool(_NAME_PATTERN.search(text))
                 if not directly_mentioned and not name_mentioned_by_bot:
                     return
 
-            # Hard pass: direct @mention or name mention
+            # Determine whether bot is @mentioned or name-mentioned.
             mentioned = client.user and client.user.id in [m.id for m in message.mentions]
-            name_mentioned = any(n in text.lower() for n in ["brendbot", "brend"])
+            name_mentioned = bool(_NAME_PATTERN.search(text))
 
             matched_domains: set[str] = set()
 
+            # ── Fetch reply reference once ────────────────────────────────────
+            # If this message is a reply, fetch the referenced message a single
+            # time here and reuse it for both reply-chain detection (engagement
+            # gate) and reply context extraction (passed to Claude). This avoids
+            # two separate API round-trips to Discord for the same message ID.
+            reply_ref: discord.Message | None = None
+            if message.reference and message.reference.message_id:
+                reply_ref = message.reference.cached_message
+                if reply_ref is None:
+                    try:
+                        reply_ref = await message.channel.fetch_message(
+                            message.reference.message_id
+                        )
+                    except Exception:
+                        reply_ref = None
+
             if message.guild:
-                # Stage 0: hard-pass on direct mention
-                use_haiku = False
+                # ── Name-triggered path ───────────────────────────────────────
+                # If the bot's name was used (any of: brend, brendan, brendbot),
+                # bypass all scoring and haiku gating and route directly to Claude.
+                # The knowledge-registry reasoning in FUSED-CORE handles engagement
+                # from there — the name is sufficient signal that the message is
+                # addressed to the bot.
                 if mentioned or name_mentioned:
                     heuristic_pass = True
+                    use_haiku = False
                 else:
-                    # Stage 1: reply-chain detection
-                    reply_to_bot = False
-                    if message.reference and message.reference.message_id:
-                        ref = message.reference.cached_message
-                        if ref is None:
-                            try:
-                                ref = await message.channel.fetch_message(
-                                    message.reference.message_id
-                                )
-                            except Exception:
-                                ref = None
-                        if ref and str(ref.author.id) == self.bot_id:
-                            reply_to_bot = True
+                    # ── Ambient path — reply-chain + heuristic scoring ────────
+                    reply_to_bot = (
+                        reply_ref is not None
+                        and str(reply_ref.author.id) == self.bot_id
+                    )
 
-                    # Stage 1a: cheap heuristic scoring — three tiers:
-                    #   score >= ENGAGE_HARD_PASS : hard pass, skip haiku
-                    #   ENGAGE_THRESHOLD <= score < ENGAGE_HARD_PASS : middle band, haiku decides
-                    #   score < ENGAGE_THRESHOLD  : hard drop
                     engage_result = _score_message(
                         text,
                         channel_id,
@@ -443,27 +479,27 @@ class DiscordListener:
 
                     if engage_result.score >= ENGAGE_HARD_PASS:
                         heuristic_pass = True
+                        use_haiku = False
                     elif engage_result.score >= ENGAGE_THRESHOLD:
                         heuristic_pass = False
-                        use_haiku = True  # ambiguous middle — classifier decides
+                        use_haiku = True  # ambiguous middle — haiku classifier decides
                     else:
-                        heuristic_pass = False  # hard drop
+                        heuristic_pass = False
+                        use_haiku = False  # hard drop
 
-                # Admin bypass: admin messages skip all gates
+                # Admin bypass: admin messages skip all gates regardless of path.
                 cfg = get_config()
                 if sender_id == cfg.admin_discord_id:
                     heuristic_pass = True
                     use_haiku = False
 
-                # Stage 2: Haiku ambiguity classifier (middle band only)
+                # Haiku ambiguity classifier — middle band of ambient path only.
                 if not heuristic_pass:
                     if use_haiku:
                         engage = await _haiku_gatecheck(text, context_snapshot)
                         if not engage:
-                            # Silent drop, but buffer already updated
                             return
                     else:
-                        # Hard drop — below threshold, no classifier
                         return
 
             # Download and format attachments
@@ -488,36 +524,23 @@ class DiscordListener:
                 text[:80],
             )
 
-            # Extract reply context (if not already fetched above)
+            # Extract reply context from the already-fetched reply_ref.
+            # No second API call needed.
             reply_to_id = ""
             reply_to_text = ""
             reply_to_author = ""
-            if message.reference and message.reference.message_id:
+            if reply_ref is not None and message.reference and message.reference.message_id:
                 reply_to_id = str(message.reference.message_id)
-                ref = message.reference.cached_message
-                if ref is None:
-                    try:
-                        ref = await message.channel.fetch_message(
-                            message.reference.message_id
-                        )
-                    except Exception:
-                        ref = None
-                if ref:
-                    reply_to_text = (ref.content or "")[:500]
-                    reply_to_author = str(ref.author.id)
+                reply_to_text = (reply_ref.content or "")[:500]
+                reply_to_author = str(reply_ref.author.id)
 
             # Record that bot is engaging (recency tracking)
             record_bot_spoke(chat_id)
 
-            # 👁️ is fired via session._react() in route_message (tracked, gets cleaned up).
-            # Do NOT fire it here — untracked calls bypass the clearing logic.
             is_direct_mention = bool(mentioned or name_mentioned)
 
-            # Filter context to admin messages + messages that address this bot.
-            # Drops bot-to-bot noise and unaddressed human chatter from the
-            # per-turn context block, reducing input token cost.
+            # Build thread-aware context: walk reply chain or fall back to recent relevant messages.
             _ADMIN_ID = get_config().admin_discord_id
-            # Build thread-aware context: walk reply chain or fall back to recent relevant messages
             _THREAD_MAX = 10
             _THREAD_MAX_AGE = 900  # 15 minutes
             _now_ts = message.created_at.timestamp()
@@ -538,7 +561,6 @@ class DiscordListener:
                 filtered_context = _thread_context
             else:
                 _bot_mention = f"<@{self.bot_id}>" if self.bot_id else ""
-                _bot_names = ("brendbot", "brend")
                 def _relevant(m: dict) -> bool:
                     if _now_ts - m.get("timestamp", 0) > _THREAD_MAX_AGE:
                         return False
@@ -547,7 +569,7 @@ class DiscordListener:
                     t = m.get("text", "")
                     if _bot_mention and _bot_mention in t:
                         return True
-                    if any(n in t.lower() for n in _bot_names):
+                    if any(n in t.lower() for n in _BOT_NAMES):
                         return True
                     return False
                 filtered_context = [m for m in context_snapshot if _relevant(m)][-5:]

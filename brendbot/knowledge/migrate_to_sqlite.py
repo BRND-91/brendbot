@@ -49,6 +49,54 @@ def create_schema(conn):
         );
         CREATE INDEX idx_memory_source ON memory_fragments (source);
         CREATE INDEX idx_memory_tag ON memory_fragments (tag);
+
+        -- Image generation prompt construction tables
+        -- Named style → descriptor translation. Core terms are what the model
+        -- reliably responds to; negative_space is what to explicitly exclude.
+        CREATE TABLE prompt_styles (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            core_descriptors TEXT NOT NULL,
+            supplemental_descriptors TEXT,
+            negative_space TEXT,
+            fail_modes TEXT,
+            model_tier TEXT,
+            notes TEXT
+        );
+
+        -- Known failure class → remediation strategy mapping.
+        -- failure_class matches what the bot reports in render_outcomes.
+        -- remediation is the concrete prompt adjustment to make on retry.
+        CREATE TABLE render_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            failure_class TEXT NOT NULL UNIQUE,
+            trigger_pattern TEXT,
+            remediation TEXT NOT NULL,
+            example TEXT
+        );
+
+        -- Empirical outcome log. Populated by the bot at generation time.
+        -- Enables per-request history queries and long-term pattern detection.
+        CREATE TABLE render_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_hash TEXT,
+            attempt_number INTEGER DEFAULT 1,
+            prompt_used TEXT,
+            style_ids TEXT,
+            constraint_score INTEGER,
+            succeeded INTEGER DEFAULT 0,
+            failure_class TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX idx_render_request ON render_outcomes (request_hash);
+        CREATE INDEX idx_render_style ON render_outcomes (style_ids);
+
+        -- FTS over prompt_styles for label/descriptor search
+        CREATE VIRTUAL TABLE fts_prompts USING fts5(
+            id, label, core_descriptors, supplemental_descriptors, notes
+        );
     """)
 
 
@@ -107,7 +155,6 @@ def migrate_module(conn, module_id):
         conn.execute("INSERT OR REPLACE INTO theorems VALUES (?,?,?,?,?,?,?)", (tid, module_id, tid, desc, formal, src, 0))
         rows += 1
 
-    # P3: Extended theorems (geometry, spatial) — lower priority, separate tier.
     for t in data.get("thms_extended", []):
         tid = to_str(t.get("id") or t.get("name", ""))
         desc = to_str(t.get("desc") or t.get("stmt") or t.get("d", ""))
@@ -160,7 +207,6 @@ def migrate_imagegen_config(conn):
         return 0
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    # Skip metadata fields; store every substantive top-level section as a row
     skip_keys = {"id", "version"}
     rows = 0
     for key, value in data.items():
@@ -174,12 +220,132 @@ def migrate_imagegen_config(conn):
     return rows
 
 
-def migrate_memory_fragments(conn):
-    """Parse on-demand memory fragment .md files into memory_fragments table.
+def migrate_prompt_styles(conn):
+    """Seed prompt_styles and render_failures from IMAGEGEN.json style_library.
 
-    Essential fragments (behavior.md, identity.md) are always injected in full
-    at session start — no need to index them here. Only the lazy-loaded ones.
+    Converts the style_library entries into normalized prompt_styles rows.
+    Each entry's core/supplemental lists are stored as comma-separated strings
+    for compact kb-query output. render_failures seeded from known failure
+    patterns documented across the style_library and element_dropping sections.
     """
+    path = KNOWLEDGE_DIR / "IMAGEGEN.json"
+    if not path.exists():
+        print("  SKIP prompt_styles (IMAGEGEN.json not found)")
+        return 0
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    style_lib = data.get("style_library", {})
+    rows = 0
+
+    for style_id, entry in style_lib.items():
+        if style_id.startswith("_"):
+            continue  # skip _note keys
+        core = entry.get("core", [])
+        supplemental = entry.get("supplemental", [])
+        fail_modes = entry.get("fail_modes", [])
+        tier = entry.get("tier", "standard")
+        notes = entry.get("note", "")
+
+        # Build negative_space from fail_modes — these are what to steer away from
+        negative_space = "; ".join(fail_modes) if fail_modes else ""
+
+        # Human-readable label: replace underscores, title-case
+        label = style_id.replace("_", " ").title()
+
+        conn.execute(
+            "INSERT OR REPLACE INTO prompt_styles "
+            "(id, label, core_descriptors, supplemental_descriptors, negative_space, fail_modes, model_tier, notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                style_id,
+                label,
+                ", ".join(core),
+                ", ".join(supplemental),
+                negative_space,
+                json.dumps(fail_modes),
+                tier,
+                notes,
+            )
+        )
+        # FTS index entry
+        conn.execute(
+            "INSERT INTO fts_prompts (id, label, core_descriptors, supplemental_descriptors, notes) VALUES (?,?,?,?,?)",
+            (style_id, label, ", ".join(core), ", ".join(supplemental), notes)
+        )
+        rows += 1
+
+    # Seed render_failures from known patterns in the module
+    # These are derived from style_library fail_modes, element_dropping, and
+    # physical_interaction sections — the empirically documented failure classes.
+    known_failures = [
+        {
+            "failure_class": "style_not_transferred",
+            "trigger_pattern": "Named style reference without descriptor override terms",
+            "remediation": "Replace named style reference with core descriptor set from prompt_styles. "
+                           "Add 'non-photographic' explicitly. All three core terms required.",
+            "example": "Replace 'JJK style' with 'manga linework, ink crosshatching, non-photographic'",
+        },
+        {
+            "failure_class": "photorealism_bleed",
+            "trigger_pattern": "Style directive present but named landmark or IP character also present",
+            "remediation": "Replace named landmark with generic description. Replace IP character name "
+                           "with physical description. Named references override style directives.",
+            "example": "Replace 'Eiffel Tower' with 'enormous iron lattice tower'; replace character name with appearance desc",
+        },
+        {
+            "failure_class": "element_dropped",
+            "trigger_pattern": "3+ hard constraints (style + interaction + spatial) stacked in single prompt",
+            "remediation": "ALL-CAPS the dropped element. Add 'PRIMARY SUBJECT:' prefix. "
+                           "Reduce other constraints to their minimum viable terms. "
+                           "Use multi_element_anchored template.",
+            "example": "PRIMARY SUBJECT: ENORMOUS IRON LATTICE TOWER — do not drop",
+        },
+        {
+            "failure_class": "text_malformed",
+            "trigger_pattern": "Small-scale text overlay requested; font style unspecified",
+            "remediation": "Describe text at larger implied scale. Specify font style explicitly "
+                           "(bold sans-serif, hand-lettered, block capitals). "
+                           "Isolate text element as last constraint in prompt.",
+            "example": "Large bold hand-lettered sign reading [TEXT] — positioned lower right",
+        },
+        {
+            "failure_class": "physical_interaction_failed",
+            "trigger_pattern": "Carry, grip, punch, or direct physical contact between figures",
+            "remediation": "Substitute reliable interaction: 'arm resting across shoulders', "
+                           "'standing side by side', 'silhouette proximity'. "
+                           "If contact is critical, isolate to single constraint — remove style or spatial.",
+            "example": "Replace 'carrying over shoulder' with 'standing beside, arm across shoulders'",
+        },
+        {
+            "failure_class": "safety_block_silent",
+            "trigger_pattern": "Named real person in prompt; returns None with no error",
+            "remediation": "Replace name with physical description. Block is name-keyed not appearance-keyed. "
+                           "Disclose block to user before substituting — do not silently replace.",
+            "example": "Replace 'Elon Musk' with 'tall thin man, short hair, casual clothing'",
+        },
+        {
+            "failure_class": "constraint_budget_exceeded",
+            "trigger_pattern": "3 constraint categories active (style + spatial + interaction)",
+            "remediation": "Run --dry-run first to confirm category count. Drop lowest-priority category. "
+                           "If all three required, set expectation with user before first call — "
+                           "state high failure risk explicitly.",
+            "example": "Drop spatial constraint or simplify to single directional term",
+        },
+    ]
+
+    for f in known_failures:
+        conn.execute(
+            "INSERT OR REPLACE INTO render_failures "
+            "(failure_class, trigger_pattern, remediation, example) VALUES (?,?,?,?)",
+            (f["failure_class"], f["trigger_pattern"], f["remediation"], f["example"])
+        )
+        rows += 1
+
+    return rows
+
+
+def migrate_memory_fragments(conn):
+    """Parse on-demand memory fragment .md files into memory_fragments table."""
     project_root = KNOWLEDGE_DIR.parent.parent
     transcript_discord = project_root / "transcripts" / "discord"
     if not transcript_discord.is_dir():
@@ -229,6 +395,10 @@ def main():
     ig_count = migrate_imagegen_config(conn)
     print(f"  imagegen_config: {ig_count} rows")
     total += ig_count
+
+    ps_count = migrate_prompt_styles(conn)
+    print(f"  prompt_styles + render_failures: {ps_count} rows")
+    total += ps_count
 
     mem_count = migrate_memory_fragments(conn)
     print(f"  memory_fragments: {mem_count} rows")

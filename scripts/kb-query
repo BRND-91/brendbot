@@ -15,6 +15,14 @@ Usage:
     kb-query memory <source> [tag]   Get memory fragment entries by source file (e.g., bots, tools)
     kb-query memory search <terms>   Search memory fragment content
 
+    Image generation prompt construction:
+    kb-query imgstyle <id|label>     Get descriptor set for a named style (e.g. 'junji_ito', 'manga')
+    kb-query imgstyle list           List all available styles
+    kb-query imgfail <failure_class> Get remediation for a known failure pattern
+    kb-query imgfail list            List all known failure classes
+    kb-query imglog <request_hash>   Get prior render attempt history for a request hash
+    kb-query imglog recent [N]       Get N most recent render outcomes (default 10)
+
 Examples:
     kb-query search "R-value"
     kb-query search "insul*"           (prefix matching)
@@ -22,6 +30,11 @@ Examples:
     kb-query facts BUILDSCI airflow
     kb-query def BSCI.ENCL.RVALUE
     kb-query gates
+    kb-query imgstyle junji_ito
+    kb-query imgstyle list
+    kb-query imgfail style_not_transferred
+    kb-query imgfail list
+    kb-query imglog recent 5
 """
 
 import sqlite3
@@ -59,17 +72,11 @@ def _load_src_maps(conn):
 
 
 def _provenance_tag(source, conn=None):
-    """Return provenance tier tag based on source resolution status.
-
-    Checks both the source field and the src_map description for unresolved markers.
-    """
     if not source:
         return "[T2]"
     unresolved_markers = ("unresolved", "flagged T2", "TO_SET")
-    # Check the source field itself
     if any(m in source for m in unresolved_markers):
         return "[T2]"
-    # Check if the src_map entry for this source is flagged
     if conn is not None:
         src_maps = _load_src_maps(conn)
         desc = src_maps.get(source, "")
@@ -79,8 +86,6 @@ def _provenance_tag(source, conn=None):
 
 
 def _check_module_coverage(conn, terms):
-    """Check if query terms intersect a loaded module's domain.
-    Returns module_id if match found, None otherwise."""
     modules = conn.execute("SELECT id, description FROM modules").fetchall()
     terms_lower = terms.lower()
     for mod_id, desc in modules:
@@ -91,8 +96,6 @@ def _check_module_coverage(conn, terms):
 
 def cmd_search(terms):
     conn = get_conn()
-    # Try FTS first. Quote the terms to prevent FTS5 operator parsing
-    # (e.g. "R-value" would parse hyphen as NOT without quoting).
     fts_terms = '"' + terms.replace('"', '""') + '"'
     results = conn.execute(
         "SELECT module_id, entry_type, term, description, source "
@@ -101,7 +104,6 @@ def cmd_search(terms):
     ).fetchall()
 
     if not results:
-        # Fallback to LIKE on definitions + facts
         like = f"%{terms}%"
         results = conn.execute(
             "SELECT module_id, 'def' as entry_type, term, description, source "
@@ -114,7 +116,6 @@ def cmd_search(terms):
         ).fetchall()
 
     if not results:
-        # Check if a module covers this domain — no match is defeasible evidence of absence
         matched_module = _check_module_coverage(conn, terms)
         if matched_module:
             print(f"[NO_MODULE_MATCH] Module {matched_module} covers this domain but returned no results.")
@@ -123,7 +124,6 @@ def cmd_search(terms):
             print("No results.")
         return
 
-    # Compact format with provenance tier: one line per result, minimal separators.
     for mod, etype, term, desc, src in results:
         tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
@@ -139,7 +139,6 @@ def cmd_defs(module):
     if not rows:
         print(f"No defs for {module}")
         return
-    # Compact with provenance tier: id:term=desc[|formal][|src]
     for did, term, desc, formal, src in rows:
         tier = _provenance_tag(src, conn)
         line = f"{tier} {did}:{term}={desc}" if desc else f"{tier} {did}:{term}"
@@ -165,7 +164,6 @@ def cmd_facts(module, topic=None):
     if not rows:
         print(f"No facts for {module}" + (f"/{topic}" if topic else ""))
         return
-    # Compact with provenance tier: topic.name=desc[|src]
     for t, name, desc, src in rows:
         tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
@@ -185,7 +183,6 @@ def cmd_thms(module, include_extended=False):
             (module.upper(),)
         ).fetchall()
     if not rows:
-        # Check if there are extended-only theorems the user might want
         ext_count = conn.execute(
             "SELECT COUNT(*) FROM theorems WHERE module_id=? AND extended=1",
             (module.upper(),)
@@ -273,9 +270,151 @@ def cmd_imagegen(section):
     print(row[0])
 
 
+def cmd_imgstyle(arg):
+    """Look up descriptor set for a named style, or list all styles."""
+    conn = get_conn()
+
+    if arg == "list":
+        rows = conn.execute(
+            "SELECT id, label, model_tier, notes FROM prompt_styles ORDER BY id"
+        ).fetchall()
+        if not rows:
+            print("No prompt_styles found. Run migrate_to_sqlite.py first.")
+            return
+        for sid, label, tier, notes in rows:
+            note_str = f" | {notes}" if notes else ""
+            print(f"{sid}: {label} [{tier}]{note_str}")
+        return
+
+    # Try exact id match first, then FTS label search
+    row = conn.execute(
+        "SELECT id, label, core_descriptors, supplemental_descriptors, negative_space, fail_modes, model_tier, notes "
+        "FROM prompt_styles WHERE id=?",
+        (arg.lower(),)
+    ).fetchone()
+
+    if not row:
+        # FTS search on label and descriptors
+        fts_term = '"' + arg.replace('"', '""') + '"'
+        try:
+            fts_rows = conn.execute(
+                "SELECT id FROM fts_prompts WHERE fts_prompts MATCH ? LIMIT 3",
+                (fts_term,)
+            ).fetchall()
+        except Exception:
+            fts_rows = []
+        if fts_rows:
+            matched_id = fts_rows[0][0]
+            row = conn.execute(
+                "SELECT id, label, core_descriptors, supplemental_descriptors, negative_space, fail_modes, model_tier, notes "
+                "FROM prompt_styles WHERE id=?",
+                (matched_id,)
+            ).fetchone()
+
+    if not row:
+        print(f"Style '{arg}' not found. Use 'kb-query imgstyle list' to see available styles.")
+        return
+
+    sid, label, core, supplemental, negative, fail_modes_json, tier, notes = row
+    print(f"id: {sid}")
+    print(f"label: {label}")
+    print(f"tier: {tier}")
+    print(f"core: {core}")
+    if supplemental:
+        print(f"supplemental: {supplemental}")
+    if negative:
+        print(f"avoid: {negative}")
+    if notes:
+        print(f"notes: {notes}")
+
+
+def cmd_imgfail(arg):
+    """Look up remediation for a known failure class, or list all classes."""
+    conn = get_conn()
+
+    if arg == "list":
+        rows = conn.execute(
+            "SELECT failure_class, trigger_pattern FROM render_failures ORDER BY failure_class"
+        ).fetchall()
+        if not rows:
+            print("No render_failures found. Run migrate_to_sqlite.py first.")
+            return
+        for fc, trigger in rows:
+            print(f"{fc}: {trigger}")
+        return
+
+    row = conn.execute(
+        "SELECT failure_class, trigger_pattern, remediation, example "
+        "FROM render_failures WHERE failure_class=?",
+        (arg,)
+    ).fetchone()
+    if not row:
+        # Try LIKE match
+        like = f"%{arg}%"
+        rows = conn.execute(
+            "SELECT failure_class, trigger_pattern, remediation, example "
+            "FROM render_failures WHERE failure_class LIKE ? OR trigger_pattern LIKE ?",
+            (like, like)
+        ).fetchall()
+        if not rows:
+            print(f"Failure class '{arg}' not found. Use 'kb-query imgfail list' to see all classes.")
+            return
+        row = rows[0]
+
+    fc, trigger, remediation, example = row
+    print(f"class: {fc}")
+    print(f"trigger: {trigger}")
+    print(f"remediation: {remediation}")
+    if example:
+        print(f"example: {example}")
+
+
+def cmd_imglog(args):
+    """Query render outcome history."""
+    conn = get_conn()
+
+    if not args:
+        print("Usage: kb-query imglog <request_hash> | kb-query imglog recent [N]")
+        return
+
+    if args[0] == "recent":
+        n = int(args[1]) if len(args) >= 2 else 10
+        rows = conn.execute(
+            "SELECT request_hash, attempt_number, constraint_score, succeeded, failure_class, notes, created_at "
+            "FROM render_outcomes ORDER BY created_at DESC LIMIT ?",
+            (n,)
+        ).fetchall()
+        if not rows:
+            print("No render outcomes logged yet.")
+            return
+        for req_hash, attempt, score, succeeded, fc, notes, ts in rows:
+            status = "OK" if succeeded else f"FAIL:{fc or '?'}"
+            hash_short = (req_hash or "?")[:12]
+            note_str = f" | {notes}" if notes else ""
+            print(f"{ts} [{hash_short}] attempt={attempt} constraints={score} {status}{note_str}")
+        return
+
+    # Lookup by request hash
+    request_hash = args[0]
+    rows = conn.execute(
+        "SELECT attempt_number, prompt_used, style_ids, constraint_score, succeeded, failure_class, notes, created_at "
+        "FROM render_outcomes WHERE request_hash=? ORDER BY attempt_number",
+        (request_hash,)
+    ).fetchall()
+    if not rows:
+        print(f"No outcomes found for hash '{request_hash}'.")
+        return
+    for attempt, prompt, style_ids, score, succeeded, fc, notes, ts in rows:
+        status = "OK" if succeeded else f"FAIL:{fc or '?'}"
+        print(f"attempt {attempt} [{ts}]: {status} | constraints={score} | styles={style_ids or 'none'}")
+        if prompt:
+            print(f"  prompt: {prompt[:200]}")
+        if notes:
+            print(f"  notes: {notes}")
+
+
 def cmd_memory(args):
     conn = get_conn()
-    # memory search <terms>
     if args and args[0] == "search":
         terms = " ".join(args[1:])
         like = f"%{terms}%"
@@ -291,9 +430,7 @@ def cmd_memory(args):
             print(f"[{source}/{tag}] {content}")
         return
 
-    # memory <source> [tag]
     if not args:
-        # List available sources
         rows = conn.execute(
             "SELECT DISTINCT source, COUNT(*) FROM memory_fragments GROUP BY source ORDER BY source"
         ).fetchall()
@@ -377,6 +514,12 @@ def main():
         cmd_topics(sys.argv[2])
     elif cmd == "imagegen" and len(sys.argv) >= 3:
         cmd_imagegen(sys.argv[2])
+    elif cmd == "imgstyle" and len(sys.argv) >= 3:
+        cmd_imgstyle(sys.argv[2])
+    elif cmd == "imgfail" and len(sys.argv) >= 3:
+        cmd_imgfail(sys.argv[2])
+    elif cmd == "imglog":
+        cmd_imglog(sys.argv[2:])
     elif cmd == "memory":
         cmd_memory(sys.argv[2:])
     else:

@@ -264,6 +264,13 @@ class Session:
         message ID → log to bot_responses.jsonl → if there was a tag,
         also log to branch_audit.jsonl.
 
+        Holds self._turn_lock for the entire send + log sequence so the
+        next query() in _run_loop cannot dispatch turn N+1 until turn N's
+        feedback writes have completed. This is the actual serialization
+        the duplicate `turn complete` race fix requires — wrapping
+        _client.query() alone in _run_loop is insufficient because
+        _fire_on_text is fire-and-forget from _receive_loop.
+
         All log writes are best-effort; failures never break the chat path.
         """
         from brendbot.feedback import (
@@ -271,32 +278,33 @@ class Session:
             log_bot_response,
             log_branch_audit,
         )
-        branch_tag, stripped = extract_branch_tag(text)
-        try:
-            bot_message_id = await self._on_text(self._chat_id, stripped)
-        except Exception as exc:
-            logger.error("[%s] on_text callback failed: %s", self.key, exc)
-            return
-        if not bot_message_id:
-            # Send failed or pre-ready dispatch — nothing to correlate against.
-            return
-        log_bot_response(
-            channel_id=self._chat_id,
-            bot_message_id=bot_message_id,
-            user_message_id=self._turn_user_message_id,
-            user_text=self._turn_user_text,
-            score=self._turn_score,
-            domains=self._turn_domains,
-            address_level=self.current_address_level,
-            branch_tag=branch_tag,
-        )
-        if branch_tag:
-            log_branch_audit(
+        async with self._turn_lock:
+            branch_tag, stripped = extract_branch_tag(text)
+            try:
+                bot_message_id = await self._on_text(self._chat_id, stripped)
+            except Exception as exc:
+                logger.error("[%s] on_text callback failed: %s", self.key, exc)
+                return
+            if not bot_message_id:
+                # Send failed or pre-ready dispatch — nothing to correlate against.
+                return
+            log_bot_response(
                 channel_id=self._chat_id,
                 bot_message_id=bot_message_id,
-                branch=branch_tag,
-                response_text=stripped,
+                user_message_id=self._turn_user_message_id,
+                user_text=self._turn_user_text,
+                score=self._turn_score,
+                domains=self._turn_domains,
+                address_level=self.current_address_level,
+                branch_tag=branch_tag,
             )
+            if branch_tag:
+                log_branch_audit(
+                    channel_id=self._chat_id,
+                    bot_message_id=bot_message_id,
+                    branch=branch_tag,
+                    response_text=stripped,
+                )
 
     def log_turn(self, role: str, text: str, max_chars: int = 800) -> None:
         self._turn_log.append({"role": role, "text": text[:max_chars]})

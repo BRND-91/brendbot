@@ -6,9 +6,9 @@ Use this after editing IMAGEGEN.json to update the style descriptors and failure
 patterns in the DB without rebuilding the entire knowledge.db from scratch.
 
 Run from project root:
-    python scripts/migrate-imagegen
+    python scripts/migrations/migrate-imagegen
     # or after chmod +x:
-    ./scripts/migrate-imagegen
+    ./scripts/migrations/migrate-imagegen
 
 Safe to re-run. Existing rows are replaced (INSERT OR REPLACE).
 render_outcomes are never touched — outcome history is preserved.

@@ -4,7 +4,7 @@ Migrate root-level MEMORY.md ## PERSISTENT entries into the SQLite
 memory_fragments table (source='persistent', tag from [tag] prefix).
 
 Run once from the project root after any MEMORY.md update:
-    python scripts/migrate-memory
+    python scripts/migrations/migrate-memory
 
 Safe to re-run — existing entries with the same source/tag/content are skipped.
 New entries are appended. Entries removed from MEMORY.md are NOT deleted from

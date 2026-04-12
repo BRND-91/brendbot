@@ -2,10 +2,10 @@
   "id": "GOVERNANCE",
   "version": "v2.1",
   "defs": [
-    {"id": "GOVERNANCE.autogate.ReferenceGate", "t": "ReferenceGate", "d": "All xlink/uses/triggers targets resolve to existing IDs.", "s": "validate.py"},
-    {"id": "GOVERNANCE.autogate.SchemaGate", "t": "SchemaGate", "d": "Every def has id+term, every thm has id+statement, every xlink has from+to.", "s": "validate.py"},
-    {"id": "GOVERNANCE.autogate.HashGate", "t": "HashGate", "d": "Module hash matches sha256 of content; mismatch = tamper alert.", "s": "validate.py"},
-    {"id": "GOVERNANCE.autogate.DependencyGate", "t": "DependencyGate", "d": "Module deps resolve to MANIFEST entries.", "s": "validate.py"},
+    {"id": "GOVERNANCE.autogate.ReferenceGate", "t": "ReferenceGate", "d": "All xlink/uses/triggers targets resolve to existing IDs.", "s": "scripts/migrations/validate_knowledge.py"},
+    {"id": "GOVERNANCE.autogate.SchemaGate", "t": "SchemaGate", "d": "Every def has id+term, every thm has id+statement, every xlink has from+to.", "s": "scripts/migrations/validate_knowledge.py"},
+    {"id": "GOVERNANCE.autogate.HashGate", "t": "HashGate", "d": "Module hash matches sha256 of content; mismatch = tamper alert.", "s": "scripts/migrations/validate_knowledge.py"},
+    {"id": "GOVERNANCE.autogate.DependencyGate", "t": "DependencyGate", "d": "Module deps resolve to MANIFEST entries.", "s": "scripts/migrations/validate_knowledge.py"},
     {"id": "GOVERNANCE.autogate.ScopeGate", "t": "ScopeGate", "d": "Source natural scope must match query domain.", "s": "GOVERNANCE"},
     {"id": "GOVERNANCE.autogate.CategoryGate", "t": "CategoryGate", "d": "Exclude magazine, lifestyle, advocacy-biased sources.", "s": "GOVERNANCE"},
     {"id": "GOVERNANCE.autogate.BiasGate", "t": "BiasGate", "d": "Downweight sources with predictive bleed.", "s": "GOVERNANCE"},
@@ -16,12 +16,12 @@
     {"id": "GOVERNANCE.autogate.NoMatchFlag", "t": "NoMatchFlag", "d": "kb-query emits NO_MODULE_MATCH when domain module returns no results.", "s": "kb-query"}
   ],
   "autogate": {
-    "_design_note": "Gates are partitioned into machine-checkable (enforced by validate.py at edit time) and LLM-interpreted (natural language guidance for Claude at runtime). Pseudo-formal notation removed from gates that have no computable implementation.",
+    "_design_note": "Gates are partitioned into machine-checkable (enforced by validate_knowledge.py at edit time) and LLM-interpreted (natural language guidance for Claude at runtime). Pseudo-formal notation removed from gates that have no computable implementation.",
     "machine_enforced": {
-      "ReferenceGate":   {"rule": "All xlink/uses/triggers targets resolve to existing IDs", "enforcer": "validate.py", "fail": "block_commit"},
-      "SchemaGate":      {"rule": "Every def has id+term, every thm has id+statement, every xlink has from+to", "enforcer": "validate.py", "fail": "block_commit"},
-      "HashGate":        {"rule": "Module hash matches sha256 of content; mismatch = tamper alert", "enforcer": "validate.py", "fail": "block_commit"},
-      "DependencyGate":  {"rule": "Module deps resolve to MANIFEST entries", "enforcer": "validate.py", "fail": "block_commit"}
+      "ReferenceGate":   {"rule": "All xlink/uses/triggers targets resolve to existing IDs", "enforcer": "scripts/migrations/validate_knowledge.py", "fail": "block_commit"},
+      "SchemaGate":      {"rule": "Every def has id+term, every thm has id+statement, every xlink has from+to", "enforcer": "scripts/migrations/validate_knowledge.py", "fail": "block_commit"},
+      "HashGate":        {"rule": "Module hash matches sha256 of content; mismatch = tamper alert", "enforcer": "scripts/migrations/validate_knowledge.py", "fail": "block_commit"},
+      "DependencyGate":  {"rule": "Module deps resolve to MANIFEST entries", "enforcer": "scripts/migrations/validate_knowledge.py", "fail": "block_commit"}
     },
     "llm_interpreted": {
       "ScopeGate":       {"guidance": "Prefer sources whose natural scope matches the query domain. Reject sources from lifestyle, advocacy, or sponsored contexts.", "fail": "drop"},
@@ -70,7 +70,7 @@
     },
     "edit_surface": {
       "policy": "core_or_crossmap_only",
-      "enforcement": "validate.py (reference resolution + schema + hash check)"
+      "enforcement": "validate_knowledge.py (reference resolution + schema + hash check)"
     }
   },
   "hash_chain": {
@@ -81,7 +81,7 @@
       "Edit -> invalidates module hash + fused hash",
       "Hash mismatch = tamper alert"
     ],
-    "status": "PARTIAL — validate.py checks hash on edit; runtime chain not implemented",
+    "status": "PARTIAL — validate_knowledge.py checks hash on edit; runtime chain not implemented",
     "artifact": "hash.chain"
   },
   "audit": {
@@ -116,7 +116,7 @@
   ],
   "prov": {
     "src_map": {
-      "validate.py": "Machine-enforced gate — implemented in validate.py",
+      "scripts/migrations/validate_knowledge.py": "Machine-enforced gate — implemented in scripts/migrations/validate_knowledge.py",
       "GOVERNANCE": "Self-referential — gate defined in this module",
       "kb-query": "Retrieval-time annotation — implemented in kb-query script"
     }

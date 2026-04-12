@@ -640,7 +640,8 @@ class SessionPool:
         self._bot_name = bot_name
         self._on_text = on_text
         self._sessions: dict[str, Session] = {}
-        self._lock = asyncio.Lock()
+        self._lock = asyncio.Lock()          # guards _sessions dict reads/writes
+        self._creation_locks: dict[str, asyncio.Lock] = {}  # per-key; serialises _create()
 
     async def route_message(
         self,
@@ -660,6 +661,10 @@ class SessionPool:
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
+        # Phase 1: check existing session under the global dict lock.
+        # Dead sessions are reaped here. If none exists, acquire a per-key
+        # creation lock before calling _create() so concurrent messages for
+        # the same channel don't each spin up independent sessions.
         async with self._lock:
             session = self._sessions.get(key)
             if session is not None and not session.is_alive():
@@ -667,10 +672,24 @@ class SessionPool:
                 await session.stop()
                 del self._sessions[key]
                 session = None
-            is_new_session = session is None
-            if session is None:
-                session = await self._create(key, tier, platform, chat_id, is_group)
-                self._sessions[key] = session
+            if key not in self._creation_locks:
+                self._creation_locks[key] = asyncio.Lock()
+            creation_lock = self._creation_locks[key]
+
+        is_new_session = False
+        if session is None:
+            # Phase 2: per-key lock serialises creation for this channel only.
+            # Other channels are unaffected — no global lock held during _create().
+            async with creation_lock:
+                # Re-check under creation lock: another coroutine may have
+                # completed _create() while we were waiting.
+                async with self._lock:
+                    session = self._sessions.get(key)
+                if session is None or not session.is_alive():
+                    session = await self._create(key, tier, platform, chat_id, is_group)
+                    async with self._lock:
+                        self._sessions[key] = session
+                    is_new_session = True
 
         context_block = ""
         if context_messages and is_new_session:
@@ -879,14 +898,21 @@ class SessionPool:
         logger.info("Restarting session %s after context refresh", key)
         async with self._lock:
             old_session = self._sessions.pop(key, None)
-            if old_session:
-                try:
-                    await old_session.stop()
-                except Exception as exc:
-                    logger.warning("Error stopping session %s during restart: %s", key, exc)
+        if old_session:
+            try:
+                await old_session.stop()
+            except Exception as exc:
+                logger.warning("Error stopping session %s during restart: %s", key, exc)
+        # Use per-key creation lock so restart doesn't block other channels.
+        creation_lock = self._creation_locks.get(key)
+        if creation_lock is None:
+            creation_lock = asyncio.Lock()
+            self._creation_locks[key] = creation_lock
+        async with creation_lock:
             try:
                 new_session = await self._create(key, tier, platform, chat_id, is_group)
-                self._sessions[key] = new_session
+                async with self._lock:
+                    self._sessions[key] = new_session
                 logger.info("Session %s restarted successfully", key)
             except Exception as exc:
                 logger.error("Failed to recreate session %s after restart: %s", key, exc)
@@ -896,3 +922,4 @@ class SessionPool:
             for session in self._sessions.values():
                 await session.stop()
             self._sessions.clear()
+

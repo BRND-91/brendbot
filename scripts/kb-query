@@ -5,7 +5,8 @@ Usage:
     kb-query search <terms>          Full-text search across all modules
     kb-query defs <MODULE>           List all definitions in a module
     kb-query facts <MODULE> [topic]  List facts (optionally filtered by topic)
-    kb-query thms <MODULE>           List theorems in a module
+    kb-query thms <MODULE>           List core theorems in a module
+    kb-query thms <MODULE> --extended List all theorems including extended (geometry, etc.)
     kb-query def <ID>                Look up a specific definition by ID
     kb-query gates                   List all governance gates
     kb-query xlinks <MODULE>         List crosslinks for a module
@@ -171,22 +172,38 @@ def cmd_facts(module, topic=None):
         print(f"{tier} {t}.{name}={desc}{src_tag}")
 
 
-def cmd_thms(module):
+def cmd_thms(module, include_extended=False):
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT id, description, formal, source FROM theorems WHERE module_id=? ORDER BY id",
-        (module.upper(),)
-    ).fetchall()
+    if include_extended:
+        rows = conn.execute(
+            "SELECT id, description, formal, source, extended FROM theorems WHERE module_id=? ORDER BY extended, id",
+            (module.upper(),)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, description, formal, source, extended FROM theorems WHERE module_id=? AND extended=0 ORDER BY id",
+            (module.upper(),)
+        ).fetchall()
     if not rows:
-        print(f"No thms for {module}")
+        # Check if there are extended-only theorems the user might want
+        ext_count = conn.execute(
+            "SELECT COUNT(*) FROM theorems WHERE module_id=? AND extended=1",
+            (module.upper(),)
+        ).fetchone()[0]
+        if ext_count and not include_extended:
+            print(f"No core thms for {module}. {ext_count} extended theorems available (use --extended).")
+        else:
+            print(f"No thms for {module}")
         return
-    for tid, desc, formal, src in rows:
+    for tid, desc, formal, src, ext in rows:
         tier = _provenance_tag(src, conn)
         line = f"{tier} {tid}={desc}" if desc else f"{tier} {tid}"
         if formal:
             line += f"|F:{formal}"
         if src:
             line += f"|{src}"
+        if ext:
+            line += " [EXTENDED]"
         print(line)
 
 
@@ -348,7 +365,8 @@ def main():
         topic = sys.argv[3] if len(sys.argv) >= 4 else None
         cmd_facts(sys.argv[2], topic)
     elif cmd == "thms" and len(sys.argv) >= 3:
-        cmd_thms(sys.argv[2])
+        extended = "--extended" in sys.argv
+        cmd_thms(sys.argv[2], include_extended=extended)
     elif cmd == "def" and len(sys.argv) >= 3:
         cmd_def_lookup(sys.argv[2])
     elif cmd == "gates":

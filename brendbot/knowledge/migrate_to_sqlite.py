@@ -34,7 +34,7 @@ def create_schema(conn):
         CREATE TABLE modules (id TEXT PRIMARY KEY, version TEXT, description TEXT, deps TEXT, source_map TEXT);
         CREATE TABLE definitions (id TEXT PRIMARY KEY, module_id TEXT, term TEXT, description TEXT, formal TEXT, source TEXT);
         CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, module_id TEXT, topic TEXT, name TEXT, description TEXT, source TEXT);
-        CREATE TABLE theorems (id TEXT, module_id TEXT, name TEXT, description TEXT, formal TEXT, source TEXT, PRIMARY KEY (id, module_id));
+        CREATE TABLE theorems (id TEXT, module_id TEXT, name TEXT, description TEXT, formal TEXT, source TEXT, extended INTEGER DEFAULT 0, PRIMARY KEY (id, module_id));
         CREATE TABLE crosslinks (id INTEGER PRIMARY KEY AUTOINCREMENT, from_id TEXT, to_ids TEXT, link_type TEXT, note TEXT, module_id TEXT);
         CREATE TABLE governance_gates (id TEXT PRIMARY KEY, rule TEXT, fail_action TEXT, note TEXT);
         CREATE TABLE governance_provenance (tag TEXT PRIMARY KEY, meaning TEXT);
@@ -104,7 +104,16 @@ def migrate_module(conn, module_id):
         desc = to_str(t.get("desc") or t.get("stmt") or t.get("d", ""))
         formal = to_str(t.get("formal") or t.get("f", ""))
         src = to_str(t.get("source") or t.get("s", ""))
-        conn.execute("INSERT OR REPLACE INTO theorems VALUES (?,?,?,?,?,?)", (tid, module_id, tid, desc, formal, src))
+        conn.execute("INSERT OR REPLACE INTO theorems VALUES (?,?,?,?,?,?,?)", (tid, module_id, tid, desc, formal, src, 0))
+        rows += 1
+
+    # P3: Extended theorems (geometry, spatial) — lower priority, separate tier.
+    for t in data.get("thms_extended", []):
+        tid = to_str(t.get("id") or t.get("name", ""))
+        desc = to_str(t.get("desc") or t.get("stmt") or t.get("d", ""))
+        formal = to_str(t.get("formal") or t.get("f", ""))
+        src = to_str(t.get("source") or t.get("s", ""))
+        conn.execute("INSERT OR REPLACE INTO theorems VALUES (?,?,?,?,?,?,?)", (tid, module_id, tid, desc, formal, src, 1))
         rows += 1
 
     for xl in data.get("xlinks", []):

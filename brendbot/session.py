@@ -230,6 +230,12 @@ class Session:
         self._tool_call_count: int = 0
         # Completed turn counter — drives rolling checkpoint writes.
         self._completed_turn_count: int = 0
+        # ── P2: Gate compliance tracking ──────────────────────────────────
+        # Per-turn tracking of which modules were queried and whether
+        # domain grounding was active. Written into checkpoint entries
+        # so gate compliance is empirically observable.
+        self._turn_modules_queried: set[str] = set()
+        self._turn_kb_query_used: bool = False
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -391,6 +397,17 @@ class Session:
                         tool_cmd = (block.input or {}).get("command", "")
                         if "send-discord" in tool_cmd:
                             self._turn_used_send_discord = True
+                        # P2: Track kb-query usage and which modules were queried.
+                        if "kb-query" in tool_cmd:
+                            self._turn_kb_query_used = True
+                            # Extract module from commands like: kb-query defs BUILDSCI
+                            import re as _re
+                            _mod_match = _re.search(
+                                r'kb-query\s+(?:defs|facts|thms|topics|xlinks)\s+(\w+)',
+                                tool_cmd,
+                            )
+                            if _mod_match:
+                                self._turn_modules_queried.add(_mod_match.group(1).upper())
         elif isinstance(message, ResultMessage):
             # Auto-route buffered text to Discord if bot didn't use send-discord.
             # This keeps internal reasoning ("no response warranted") in console
@@ -461,6 +478,14 @@ class Session:
             self._react_msg_id = ""
             self._active_reactions = set()
             self._module_emote_count = 0
+
+            # ── P2: Snapshot gate compliance into last assistant turn ──
+            if self._turn_log:
+                last = self._turn_log[-1]
+                if last.get("role") == "assistant":
+                    if self._turn_modules_queried:
+                        last["kb_modules"] = sorted(self._turn_modules_queried)
+                    last["kb_grounded"] = self._turn_kb_query_used
             # Context refresh state transition handled in _receive_loop after _handle() returns.
 
     def set_reaction_target(
@@ -582,7 +607,12 @@ class Session:
                 # User turns carry more signal — give them more room.
                 cap = 400 if role == "user" else 200
                 truncated = text[:cap] + ("…" if len(text) > cap else "")
-                lines.append(f"{role[0]}:{truncated}\n")
+                # P2: Append gate compliance tag for grounded assistant turns.
+                gate_tag = ""
+                if role == "assistant" and entry.get("kb_grounded"):
+                    mods = entry.get("kb_modules", [])
+                    gate_tag = f"|kb:{','.join(mods)}" if mods else "|kb:?"
+                lines.append(f"{role[0]}{gate_tag}:{truncated}\n")
             summary_path.write_text("".join(lines))
             logger.info("[%s] checkpoint written (%d turns, turn=%d)",
                         self.key, len(self._turn_log), self._completed_turn_count)
@@ -802,6 +832,9 @@ class SessionPool:
 
         # Reset per-turn tool call budget for the incoming message.
         session._tool_call_count = 0
+        # P2: Reset gate compliance tracking for the new turn.
+        session._turn_modules_queried = set()
+        session._turn_kb_query_used = False
 
         # Reactions disabled by admin directive.
         # set_reaction_target / _react calls removed.
@@ -855,13 +888,19 @@ class SessionPool:
                         f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
                         f"  {kb_query_path} defs <MODULE>          — list definitions\n"
                         f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
-                        f"  {kb_query_path} thms <MODULE>          — list theorems\n"
+                        f"  {kb_query_path} thms <MODULE>          — core theorems\n"
+                        f"  {kb_query_path} thms <MODULE> --extended — all theorems (incl. geometry etc.)\n"
                         f"  {kb_query_path} def <ID>               — look up one definition\n"
                         f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
                         f"  {kb_query_path} gates                  — governance gates\n"
                         "Use kb-query for all knowledge lookups (~200 bytes per result). "
                         "Exception: IMAGEGEN.json via Read (non-standard structure).\n"
-                        "Do not answer from training weights when a module is available."
+                        "Do not answer from training weights when a module is available.\n\n"
+                        "## MODULE PRIORITY\n"
+                        "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
+                        "Extended theorems (geometry, spatial) are available via --extended flag\n"
+                        "but cost more context. Only query extended when the question explicitly\n"
+                        "involves spatial reasoning, geometry proofs, or dimensional analysis."
                     )
             except Exception as exc:
                 logger.warning("FUSED-CORE system prompt index build failed: %s", exc)

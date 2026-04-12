@@ -745,7 +745,8 @@ class SessionPool:
         # from SCRIPTS_DIR so hardcoded paths never appear in soul files.
         send_cmd = f'{SCRIPTS_DIR}/send-discord "{chat_id}" "<message>"'
         react_cmd = f'{SCRIPTS_DIR}/react-discord "{chat_id}"'
-        generate_image_cmd = f'{SCRIPTS_DIR}/generate-image "{chat_id}"'
+        generate_image_cmd = f'{SCRIPTS_DIR}/generate-image'
+        kb_db_path = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 
         template_file = "GROUP_SOUL.md" if is_group else "SOUL.md"
         template = _load_template(template_file)
@@ -754,6 +755,7 @@ class SessionPool:
             "send_command": send_cmd,
             "react_command": react_cmd,
             "generate_image_command": generate_image_cmd,
+            "kb_path": str(kb_db_path),
             "platform_name": "Discord",
         })
 
@@ -794,8 +796,12 @@ class SessionPool:
                         f"  {kb_query_path} def <ID>               — look up one definition\n"
                         f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
                         f"  {kb_query_path} gates                  — governance gates\n"
-                        "Use kb-query for all knowledge lookups (~200 bytes per result). "
-                        "Exception: IMAGEGEN.json via Read (non-standard structure).\n"
+                        f"  {kb_query_path} imgstyle <id|label>    — image style descriptor set\n"
+                        f"  {kb_query_path} imgstyle list          — list all styles\n"
+                        f"  {kb_query_path} imgfail <class>        — remediation for render failure\n"
+                        f"  {kb_query_path} imgfail list           — list all failure classes\n"
+                        f"  {kb_query_path} imglog recent [N]      — recent render outcomes\n"
+                        "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
                         "Do not answer from training weights when a module is available.\n\n"
                         "## MODULE PRIORITY\n"
                         "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"

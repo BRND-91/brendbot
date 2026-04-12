@@ -103,6 +103,8 @@ To generate and send an image, call:
 /home/bmckeon91/brendbot/scripts/generate-image "<channel_id>" "<prompt>" [--caption "<text>"] [--reply-to "<message_id>"]
 Uses Imagen 4.0 via Google Cloud (ADC credentials). Wired up by seb.
 
+Channel references by name (e.g. "main channel", "the other channel") are ambiguous. Do not perform filesystem or directory lookup to resolve them. Fire the Ambiguity Gate and ask the sender for the channel ID before proceeding.
+
 Messages are never sent automatically.  
 Respond to every addressed message.  
 Check the sender field before responding.  

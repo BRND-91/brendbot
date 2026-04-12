@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""
+Re-seed prompt_styles and render_failures tables from IMAGEGEN.json style_library.
+
+Use this after editing IMAGEGEN.json to update the style descriptors and failure
+patterns in the DB without rebuilding the entire knowledge.db from scratch.
+
+Run from project root:
+    python scripts/migrate-imagegen
+    # or after chmod +x:
+    ./scripts/migrate-imagegen
+
+Safe to re-run. Existing rows are replaced (INSERT OR REPLACE).
+render_outcomes are never touched — outcome history is preserved.
+"""
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+KNOWLEDGE_DIR = PROJECT_ROOT / "brendbot" / "knowledge"
+DB_PATH = KNOWLEDGE_DIR / "knowledge.db"
+IMAGEGEN_PATH = KNOWLEDGE_DIR / "IMAGEGEN.json"
+
+
+def ensure_tables(conn):
+    """Create prompt_styles, render_failures, render_outcomes if not present.
+    Idempotent — safe to call on an existing DB."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS prompt_styles (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            core_descriptors TEXT NOT NULL,
+            supplemental_descriptors TEXT,
+            negative_space TEXT,
+            fail_modes TEXT,
+            model_tier TEXT,
+            notes TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS render_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            failure_class TEXT NOT NULL UNIQUE,
+            trigger_pattern TEXT,
+            remediation TEXT NOT NULL,
+            example TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS render_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_hash TEXT,
+            attempt_number INTEGER DEFAULT 1,
+            prompt_used TEXT,
+            style_ids TEXT,
+            constraint_score INTEGER,
+            succeeded INTEGER DEFAULT 0,
+            failure_class TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_render_request ON render_outcomes (request_hash);
+        CREATE INDEX IF NOT EXISTS idx_render_style ON render_outcomes (style_ids);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_prompts USING fts5(
+            id, label, core_descriptors, supplemental_descriptors, notes
+        );
+    """)
+
+
+def seed_styles(conn, data):
+    style_lib = data.get("style_library", {})
+    rows = 0
+    for style_id, entry in style_lib.items():
+        if style_id.startswith("_"):
+            continue
+        core = entry.get("core", [])
+        supplemental = entry.get("supplemental", [])
+        fail_modes = entry.get("fail_modes", [])
+        tier = entry.get("tier", "standard")
+        notes = entry.get("note", "")
+        negative_space = "; ".join(fail_modes) if fail_modes else ""
+        label = style_id.replace("_", " ").title()
+
+        conn.execute(
+            "INSERT OR REPLACE INTO prompt_styles "
+            "(id, label, core_descriptors, supplemental_descriptors, negative_space, fail_modes, model_tier, notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (style_id, label, ", ".join(core), ", ".join(supplemental),
+             negative_space, json.dumps(fail_modes), tier, notes)
+        )
+        # Rebuild FTS entry — delete old, insert new
+        conn.execute("DELETE FROM fts_prompts WHERE id=?", (style_id,))
+        conn.execute(
+            "INSERT INTO fts_prompts (id, label, core_descriptors, supplemental_descriptors, notes) VALUES (?,?,?,?,?)",
+            (style_id, label, ", ".join(core), ", ".join(supplemental), notes)
+        )
+        rows += 1
+    return rows
+
+
+def seed_failures(conn):
+    known_failures = [
+        {
+            "failure_class": "style_not_transferred",
+            "trigger_pattern": "Named style reference without descriptor override terms",
+            "remediation": "Replace named style reference with core descriptor set from prompt_styles. "
+                           "Add 'non-photographic' explicitly. All three core terms required.",
+            "example": "Replace 'JJK style' with 'manga linework, ink crosshatching, non-photographic'",
+        },
+        {
+            "failure_class": "photorealism_bleed",
+            "trigger_pattern": "Style directive present but named landmark or IP character also present",
+            "remediation": "Replace named landmark with generic description. Replace IP character name "
+                           "with physical description. Named references override style directives.",
+            "example": "Replace 'Eiffel Tower' with 'enormous iron lattice tower'; replace character name with appearance desc",
+        },
+        {
+            "failure_class": "element_dropped",
+            "trigger_pattern": "3+ hard constraints (style + interaction + spatial) stacked in single prompt",
+            "remediation": "ALL-CAPS the dropped element. Add 'PRIMARY SUBJECT:' prefix. "
+                           "Reduce other constraints to their minimum viable terms. "
+                           "Use multi_element_anchored template.",
+            "example": "PRIMARY SUBJECT: ENORMOUS IRON LATTICE TOWER — do not drop",
+        },
+        {
+            "failure_class": "text_malformed",
+            "trigger_pattern": "Small-scale text overlay requested; font style unspecified",
+            "remediation": "Describe text at larger implied scale. Specify font style explicitly "
+                           "(bold sans-serif, hand-lettered, block capitals). "
+                           "Isolate text element as last constraint in prompt.",
+            "example": "Large bold hand-lettered sign reading [TEXT] — positioned lower right",
+        },
+        {
+            "failure_class": "physical_interaction_failed",
+            "trigger_pattern": "Carry, grip, punch, or direct physical contact between figures",
+            "remediation": "Substitute reliable interaction: 'arm resting across shoulders', "
+                           "'standing side by side', 'silhouette proximity'. "
+                           "If contact is critical, isolate to single constraint — remove style or spatial.",
+            "example": "Replace 'carrying over shoulder' with 'standing beside, arm across shoulders'",
+        },
+        {
+            "failure_class": "safety_block_silent",
+            "trigger_pattern": "Named real person in prompt; returns None with no error",
+            "remediation": "Replace name with physical description. Block is name-keyed not appearance-keyed. "
+                           "Disclose block to user before substituting — do not silently replace.",
+            "example": "Replace 'Elon Musk' with 'tall thin man, short hair, casual clothing'",
+        },
+        {
+            "failure_class": "constraint_budget_exceeded",
+            "trigger_pattern": "3 constraint categories active (style + spatial + interaction)",
+            "remediation": "Run --dry-run first to confirm category count. Drop lowest-priority category. "
+                           "If all three required, set expectation with user before first call — "
+                           "state high failure risk explicitly.",
+            "example": "Drop spatial constraint or simplify to single directional term",
+        },
+    ]
+    rows = 0
+    for f in known_failures:
+        conn.execute(
+            "INSERT OR REPLACE INTO render_failures "
+            "(failure_class, trigger_pattern, remediation, example) VALUES (?,?,?,?)",
+            (f["failure_class"], f["trigger_pattern"], f["remediation"], f["example"])
+        )
+        rows += 1
+    return rows
+
+
+def main():
+    if not DB_PATH.exists():
+        print(f"Error: {DB_PATH} not found. Run migrate_to_sqlite.py first.", file=sys.stderr)
+        sys.exit(1)
+
+    if not IMAGEGEN_PATH.exists():
+        print(f"Error: {IMAGEGEN_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    data = json.loads(IMAGEGEN_PATH.read_text(encoding="utf-8"))
+    conn = sqlite3.connect(str(DB_PATH))
+
+    ensure_tables(conn)
+
+    style_rows = seed_styles(conn, data)
+    print(f"  prompt_styles: {style_rows} rows seeded/updated")
+
+    fail_rows = seed_failures(conn)
+    print(f"  render_failures: {fail_rows} rows seeded/updated")
+
+    conn.commit()
+    conn.close()
+    print(f"\nDone. Run 'kb-query imgstyle list' to verify.")
+
+
+if __name__ == "__main__":
+    main()

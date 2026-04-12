@@ -308,7 +308,7 @@ def _score_message(
 
 
 ENGAGE_THRESHOLD = 0.4      # bottom of middle band — below this, hard drop
-ENGAGE_HARD_PASS = 0.7      # at or above this, skip haiku and engage directly
+ENGAGE_HARD_PASS = 0.9      # at or above this, skip haiku and engage directly
 
 
 def record_bot_spoke(channel_id: str) -> None:
@@ -454,16 +454,15 @@ class DiscordListener:
 
             if message.guild:
                 # ── Name-triggered path ───────────────────────────────────────
-                # If the bot's name was used (any of: brend, brendan, brendbot),
-                # bypass all scoring and haiku gating and route directly to Claude.
-                # The knowledge-registry reasoning in FUSED-CORE handles engagement
-                # from there — the name is sufficient signal that the message is
-                # addressed to the bot.
-                if mentioned or name_mentioned:
+                # Direct @mention: hard pass — the bot was explicitly addressed.
+                # Name mention (brend/brendbot in text): routes through scoring +
+                # haiku gating same as ambient. Name is a hint, not a guarantee.
+                if mentioned:
                     heuristic_pass = True
                     use_haiku = False
                 else:
                     # ── Ambient path — reply-chain + heuristic scoring ────────
+                    # Name-mentioned messages enter here and are scored normally.
                     reply_to_bot = (
                         reply_ref is not None
                         and str(reply_ref.author.id) == self.bot_id
@@ -475,6 +474,11 @@ class DiscordListener:
                         reply_to_bot,
                         recent_context=context_snapshot,
                     )
+                    # Name mention boosts score — sufficient signal that the message
+                    # is directed at the bot, but not a bypass.
+                    if name_mentioned:
+                        engage_result.score += 0.4
+
                     matched_domains = engage_result.domains
 
                     if engage_result.score >= ENGAGE_HARD_PASS:
@@ -487,17 +491,18 @@ class DiscordListener:
                         heuristic_pass = False
                         use_haiku = False  # hard drop
 
-                # Admin bypass: admin messages skip all gates regardless of path.
-                cfg = get_config()
-                if sender_id == cfg.admin_discord_id:
-                    heuristic_pass = True
-                    use_haiku = False
+                # Admin messages follow the same engagement gates as all others.
+                # Admin tier governs trust and permissions only, not engagement bypass.
 
                 # Haiku ambiguity classifier — middle band of ambient path only.
+                # On haiku fail, react with an emote rather than dropping silently.
                 if not heuristic_pass:
                     if use_haiku:
                         engage = await _haiku_gatecheck(text, context_snapshot)
                         if not engage:
+                            await react_to_message(
+                                channel_id, str(message.id), "👀"
+                            )
                             return
                     else:
                         return

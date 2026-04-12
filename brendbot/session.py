@@ -175,6 +175,37 @@ _CONTEXT_REFRESH_THRESHOLD = 400_000
 # Soft warning threshold.
 _CONTEXT_SOFT_WARNING = 320_000
 
+# ── Cognitive load model (Phase 3 #1A) ────────────────────────────────────
+# Token count alone underweights high-intensity turns. A turn that runs
+# 6 Bash calls + a haiku invocation costs more cognitively than a turn
+# that emits 50 tokens of text, even though the token threshold treats
+# them similarly. The load score below tracks compounding pressure across
+# turns and triggers a preemptive restart when load exceeds budget,
+# regardless of where token count sits.
+#
+# Weights are starting guesses. Calibrate against runtime feedback logs
+# once enough data accumulates. Tune via engagement.yaml in a future pass
+# if the values prove load-bearing.
+_LOAD_WEIGHT_TOKENS_PER_K = 1.0       # 1 unit per 1000 input tokens
+_LOAD_WEIGHT_BASH_CALL = 5.0          # each Bash call
+_LOAD_WEIGHT_HAIKU_INVOCATION = 2.0   # each haiku gate call
+_LOAD_WEIGHT_TOOL_OTHER = 1.0         # Read/Write/Edit/Grep/Glob etc.
+
+# Load budget — tuned so a "normal" 320k-token session sits around budget
+# with light tool use, but a session with heavy Bash activity hits budget
+# earlier. 320 (from _LOAD_WEIGHT_TOKENS_PER_K × 320k) + ~40 headroom for
+# accumulated tool work = 360.
+_LOAD_BUDGET_PREEMPTIVE = 360.0
+
+# Shallow rest threshold (Phase 3 #1B). When cumulative load crosses this
+# but stays below preemptive, fire a rest cycle that flushes per-turn tool
+# counters and injects a brief "rest" system message — without respawning
+# the subprocess. Cheaper than a full restart and addresses tool-load
+# accumulation without paying the cold-start cost. Note: this does NOT
+# reduce input tokens (only a real restart does), it only resets the
+# non-token components of the load score.
+_LOAD_BUDGET_SHALLOW = 280.0
+
 # Max turns to retain in the rolling turn log.
 _MAX_TURN_LOG = 30
 
@@ -248,6 +279,36 @@ class Session:
         self._completed_turn_count: int = 0
         self._turn_modules_queried: set[str] = set()
         self._turn_kb_query_used: bool = False
+        # ── Cognitive load tracking (Phase 3 #1A) ─────────────────────
+        # Running cumulative load across turns. Reset only on full restart.
+        # Updated in _handle() ResultMessage branch from per-turn counts.
+        self._cumulative_load: float = 0.0
+        self._cumulative_bash_calls: int = 0
+        self._cumulative_haiku_invocations: int = 0
+        self._cumulative_other_tools: int = 0
+        # Per-turn counters reset before each inject in route_message.
+        self._turn_bash_calls: int = 0
+        self._turn_other_tool_calls: int = 0
+        # Shallow rest tracking (Phase 3 #1B). Set True after a shallow rest
+        # cycle fires. Cleared when cumulative load grows by at least
+        # SHALLOW_RECOVERY_DELTA past the previous trigger point — prevents
+        # the rest cycle from re-firing on every subsequent turn.
+        self._shallow_rested: bool = False
+        self._shallow_rest_count: int = 0
+        # Flag for the next inject: if True, suppress both the response
+        # dispatch AND the silent-drop fallback for the resulting turn.
+        # Used by _trigger_shallow_rest to inject housekeeping that the
+        # model is told not to respond to. Cleared after one turn.
+        self._next_turn_is_housekeeping: bool = False
+        # Phase 3 #2A — session-start timestamp, used as ts_start when an
+        # episode row is written at restart time. Reset implicitly on every
+        # restart because SessionPool._restart_session creates a fresh
+        # Session instance via _create(), which re-runs __init__.
+        from datetime import datetime as _dt
+        self._session_started_at: str = _dt.now().isoformat(timespec="seconds")
+        # Aggregate domains seen across this session segment, for the
+        # episode write at restart time.
+        self._session_domains_seen: set[str] = set()
         # Turn metadata for feedback logging — set by SessionPool.route_message
         # before each inject and read by _fire_on_text after send_message
         # returns the bot_message_id.
@@ -447,6 +508,7 @@ class Session:
                     logger.info("[%s] tool: %s", self.key, block.name)
                     self._turn_tool_called = True  # mark that tool use occurred this turn
                     if block.name == "Bash":
+                        self._turn_bash_calls += 1
                         tool_cmd = (block.input or {}).get("command", "")
                         if "send-discord" in tool_cmd:
                             self._turn_used_send_discord = True
@@ -459,7 +521,26 @@ class Session:
                             )
                             if _mod_match:
                                 self._turn_modules_queried.add(_mod_match.group(1).upper())
+                    else:
+                        # Non-Bash tool use (Read, Write, Edit, Grep, Glob,
+                        # WebSearch, WebFetch, Task, NotebookEdit). Counted
+                        # at lower weight than Bash for cognitive load —
+                        # they're typically faster, narrower, less stateful.
+                        self._turn_other_tool_calls += 1
         elif isinstance(message, ResultMessage):
+            # Phase 3 #1B — housekeeping turns (e.g. shallow rest injection)
+            # suppress both the normal text dispatch and the silent-drop
+            # fallback. The model is told not to respond and we don't want
+            # to leak a Discord message either way. Token usage is still
+            # tracked normally below — the inject did consume tokens.
+            # Flag is one-shot.
+            is_housekeeping = self._next_turn_is_housekeeping
+            if is_housekeeping:
+                self._next_turn_is_housekeeping = False
+                # Clear the text buffer so neither dispatch branch fires.
+                self._turn_text_buffer.clear()
+                logger.debug("[%s] housekeeping turn — suppressing dispatch", self.key)
+
             if (self._turn_text_buffer
                     and not self._turn_used_send_discord
                     and self._on_text
@@ -475,6 +556,7 @@ class Session:
                 asyncio.create_task(self._fire_on_text(text_to_send))
             elif (not self._turn_used_send_discord
                   and not self._turn_tool_called
+                  and not is_housekeeping
                   and self._on_text
                   and self._chat_id):
                 # Silent-drop diagnostic: turn produced no text blocks, no
@@ -532,9 +614,51 @@ class Session:
                             "[%s] context at %d tokens — soft warning, preemptive restart queued",
                             self.key, self._last_input_tokens,
                         )
+
+            # ── Cognitive load update (Phase 3 #1A) ───────────────────
+            # Roll per-turn counters into cumulative load. Compute current
+            # load score as weighted sum and trip preemptive restart if it
+            # exceeds budget — independent of token count. Catches the
+            # heavy-tool-use turns that don't spike tokens but do degrade
+            # the worker's effective capacity.
+            self._cumulative_bash_calls += self._turn_bash_calls
+            self._cumulative_other_tools += self._turn_other_tool_calls
+            current_load = (
+                (self._last_input_tokens / 1000.0) * _LOAD_WEIGHT_TOKENS_PER_K
+                + self._cumulative_bash_calls * _LOAD_WEIGHT_BASH_CALL
+                + self._cumulative_haiku_invocations * _LOAD_WEIGHT_HAIKU_INVOCATION
+                + self._cumulative_other_tools * _LOAD_WEIGHT_TOOL_OTHER
+            )
+            self._cumulative_load = current_load
+            if (current_load >= _LOAD_BUDGET_PREEMPTIVE
+                    and self._context_state == "normal"):
+                self._context_state = "threshold_hit"
+                logger.info(
+                    "[%s] load score %.1f >= budget %.1f — preemptive restart queued "
+                    "(bash=%d, haiku=%d, other=%d, tokens=%d)",
+                    self.key, current_load, _LOAD_BUDGET_PREEMPTIVE,
+                    self._cumulative_bash_calls, self._cumulative_haiku_invocations,
+                    self._cumulative_other_tools, self._last_input_tokens,
+                )
+            elif (current_load >= _LOAD_BUDGET_SHALLOW
+                    and not self._shallow_rested
+                    and self._context_state == "normal"):
+                # Phase 3 #1B — fire shallow rest. Scheduled as a task so
+                # it runs after the current ResultMessage finishes processing
+                # and doesn't block the receive loop.
+                logger.info(
+                    "[%s] load score %.1f >= shallow budget %.1f — rest cycle queued",
+                    self.key, current_load, _LOAD_BUDGET_SHALLOW,
+                )
+                asyncio.create_task(self._trigger_shallow_rest())
+            elif (self._shallow_rested
+                    and current_load < _LOAD_BUDGET_SHALLOW * 0.7):
+                # Recovery: load dropped well below the shallow trigger.
+                # Clear the rested flag so a future spike can re-fire.
+                self._shallow_rested = False
             logger.info(
-                "[%s] turn complete%s (context_tokens=%d)",
-                self.key, cost, self._last_input_tokens,
+                "[%s] turn complete%s (context_tokens=%d, load=%.1f)",
+                self.key, cost, self._last_input_tokens, current_load,
             )
             try:
                 import pathlib
@@ -674,9 +798,90 @@ class Session:
             logger.info("[%s] CONTEXT_SUMMARY.md written (%d turns) — triggering clean restart",
                         self.key, len(self._turn_log))
 
+        # Phase 3 #2A — write an episode row before respawning. Best-effort:
+        # any failure is logged inside write_episode and does not block the
+        # restart. The episode captures the cues (channel, domains, entities,
+        # bookends) that future sessions can use for retrieval matching.
+        try:
+            from brendbot.episodes import write_episode
+            outcome = "ok"
+            if self._shallow_rest_count > 0:
+                outcome = "rest_fired"
+            write_episode(
+                channel=self._chat_id or self.key,
+                ts_start=self._session_started_at,
+                turn_log=list(self._turn_log),
+                domains=sorted(self._session_domains_seen),
+                outcome=outcome,
+            )
+        except Exception as exc:
+            logger.warning("[%s] episode write skipped: %s", self.key, exc)
+
         self._context_state = "restarting"
         if self._on_needs_restart:
             asyncio.create_task(self._on_needs_restart())
+
+    async def _trigger_shallow_rest(self) -> None:
+        """Phase 3 #1B — shallow rest cycle.
+
+        Fires when cumulative load crosses _LOAD_BUDGET_SHALLOW but stays
+        below _LOAD_BUDGET_PREEMPTIVE. Cheaper than _trigger_clean_restart:
+        no subprocess respawn, no CLAUDE.md rebuild, no transcript reseed.
+
+        What it does:
+          - Resets the non-token components of cumulative load
+            (Bash count, haiku count, other tool count) to zero
+          - Recomputes _cumulative_load from the surviving token component
+          - Injects a brief system message telling the model the equivalent
+            of "take a breath" — flush mid-thread tool-use working memory
+            but keep core conversational state
+          - Marks _shallow_rested to prevent re-firing every turn
+
+        What it does NOT do:
+          - Reduce input tokens. The token component of load is unchanged.
+            Only a real restart can free tokens.
+          - Spawn a new subprocess. The model stays in place.
+          - Reset the per-turn lock or in-flight state.
+
+        Cumulative load drops by exactly the tool components, so a session
+        that had load=290 (260 from tokens + 30 from tools) becomes load=260
+        post-rest. The next preemptive trigger still fires when tokens grow
+        enough on their own.
+        """
+        token_component = (self._last_input_tokens / 1000.0) * _LOAD_WEIGHT_TOKENS_PER_K
+        load_before = self._cumulative_load
+
+        self._cumulative_bash_calls = 0
+        self._cumulative_haiku_invocations = 0
+        self._cumulative_other_tools = 0
+        self._cumulative_load = token_component
+        self._shallow_rested = True
+        self._shallow_rest_count += 1
+
+        logger.info(
+            "[%s] shallow rest #%d — load %.1f → %.1f (token component preserved)",
+            self.key, self._shallow_rest_count, load_before, token_component,
+        )
+
+        # Inject a brief rest message. The model receives it as a normal
+        # user-turn injection but it carries an explicit do-not-respond
+        # marker so the result handler routes it as housekeeping.
+        rest_message = (
+            "<system-rest>\n"
+            "Brief rest cycle. Discard mid-thread tool-use working memory "
+            "from prior turns in this session — the accumulated context of "
+            "what tools were just called and why is no longer needed for "
+            "the next user message. Keep core conversational state and "
+            "memory of who you are talking to. Do not respond to this "
+            "message. The next user message will arrive normally.\n"
+            "</system-rest>"
+        )
+        try:
+            self._next_turn_is_housekeeping = True
+            await self.inject(rest_message)
+        except Exception as exc:
+            logger.warning("[%s] shallow rest injection failed: %s", self.key, exc)
+            self._next_turn_is_housekeeping = False
 
     def _build_options(self) -> ClaudeAgentOptions:
         import os
@@ -910,6 +1115,7 @@ class SessionPool:
         domain_hint: str = "",
         address_level: str = "high",
         score: float | None = None,
+        haiku_invoked: bool = False,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -970,8 +1176,59 @@ class SessionPool:
         # address_level surfaces FUSED-CORE Budget Throttle to the model AND is
         # used by _permission_check to cap the per-turn Bash budget below.
         addr_attr = f" address_level='{escape(address_level)}'"
+
+        # Phase 3 #2B — retrieval cue scoring at message ingest.
+        # Query prior episodes for this channel matching the current
+        # domain hints. If matches exist, prepend a brief <recall> block
+        # to the message — bookended summaries from up to 3 prior session
+        # segments. This implements the encoding-specificity principle:
+        # the cue at retrieval time (current channel + matched domains)
+        # surfaces memories whose encoding context matched.
+        #
+        # Hard-bounded to ~600 chars total to prevent recall bloat.
+        # Logged for hit-rate audit.
+        recall_block = ""
+        try:
+            from brendbot.episodes import query_episodes
+            current_domains = (
+                sorted(domain_hint.split(",")) if domain_hint else []
+            )
+            episodes = query_episodes(
+                channel=chat_id,
+                domains=current_domains,
+                limit=3,
+            )
+            if episodes:
+                recall_lines = []
+                used_chars = 0
+                for ep in episodes:
+                    summary = (ep.get("summary") or "")[:200]
+                    if not summary:
+                        continue
+                    line = (
+                        f"  <prior_episode ts={quoteattr(ep.get('ts_end', ''))} "
+                        f"domains={quoteattr(ep.get('domains', ''))} "
+                        f"turns='{ep.get('turn_count', 0)}'>"
+                        f"{escape(summary)}</prior_episode>"
+                    )
+                    if used_chars + len(line) > 600:
+                        break
+                    recall_lines.append(line)
+                    used_chars += len(line)
+                if recall_lines:
+                    recall_block = (
+                        "\n<recall>\n" + "\n".join(recall_lines) + "\n</recall>\n"
+                    )
+                    logger.info(
+                        "[%s] recall injected: %d episode(s), %d chars",
+                        key, len(recall_lines), used_chars,
+                    )
+        except Exception as exc:
+            logger.warning("[%s] recall query skipped: %s", key, exc)
+
         wrapped = (
             f"{context_block}"
+            f"{recall_block}"
             f"<message platform='{platform}' sender='{sender_id}' "
             f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}"
             f"{domain_attr}{addr_attr}"
@@ -988,10 +1245,21 @@ class SessionPool:
         session._turn_user_text = text
         session._turn_score = score
         session._turn_domains = sorted(domain_hint.split(",")) if domain_hint else []
+        # Phase 3 #2A — accumulate domains seen across the whole session segment
+        # for the episode row written at restart time.
+        if session._turn_domains:
+            session._session_domains_seen.update(session._turn_domains)
         session.log_turn("user", text)
         session._tool_call_count = 0
         session._turn_modules_queried = set()
         session._turn_kb_query_used = False
+        # Reset per-turn load counters; cumulative counters persist until restart.
+        session._turn_bash_calls = 0
+        session._turn_other_tool_calls = 0
+        # If the engagement gate fired the haiku classifier on this message,
+        # account for it in the cumulative load score (Phase 3 #1A).
+        if haiku_invoked:
+            session._cumulative_haiku_invocations += 1
 
         await session.inject(wrapped)
 

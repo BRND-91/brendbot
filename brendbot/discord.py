@@ -529,8 +529,10 @@ class DiscordListener:
                 # >= 0.6 to engage anyway, and log to logs/haiku_failures.log so
                 # outages don't silently drop ambiguous messages (regression seen
                 # 2026-04-12 when API auth was misconfigured for ~1 minute).
+                haiku_invoked = False
                 if not heuristic_pass:
                     if use_haiku:
+                        haiku_invoked = True  # tracked for cognitive load (Phase 3 #1A)
                         haiku_result = await _haiku_gatecheck_with_reason(
                             text, context_snapshot
                         )
@@ -555,6 +557,9 @@ class DiscordListener:
                             return
                     else:
                         return
+            else:
+                # DM path — no engagement gate, no haiku.
+                haiku_invoked = False
 
             # Download and format attachments
             att_text = await _format_attachments(message.attachments)
@@ -642,6 +647,7 @@ class DiscordListener:
                 domain_hint=",".join(sorted(matched_domains)) if matched_domains else "",
                 address_level=address_level,
                 score=final_score,
+                haiku_invoked=haiku_invoked,
             )
 
         @client.event

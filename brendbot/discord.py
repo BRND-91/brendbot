@@ -138,24 +138,31 @@ async def remove_reaction(channel_id: str, message_id: str, emoji: str) -> None:
         logger.warning("Failed to remove reaction from %s: %s", message_id, e)
 
 
-async def send_message(channel_id: str, text: str) -> None:
-    """Send a message to a Discord channel by ID."""
+async def send_message(channel_id: str, text: str) -> str | None:
+    """Send a message to a Discord channel by ID.
+    Returns the first chunk's message ID (str) so callers can log it for
+    feedback correlation, or None on failure / pre-ready dispatch."""
     if _discord_client is None:
         logger.warning("send_message called before client is ready")
-        return
+        return None
     channel = _discord_client.get_channel(int(channel_id))
     if channel is None:
         try:
             channel = await _discord_client.fetch_channel(int(channel_id))
         except Exception as e:
             logger.error("Could not fetch channel %s: %s", channel_id, e)
-            return
+            return None
     try:
+        first_msg_id: str | None = None
         for chunk in [text[i:i+2000] for i in range(0, len(text), 2000)]:
-            await channel.send(chunk)
+            sent = await channel.send(chunk)
+            if first_msg_id is None:
+                first_msg_id = str(sent.id)
         record_bot_spoke(channel_id)
+        return first_msg_id
     except Exception as e:
         logger.error("Failed to send message to %s: %s", channel_id, e)
+        return None
 
 
 # ── Engagement config: single source of truth ────────────────────────────
@@ -376,6 +383,7 @@ class DiscordListener:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
+        intents.reactions = True  # admin feedback emote handler in on_raw_reaction_add
 
         client = discord.Client(intents=intents)
         self._client = client
@@ -460,6 +468,7 @@ class DiscordListener:
             # DMs are always treated as direct address — full tool budget.
             address_level = "high"
             matched_domains: set[str] = set()
+            final_score: float | None = None  # set in guild path; None in DMs
 
             if message.guild:
                 # ── Name-triggered path ───────────────────────────────────────
@@ -472,6 +481,10 @@ class DiscordListener:
                     # @mention is unconditionally high address regardless of score.
                     address_level = "high"
                     matched_domains = set()
+                    # Score not computed on @mention path; use sentinel so the
+                    # feedback log can distinguish "mention bypass" from
+                    # "scored 0" at audit time.
+                    final_score = None
                 else:
                     # ── Ambient path — reply-chain + heuristic scoring ────────
                     # Name-mentioned messages enter here and are scored normally.
@@ -496,6 +509,7 @@ class DiscordListener:
                     address_level = _classify_address(
                         engage_result.score, is_at_mention=False
                     )
+                    final_score = engage_result.score
 
                     if engage_result.score >= ENGAGE_HARD_PASS:
                         heuristic_pass = True
@@ -627,6 +641,7 @@ class DiscordListener:
                 is_direct_mention=is_direct_mention,
                 domain_hint=",".join(sorted(matched_domains)) if matched_domains else "",
                 address_level=address_level,
+                score=final_score,
             )
 
         @client.event
@@ -638,6 +653,46 @@ class DiscordListener:
         async def on_resumed() -> None:
             logger.info("Reconnected to Discord")
             self._ready.set()
+
+        @client.event
+        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+            """Admin-only feedback channel.
+
+            Filters: (1) reactor must be the configured admin, (2) emoji
+            must be in FEEDBACK_REACTIONS, (3) message must have been
+            posted by this bot. All three conditions silent-drop on miss.
+            Surviving events append a row to logs/feedback_events.jsonl.
+
+            Uses raw reactions so feedback works on bot messages from
+            sessions older than the discord.py message cache.
+            """
+            from brendbot.feedback import FEEDBACK_REACTIONS, log_feedback_event
+            cfg = get_config()
+            if str(payload.user_id) != cfg.admin_discord_id:
+                return
+            emoji_name = str(payload.emoji)
+            if emoji_name not in FEEDBACK_REACTIONS:
+                return
+            # Verify the reacted-to message was posted by the bot. fetch_message
+            # is required because raw events don't include message author.
+            try:
+                channel = client.get_channel(payload.channel_id) or await client.fetch_channel(payload.channel_id)
+                msg = await channel.fetch_message(payload.message_id)
+            except Exception as e:
+                logger.debug("reaction lookup failed for %s: %s", payload.message_id, e)
+                return
+            if not (client.user and msg.author.id == client.user.id):
+                return
+            log_feedback_event(
+                channel_id=str(payload.channel_id),
+                bot_message_id=str(payload.message_id),
+                emoji=emoji_name,
+                admin_id=str(payload.user_id),
+            )
+            logger.info(
+                "Feedback recorded: %s on %s by admin",
+                FEEDBACK_REACTIONS[emoji_name], payload.message_id,
+            )
 
         logger.info("Starting Discord bot...")
         try:

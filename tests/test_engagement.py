@@ -3,56 +3,15 @@
 These tests pin the behavior described in engagement.yaml. If you change the
 yaml thresholds or add a new domain, update the assertions here.
 
-The tests stub out claude_agent_sdk and discord.py imports so the module loads
-without the full SDK installed — the scorer itself is pure-Python and has no
-SDK dependency.
+SDK stubs are installed by tests/conftest.py before this file imports.
 """
 from __future__ import annotations
 
-import sys
 import time
-import types
 
 import pytest
 
-
-# ── Test fixtures: stub heavy dependencies before importing the module ───
-def _install_stubs() -> None:
-    """Install minimal stubs for SDK/discord imports so brendbot.discord
-    can be imported in a test context without the real packages installed."""
-    for mod in (
-        "claude_agent_sdk",
-        "claude_agent_sdk._internal",
-        "claude_agent_sdk._internal.message_parser",
-        "claude_agent_sdk._internal.client",
-        "discord",
-        "dotenv",
-        "anthropic",
-        "httpx",
-    ):
-        sys.modules.setdefault(mod, types.ModuleType(mod))
-    sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
-    for cls in (
-        "AssistantMessage", "ClaudeAgentOptions", "ClaudeSDKClient",
-        "PermissionResultAllow", "PermissionResultDeny", "ProcessError",
-        "ResultMessage", "SystemMessage", "TextBlock", "ThinkingBlock",
-        "ToolResultBlock", "ToolUseBlock", "UserMessage",
-    ):
-        setattr(sys.modules["claude_agent_sdk"], cls, type(cls, (), {}))
-    d_mod = sys.modules["discord"]
-    d_mod.Client = type("Client", (), {})
-    d_mod.Intents = type("Intents", (), {
-        "default": staticmethod(lambda: type("I", (), {"message_content": False, "guilds": False})())
-    })
-    d_mod.Message = type("Message", (), {})
-    d_mod.Attachment = type("Attachment", (), {})
-    d_mod.LoginFailure = type("LoginFailure", (Exception,), {})
-    d_mod.abc = types.ModuleType("discord.abc")
-    d_mod.abc.Messageable = type("Messageable", (), {})
-
-
-_install_stubs()
-from brendbot import discord as bd  # noqa: E402
+from brendbot import discord as bd
 
 
 # ── _score_message ───────────────────────────────────────────────────────

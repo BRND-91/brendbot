@@ -42,7 +42,8 @@ def get_array_ids(module_data, arrays):
 
 def validate_all():
     """Run all validation checks."""
-    base_dir = Path(__file__).parent
+    # Script lives in scripts/migrations/; knowledge data in brendbot/knowledge/.
+    base_dir = Path(__file__).resolve().parent.parent.parent / "brendbot" / "knowledge"
     manifest_path = base_dir / 'MANIFEST.json'
     manifest = load_json(manifest_path)
 

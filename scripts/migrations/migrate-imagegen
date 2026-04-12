@@ -19,7 +19,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Script lives in scripts/migrations/; walk up two levels to project root.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 KNOWLEDGE_DIR = PROJECT_ROOT / "brendbot" / "knowledge"
 DB_PATH = KNOWLEDGE_DIR / "knowledge.db"
 IMAGEGEN_PATH = KNOWLEDGE_DIR / "IMAGEGEN.json"

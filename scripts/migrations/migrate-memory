@@ -16,7 +16,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Script lives in scripts/migrations/; walk up two levels to project root.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MEMORY_MD = PROJECT_ROOT / "MEMORY.md"
 DB_PATH = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 

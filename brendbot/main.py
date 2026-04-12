@@ -25,13 +25,16 @@ async def run() -> None:
         logger.error("DISCORD_TOKEN not set! Add it to your .env file.")
         sys.exit(1)
 
-    async def on_text(chat_id: str, text: str) -> None:
-        """Send Claude's text response back to Discord."""
+    async def on_text(chat_id: str, text: str) -> str | None:
+        """Send Claude's text response back to Discord. Returns the first
+        chunk's message ID so the session layer can log it for feedback
+        correlation, or None on send failure."""
         from brendbot.discord import send_message
         try:
-            await send_message(chat_id, text)
+            return await send_message(chat_id, text)
         except Exception:
             logger.exception("Failed to send text response to %s", chat_id)
+            return None
 
     pool = SessionPool(model=cfg.claude_model, bot_name=cfg.bot_name, on_text=on_text)
 
@@ -48,6 +51,7 @@ async def run() -> None:
         is_direct_mention: bool = False,
         domain_hint: str = "",
         address_level: str = "high",
+        score: float | None = None,
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
@@ -69,6 +73,7 @@ async def run() -> None:
                 is_direct_mention=is_direct_mention,
                 domain_hint=domain_hint,
                 address_level=address_level,
+                score=score,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

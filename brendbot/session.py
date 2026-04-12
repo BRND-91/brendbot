@@ -78,10 +78,17 @@ async def haiku_classify(payload: dict) -> dict:
         for m in recent[-5:]
     )
 
-    engagement_path = PROJECT_ROOT / "ENGAGEMENT.md"
-    if engagement_path.exists():
-        classifier_rules = engagement_path.read_text()
-    else:
+    # Classifier rules come from engagement.yaml's classifier_prompt block.
+    # Single source of truth: discord.py uses the same yaml for heuristic
+    # scoring and this function uses it for the LLM ambiguity gate.
+    # Hard-coded fallback only for the case where the yaml load itself
+    # failed at module init (which would have prevented startup anyway).
+    try:
+        from brendbot.discord import _ENGAGEMENT_CFG
+        classifier_rules = _ENGAGEMENT_CFG.get("classifier_prompt", "").strip()
+    except Exception:
+        classifier_rules = ""
+    if not classifier_rules:
         classifier_rules = (
             "Should brendbot respond? YES if directly addressed or domain question. "
             "NO if casual chat between others. Reply YES or NO only."
@@ -207,6 +214,13 @@ class Session:
         self._completed_turn_count: int = 0
         self._turn_modules_queried: set[str] = set()
         self._turn_kb_query_used: bool = False
+        # Turn metadata for feedback logging — set by SessionPool.route_message
+        # before each inject and read by _fire_on_text after send_message
+        # returns the bot_message_id.
+        self._turn_user_message_id: str = ""
+        self._turn_user_text: str = ""
+        self._turn_score: float | None = None
+        self._turn_domains: list[str] = []
         # Serializes turn boundaries: ensures _fire_on_text + state reset
         # for turn N completes before query() for turn N+1 dispatches.
         # Fixes the duplicate `turn complete` race observed when two messages
@@ -243,10 +257,46 @@ class Session:
         await self._queue.put(text)
 
     async def _fire_on_text(self, text: str) -> None:
+        """Send a turn's response to Discord with feedback-log side effects.
+
+        Order: extract leading branch tag → strip from chat-bound text →
+        call on_text(chat_id, stripped_text) which returns the posted
+        message ID → log to bot_responses.jsonl → if there was a tag,
+        also log to branch_audit.jsonl.
+
+        All log writes are best-effort; failures never break the chat path.
+        """
+        from brendbot.feedback import (
+            extract_branch_tag,
+            log_bot_response,
+            log_branch_audit,
+        )
+        branch_tag, stripped = extract_branch_tag(text)
         try:
-            await self._on_text(self._chat_id, text)
+            bot_message_id = await self._on_text(self._chat_id, stripped)
         except Exception as exc:
             logger.error("[%s] on_text callback failed: %s", self.key, exc)
+            return
+        if not bot_message_id:
+            # Send failed or pre-ready dispatch — nothing to correlate against.
+            return
+        log_bot_response(
+            channel_id=self._chat_id,
+            bot_message_id=bot_message_id,
+            user_message_id=self._turn_user_message_id,
+            user_text=self._turn_user_text,
+            score=self._turn_score,
+            domains=self._turn_domains,
+            address_level=self.current_address_level,
+            branch_tag=branch_tag,
+        )
+        if branch_tag:
+            log_branch_audit(
+                channel_id=self._chat_id,
+                bot_message_id=bot_message_id,
+                branch=branch_tag,
+                response_text=stripped,
+            )
 
     def log_turn(self, role: str, text: str, max_chars: int = 800) -> None:
         self._turn_log.append({"role": role, "text": text[:max_chars]})
@@ -791,6 +841,7 @@ class SessionPool:
         is_direct_mention: bool = False,
         domain_hint: str = "",
         address_level: str = "high",
+        score: float | None = None,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -864,6 +915,11 @@ class SessionPool:
         # Stash address level on the session so _permission_check can read it
         # when enforcing per-turn tool budgets. Reset on every new turn.
         session.current_address_level = address_level
+        # Stash turn metadata for feedback logging in _fire_on_text.
+        session._turn_user_message_id = message_id
+        session._turn_user_text = text
+        session._turn_score = score
+        session._turn_domains = sorted(domain_hint.split(",")) if domain_hint else []
         session.log_turn("user", text)
         session._tool_call_count = 0
         session._turn_modules_queried = set()

@@ -54,21 +54,16 @@ _NAME_PATTERN = re.compile(r"\b(brend|brendan|brendbot)\b", re.IGNORECASE)
 _BOT_NAMES = ("brendbot", "brendan", "brend")
 
 
-async def _haiku_gatecheck(text: str, context: list[dict]) -> bool:
-    """
-    Lightweight ambiguity classifier.
-    Returns True if the message should escalate to full Claude.
-    Kept for backwards compatibility — prefer _haiku_gatecheck_with_reason
-    so callers can distinguish "no" from "classifier errored".
-    """
-    result = await _haiku_gatecheck_with_reason(text, context)
-    return result["engage"]
-
-
 async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
     """
     Ambiguity classifier returning the full {engage, reason} dict so callers
     can detect classifier errors and escalate rather than silently drop.
+
+    Error semantics: any failure path — exception during the SDK call,
+    auth error inside haiku_classify, or a malformed response — collapses
+    to {"engage": False, "reason": "error"}. Callers should treat
+    reason=="error" as "classifier unavailable, decide for yourself"
+    rather than as a NO from the classifier.
     """
     recent = context[-5:] if context else []
     try:
@@ -77,10 +72,11 @@ async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
             "message": text,
             "recent_context": recent,
         })
-        logger.info("Haiku gate: %s (message: %r)", decision.get("reason", "unknown"), text[:50])
+        reason = decision.get("reason", "unknown")
+        logger.info("Haiku gate: %s (message: %r)", reason, text[:50])
         return {
             "engage": bool(decision.get("engage", False)),
-            "reason": decision.get("reason", "unknown"),
+            "reason": reason,
         }
     except Exception as e:
         logger.warning("Haiku gate failed: %s", e)

@@ -473,6 +473,32 @@ class Session:
                     # Text-only turn — all segments are intentional, send in full.
                     text_to_send = "\n".join(self._turn_text_buffer)
                 asyncio.create_task(self._fire_on_text(text_to_send))
+            elif (not self._turn_used_send_discord
+                  and not self._turn_tool_called
+                  and self._on_text
+                  and self._chat_id):
+                # Silent-drop diagnostic: turn produced no text blocks, no
+                # tool calls, and didn't call send-discord directly. The
+                # model spent tokens (cost > 0 will appear below) but emitted
+                # nothing the result handler can route. Most common cause:
+                # adaptive thinking returned a thinking-only response when
+                # the model decided no further output was needed. Without
+                # this branch the user sees nothing and there's no log line
+                # explaining the drop.
+                #
+                # Fallback behavior: post a minimal acknowledgement so the
+                # user knows the turn ran. This is preferable to silent
+                # failure on @mentions where the user is explicitly asking
+                # for a response.
+                logger.warning(
+                    "[%s] turn produced no output blocks (thinking-only or empty) — "
+                    "sending fallback",
+                    self.key,
+                )
+                fallback_text = (
+                    "(no response generated — try rephrasing or asking again)"
+                )
+                asyncio.create_task(self._fire_on_text(fallback_text))
             self._turn_text_buffer.clear()
             self._turn_used_send_discord = False
             self._turn_tool_called = False

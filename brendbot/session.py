@@ -692,6 +692,89 @@ class SessionPool:
         self._lock = asyncio.Lock()          # guards _sessions dict reads/writes
         self._creation_locks: dict[str, asyncio.Lock] = {}  # per-key; serialises _create()
 
+        # ── Static prompt-fragment cache ──────────────────────────────────
+        # SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, and the MANIFEST.json
+        # knowledge-index block were read from disk on every _create() call.
+        # That's 4 file reads per session spawn, and the manifest also
+        # parsed JSON every time. Cached here at pool init; refreshed via
+        # SIGHUP if the host process catches one (handler wired in main.py).
+        self._cached_soul = _load_template("SOUL.md")
+        self._cached_group_soul = _load_template("GROUP_SOUL.md")
+        self._cached_fused_core: str = ""
+        try:
+            fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
+            if fused_core_path.exists():
+                self._cached_fused_core = fused_core_path.read_text()
+        except Exception as exc:
+            logger.warning("FUSED-CORE.md cache load failed: %s", exc)
+        self._cached_kb_index_block: str = self._build_kb_index_block()
+
+    def _build_kb_index_block(self) -> str:
+        """Build the FUSED-CORE MODULES + KNOWLEDGE QUERY TOOL block once.
+        Returns empty string if MANIFEST.json missing or unreadable —
+        _create() handles the empty case by skipping the append."""
+        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
+        kb_query_path = SCRIPTS_DIR / "kb-query"
+        manifest_path = knowledge_dir / "MANIFEST.json"
+        if not manifest_path.exists():
+            return ""
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            load_order = manifest.get("load_order", [])
+            module_map = {m["id"]: m for m in manifest.get("modules", [])}
+            idx_lines = []
+            for module_id in load_order:
+                desc = module_map.get(module_id, {}).get("desc", "")
+                idx_lines.append(f"- {module_id}: {desc}")
+            if not idx_lines:
+                return ""
+            idx = "\n".join(idx_lines)
+            return (
+                "\n\n## FUSED-CORE MODULES\n"
+                f"{idx}\n\n"
+                "## KNOWLEDGE QUERY TOOL\n"
+                f"Use `{kb_query_path}` via Bash to query knowledge modules.\n"
+                f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
+                f"  {kb_query_path} defs <MODULE>          — list definitions\n"
+                f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
+                f"  {kb_query_path} thms <MODULE>          — core theorems\n"
+                f"  {kb_query_path} thms <MODULE> --extended — all theorems (incl. geometry etc.)\n"
+                f"  {kb_query_path} def <ID>               — look up one definition\n"
+                f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
+                f"  {kb_query_path} gates                  — governance gates\n"
+                f"  {kb_query_path} imgstyle <id|label>    — image style descriptor set\n"
+                f"  {kb_query_path} imgstyle list          — list all styles\n"
+                f"  {kb_query_path} imgfail <class>        — remediation for render failure\n"
+                f"  {kb_query_path} imgfail list           — list all failure classes\n"
+                f"  {kb_query_path} imglog recent [N]      — recent render outcomes\n"
+                "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
+                "Do not answer from training weights when a module is available.\n\n"
+                "## MODULE PRIORITY\n"
+                "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
+                "Extended theorems (geometry, spatial) are available via --extended flag\n"
+                "but cost more context. Only query extended when the question explicitly\n"
+                "involves spatial reasoning, geometry proofs, or dimensional analysis."
+            )
+        except Exception as exc:
+            logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
+            return ""
+
+    def refresh_cache(self) -> None:
+        """Re-read all cached prompt fragments. Wire to SIGHUP in main.py
+        so live edits to SOUL.md / FUSED-CORE.md / MANIFEST.json take
+        effect on the next _create() without a full process restart."""
+        self._cached_soul = _load_template("SOUL.md")
+        self._cached_group_soul = _load_template("GROUP_SOUL.md")
+        try:
+            fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
+            self._cached_fused_core = (
+                fused_core_path.read_text() if fused_core_path.exists() else ""
+            )
+        except Exception as exc:
+            logger.warning("FUSED-CORE.md refresh failed: %s", exc)
+        self._cached_kb_index_block = self._build_kb_index_block()
+        logger.info("SessionPool cache refreshed")
+
     async def route_message(
         self,
         platform: str,
@@ -805,7 +888,9 @@ class SessionPool:
         kb_db_path = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 
         template_file = "GROUP_SOUL.md" if is_group else "SOUL.md"
-        template = _load_template(template_file)
+        # Read from SessionPool cache instead of hitting disk on every spawn.
+        # Refreshable via SessionPool.refresh_cache() (SIGHUP-wired in main.py).
+        template = self._cached_group_soul if is_group else self._cached_soul
         prompt = _render(template, {
             "bot_name": self._bot_name,
             "send_command": send_cmd,
@@ -815,58 +900,13 @@ class SessionPool:
             "platform_name": "Discord",
         })
 
-        # Append FUSED-CORE.md content to system prompt so it's always present
-        # without burning a conversation turn on an injection.
-        fused_core_path = PROJECT_ROOT / "FUSED-CORE.md"
-        if fused_core_path.exists():
-            try:
-                prompt += "\n\n" + fused_core_path.read_text()
-            except Exception as exc:
-                logger.warning("FUSED-CORE.md read failed: %s", exc)
+        # Append cached FUSED-CORE.md content (was a per-spawn disk read).
+        if self._cached_fused_core:
+            prompt += "\n\n" + self._cached_fused_core
 
-        # Append knowledge module index and kb-query instructions.
-        knowledge_dir = PROJECT_ROOT / "brendbot" / "knowledge"
-        kb_query_path = SCRIPTS_DIR / "kb-query"
-        manifest_path = knowledge_dir / "MANIFEST.json"
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                load_order = manifest.get("load_order", [])
-                module_map = {m["id"]: m for m in manifest.get("modules", [])}
-                idx_lines = []
-                for module_id in load_order:
-                    desc = module_map.get(module_id, {}).get("desc", "")
-                    idx_lines.append(f"- {module_id}: {desc}")
-                if idx_lines:
-                    idx = "\n".join(idx_lines)
-                    prompt += (
-                        "\n\n## FUSED-CORE MODULES\n"
-                        f"{idx}\n\n"
-                        "## KNOWLEDGE QUERY TOOL\n"
-                        f"Use `{kb_query_path}` via Bash to query knowledge modules.\n"
-                        f"  {kb_query_path} search \"<terms>\"      — full-text search\n"
-                        f"  {kb_query_path} defs <MODULE>          — list definitions\n"
-                        f"  {kb_query_path} facts <MODULE> [topic] — list facts\n"
-                        f"  {kb_query_path} thms <MODULE>          — core theorems\n"
-                        f"  {kb_query_path} thms <MODULE> --extended — all theorems (incl. geometry etc.)\n"
-                        f"  {kb_query_path} def <ID>               — look up one definition\n"
-                        f"  {kb_query_path} topics <MODULE>        — list fact topics\n"
-                        f"  {kb_query_path} gates                  — governance gates\n"
-                        f"  {kb_query_path} imgstyle <id|label>    — image style descriptor set\n"
-                        f"  {kb_query_path} imgstyle list          — list all styles\n"
-                        f"  {kb_query_path} imgfail <class>        — remediation for render failure\n"
-                        f"  {kb_query_path} imgfail list           — list all failure classes\n"
-                        f"  {kb_query_path} imglog recent [N]      — recent render outcomes\n"
-                        "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
-                        "Do not answer from training weights when a module is available.\n\n"
-                        "## MODULE PRIORITY\n"
-                        "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
-                        "Extended theorems (geometry, spatial) are available via --extended flag\n"
-                        "but cost more context. Only query extended when the question explicitly\n"
-                        "involves spatial reasoning, geometry proofs, or dimensional analysis."
-                    )
-            except Exception as exc:
-                logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
+        # Append cached knowledge index block (was a per-spawn JSON parse).
+        if self._cached_kb_index_block:
+            prompt += self._cached_kb_index_block
 
         claude_md.write_text(prompt)
 

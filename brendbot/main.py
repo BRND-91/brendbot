@@ -85,6 +85,22 @@ async def run() -> None:
     loop.add_signal_handler(signal.SIGINT, _shutdown)
     loop.add_signal_handler(signal.SIGTERM, _shutdown)
 
+    def _refresh_caches() -> None:
+        # Reread engagement.yaml is module-load only (would need a process
+        # restart), but soul/FUSED-CORE/manifest are pool-cached and can
+        # be refreshed in place. Use `kill -HUP <pid>` to trigger.
+        logger.info("SIGHUP received — refreshing prompt caches")
+        try:
+            pool.refresh_cache()
+        except Exception:
+            logger.exception("Cache refresh failed")
+
+    try:
+        loop.add_signal_handler(signal.SIGHUP, _refresh_caches)
+    except (AttributeError, NotImplementedError):
+        # SIGHUP not available on Windows; skip silently.
+        pass
+
     logger.info("=" * 50)
     logger.info("brendbot STARTED (model=%s)", cfg.claude_model)
     logger.info("=" * 50)

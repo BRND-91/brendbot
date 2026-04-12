@@ -8,7 +8,6 @@ dependencies = [
   "discord.py>=2.4",
   "httpx>=0.28",
   "python-dotenv>=1.0",
-  "anthropic>=0.50",
   "pyyaml>=6.0",
 ]
 

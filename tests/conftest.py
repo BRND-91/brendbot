@@ -23,7 +23,6 @@ def _install_stubs() -> None:
         "claude_agent_sdk._internal.client",
         "discord",
         "dotenv",
-        "anthropic",
         "httpx",
     ):
         sys.modules.setdefault(mod, types.ModuleType(mod))

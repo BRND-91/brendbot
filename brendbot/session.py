@@ -62,15 +62,16 @@ TRANSCRIPTS_DIR = PROJECT_ROOT / "transcripts"
 
 async def haiku_classify(payload: dict) -> dict:
     """
-    Engagement classifier via direct Anthropic API call.
+    Engagement classifier via the Claude Agent SDK (OAuth/subscription path).
 
-    Uses claude-haiku-4-5 with max_tokens=1 for a YES/NO decision.
-    No subprocess spawned — far lower latency and overhead than the CLI path.
+    Spawns a one-shot ClaudeSDKClient with model='haiku', no tools, no
+    permission overhead, sends the classifier prompt, and parses the first
+    TextBlock for a leading Y/N. Slower than a direct API call (subprocess
+    spawn cost) but routed through the Claude Code CLI's OAuth credential —
+    no API key required, all usage covered by the Pro/Max subscription.
 
     Returns {"engage": bool, "reason": str}.
     """
-    import anthropic
-
     text = payload.get("message", "")
     recent = payload.get("recent_context", [])
     context_lines = "\n".join(
@@ -101,19 +102,52 @@ async def haiku_classify(payload: dict) -> dict:
         "Reply YES or NO only."
     )
 
+    # One-shot SDK session: no tools, no project settings inheritance, no
+    # custom cwd. The classifier needs nothing but the model. setting_sources
+    # is empty so the spawned subprocess doesn't load CLAUDE.md or any
+    # project-level config — keeps the call fast and isolated.
+    classifier_client: ClaudeSDKClient | None = None
     try:
-        client = anthropic.AsyncAnthropic()
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1,
-            messages=[{"role": "user", "content": prompt}],
+        opts = ClaudeAgentOptions(
+            model="haiku",
+            allowed_tools=[],
+            permission_mode="default",
+            setting_sources=[],
+            max_turns=1,
         )
-        answer = response.content[0].text.strip().upper() if response.content else "NO"
-        engage = answer.startswith("Y")
-        return {"engage": engage, "reason": f"api:{answer[:4]}"}
+        classifier_client = ClaudeSDKClient(options=opts)
+        await classifier_client.connect()
+        await classifier_client.query(prompt)
+
+        answer_text = ""
+        async for msg in classifier_client.receive_messages():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        answer_text = block.text.strip().upper()
+                        break
+                if answer_text:
+                    break
+            if isinstance(msg, ResultMessage):
+                break
+
+        if not answer_text:
+            return {"engage": False, "reason": "sdk:empty"}
+        engage = answer_text.startswith("Y")
+        return {"engage": engage, "reason": f"sdk:{answer_text[:4]}"}
     except Exception as e:
-        logger.warning("haiku_classify API error: %s", e)
+        logger.warning("haiku_classify SDK error: %s", e)
         return {"engage": False, "reason": "error"}
+    finally:
+        if classifier_client is not None:
+            try:
+                transport = getattr(classifier_client, "_transport", None)
+                if transport and hasattr(transport, "close"):
+                    close_result = transport.close()
+                    if asyncio.iscoroutine(close_result):
+                        await close_result
+            except Exception:
+                pass
 
 
 def _load_template(name: str) -> str:

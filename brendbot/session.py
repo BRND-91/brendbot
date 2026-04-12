@@ -183,6 +183,7 @@ class Session:
         })
         self._turn_text_buffer: list[str] = []
         self._turn_used_send_discord: bool = False
+        self._turn_tool_called: bool = False  # True once any ToolUseBlock seen this turn
         self._MODULE_EMOTES: dict[str, str] = {
             "LOGIC":       "🔣",
             "STATS":       "📊",
@@ -342,6 +343,7 @@ class Session:
                         self._turn_text_buffer.append(block.text)
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
+                    self._turn_tool_called = True  # mark that tool use occurred this turn
                     if block.name == "Bash":
                         tool_cmd = (block.input or {}).get("command", "")
                         if "send-discord" in tool_cmd:
@@ -360,10 +362,18 @@ class Session:
                     and not self._turn_used_send_discord
                     and self._on_text
                     and self._chat_id):
-                combined = "\n".join(self._turn_text_buffer)
-                asyncio.create_task(self._fire_on_text(combined))
+                if self._turn_tool_called:
+                    # Tools were called this turn — everything before the last
+                    # TextBlock was mid-turn narration. Only the final segment
+                    # is the intended response.
+                    text_to_send = self._turn_text_buffer[-1]
+                else:
+                    # Text-only turn — all segments are intentional, send in full.
+                    text_to_send = "\n".join(self._turn_text_buffer)
+                asyncio.create_task(self._fire_on_text(text_to_send))
             self._turn_text_buffer.clear()
             self._turn_used_send_discord = False
+            self._turn_tool_called = False
 
             cost = f" (${message.total_cost_usd:.4f})" if message.total_cost_usd else ""
             usage = message.usage or {}

@@ -47,11 +47,12 @@ async def run() -> None:
         context_messages: list | None = None,
         is_direct_mention: bool = False,
         domain_hint: str = "",
+        address_level: str = "high",
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
 
-        logger.info("Routing message from %s (tier=%s, is_group=%s, domains=%s)", sender_id, tier, is_group, domain_hint or "none")
+        logger.info("Routing message from %s (tier=%s, is_group=%s, domains=%s, addr=%s)", sender_id, tier, is_group, domain_hint or "none", address_level)
         try:
             await pool.route_message(
                 platform=platform,
@@ -67,6 +68,7 @@ async def run() -> None:
                 context_messages=context_messages,
                 is_direct_mention=is_direct_mention,
                 domain_hint=domain_hint,
+                address_level=address_level,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

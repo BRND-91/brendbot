@@ -168,6 +168,10 @@ class Session:
         self._error_count = 0
         self.running = False
         self.current_sender_tier: str | None = None
+        # Address level for the current turn (low/moderate/high). Set by
+        # SessionPool.route_message before each inject. Read by
+        # _permission_check to enforce FUSED-CORE Budget Throttle caps.
+        self.current_address_level: str = "high"
         self._last_input_tokens: int = 0
         self._context_state: str = "normal"
         self._soft_warning_sent: bool = False
@@ -203,6 +207,11 @@ class Session:
         self._completed_turn_count: int = 0
         self._turn_modules_queried: set[str] = set()
         self._turn_kb_query_used: bool = False
+        # Serializes turn boundaries: ensures _fire_on_text + state reset
+        # for turn N completes before query() for turn N+1 dispatches.
+        # Fixes the duplicate `turn complete` race observed when two messages
+        # land while a result is still being handled.
+        self._turn_lock: asyncio.Lock = asyncio.Lock()
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -275,7 +284,8 @@ class Session:
                     continue
                 try:
                     assert self._client is not None
-                    await self._client.query(msg)
+                    async with self._turn_lock:
+                        await self._client.query(msg)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -394,8 +404,14 @@ class Session:
                     elif (self._last_input_tokens >= _CONTEXT_SOFT_WARNING
                           and not self._soft_warning_sent):
                         self._soft_warning_sent = True
+                        # Promote soft warning to threshold_hit so the receiver
+                        # loop fires _trigger_clean_restart() at end of this
+                        # turn — preempts the 400k mid-turn ambush by
+                        # restarting at ~320k while we still have headroom.
+                        if self._context_state == "normal":
+                            self._context_state = "threshold_hit"
                         logger.info(
-                            "[%s] context at %d tokens — soft warning threshold",
+                            "[%s] context at %d tokens — soft warning, preemptive restart queued",
                             self.key, self._last_input_tokens,
                         )
             logger.info(
@@ -593,6 +609,29 @@ class Session:
                 )
 
         self._tool_call_count += 1
+
+        # Address-level budget cap (FUSED-CORE Budget Throttle enforcement).
+        # Maps to the levels defined in engagement.yaml address_levels:
+        #   high     → full budget (_TOOL_CALL_BUDGET)
+        #   moderate → 3 tool calls per turn
+        #   low      → 0 tool calls (text-only response)
+        # The model is also told this in the <message> XML, but the model
+        # follows instructions inconsistently — this is the enforcement layer.
+        _ADDRESS_BUDGETS = {"high": _TOOL_CALL_BUDGET, "moderate": 3, "low": 0}
+        addr_cap = _ADDRESS_BUDGETS.get(self.current_address_level, _TOOL_CALL_BUDGET)
+        if self._tool_call_count > addr_cap:
+            logger.info(
+                "[%s] Address-level budget exceeded (%d/%d, level=%s) — blocking",
+                self.key, self._tool_call_count, addr_cap, self.current_address_level,
+            )
+            return PermissionResultDeny(
+                message=(
+                    f"Address level '{self.current_address_level}' caps tool calls at "
+                    f"{addr_cap} per turn ({self._tool_call_count} attempted). "
+                    "Stop tool use and respond with what is known."
+                )
+            )
+
         if self._tool_call_count > _TOOL_CALL_BUDGET:
             logger.warning(
                 "[%s] Tool call budget exceeded (%d/%d) — blocking",
@@ -668,6 +707,7 @@ class SessionPool:
         context_messages: list | None = None,
         is_direct_mention: bool = False,
         domain_hint: str = "",
+        address_level: str = "high",
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -725,16 +765,22 @@ class SessionPool:
             )
         type_attr = " type='group'" if is_group else ""
         domain_attr = f" domain_hint='{escape(domain_hint)}'" if domain_hint else ""
+        # address_level surfaces FUSED-CORE Budget Throttle to the model AND is
+        # used by _permission_check to cap the per-turn Bash budget below.
+        addr_attr = f" address_level='{escape(address_level)}'"
         wrapped = (
             f"{context_block}"
             f"<message platform='{platform}' sender='{sender_id}' "
             f"chat='{chat_id}' tier='{tier}'{type_attr}{msg_id_attr}"
-            f"{domain_attr}"
+            f"{domain_attr}{addr_attr}"
             f" context_tokens='{session._last_input_tokens}'>"
             f"{reply_block}\n{text}\n</message>"
         )
 
         session.current_sender_tier = tier
+        # Stash address level on the session so _permission_check can read it
+        # when enforcing per-turn tool budgets. Reset on every new turn.
+        session.current_address_level = address_level
         session.log_turn("user", text)
         session._tool_call_count = 0
         session._turn_modules_queried = set()

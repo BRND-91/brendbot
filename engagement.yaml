@@ -1,0 +1,247 @@
+# ENGAGEMENT — single source of truth
+#
+# This file is consumed by BOTH the heuristic scorer in discord.py AND the
+# haiku ambiguity classifier prompt in session.py. Keep them aligned by
+# editing only this file. ENGAGEMENT.md is a generated mirror of the
+# `classifier_prompt` block below.
+#
+# Schema:
+#   thresholds:        score cutoffs used by _score_message
+#   recency_seconds:   how long an active thread keeps the recency boost
+#   address_levels:    score → address level (consumed by FUSED-CORE Budget Throttle)
+#   scoring:           per-signal score deltas
+#   noise_tokens:      ≤2-word messages composed of these are dropped pre-score
+#   domains:           module → keyword list (replaces hand-curated dict in discord.py)
+#   classifier_prompt: text injected into the haiku ambiguity classifier
+
+thresholds:
+  hard_pass: 0.9        # at or above → engage without haiku
+  haiku_floor: 0.4      # below → drop; between → escalate to haiku
+
+recency_seconds: 300
+
+address_levels:
+  high: 0.9             # @mention or score >= 0.9
+  moderate: 0.4         # 0.4 <= score < 0.9
+  # below 0.4 = low (dropped before reaching session anyway)
+
+scoring:
+  reply_to_bot: 1.0
+  recency_active: 0.3      # only if word_count >= 3
+  domain_match: 0.4
+  domain_match_in_context: 0.3
+  conversational_in_thread: 0.2  # question/directive in active thread
+  name_mentioned: 0.4      # name in text without @mention
+
+noise_tokens:
+  - lol
+  - lmao
+  - haha
+  - hehe
+  - omg
+  - wtf
+  - brb
+  - gg
+  - oof
+  - ok
+  - k
+  - yeah
+  - yep
+  - nah
+  - nope
+  - sure
+  - true
+  - same
+  - nice
+  - rip
+  - wow
+  - based
+  - fr
+  - bet
+  - cope
+  - ratio
+
+question_starters:
+  - "tell me"
+  - "what "
+  - "why "
+  - "how "
+  - "who "
+  - "when "
+  - "where "
+  - "do you"
+  - "can you"
+  - "would you"
+  - "could you"
+  - "are you"
+  - "is it"
+  - "have you"
+  - "did you"
+  - "does it"
+  - "will you"
+
+directive_starters:
+  - operate
+  - respond
+  - explain
+  - describe
+  - show
+  - give
+  - list
+  - help
+  - stop
+  - start
+  - run
+  - check
+  - look
+  - find
+  - read
+  - write
+  - fix
+  - update
+  - act
+  - pretend
+
+domains:
+  LOGIC:
+    - logic
+    - argument
+    - proof
+    - valid
+    - premise
+    - conclusion
+    - inference
+    - reasoning
+    - deduction
+    - induction
+    - theorem
+    - proposition
+    - syllogism
+    - formal language
+    - predicate
+  STATS:
+    - probability
+    - statistics
+    - distribution
+    - bayesian
+    - random variable
+    - variance
+    - likelihood
+    - confidence interval
+    - regression
+    - correlation
+    - bayes
+    - bernoulli
+    - normal distribution
+    - standard deviation
+  SYSTEMS:
+    - systems thinking
+    - feedback loop
+    - feedback
+    - tipping point
+    - oscillation
+    - overshoot
+    - stocks and flows
+    - emergence
+    - complexity
+    - pareto
+    - ashby
+    - goodhart
+    - diminishing returns
+    - delay
+    - leadership
+    - servant leadership
+    - situational leadership
+    - emotional intelligence
+    - forrester
+  PERSONALITY:
+    - empathy
+    - interpersonal
+    - mediation
+    - therapy
+    - group dynamics
+    - respect
+    - boundary
+    - calibrate
+    - risk gate
+  BUILDSCI:
+    - building science
+    - insulation
+    - hvac
+    - air barrier
+    - vapor barrier
+    - moisture
+    - thermal
+    - enclosure
+    - ventilation
+    - infiltration
+    - r-value
+    - blower door
+    - energy efficiency
+    - condensation
+    - building envelope
+    - duct
+    - mechanical ventilation
+    - combustion
+    - indoor air quality
+    - iaq
+    - heat loss
+    - heat gain
+    - air sealing
+    - hrv
+    - erv
+    - radiant
+    - conduction
+    - convection
+    - latent heat
+    - sensible heat
+    - dew point
+    - relative humidity
+    - fiberglass
+    - attic
+    - crawlspace
+    - pest
+    - shell tightening
+    - air leakage
+    - weatherization
+    - envelope
+    - rim joist
+    - slab
+
+classifier_prompt: |
+  # ENGAGEMENT CLASSIFIER
+
+  This file is loaded exclusively into the ambiguity classifier context.
+  It does not reach the response worker.
+
+  ## DECISION
+
+  Reply YES if the message warrants brendbot responding.
+  Reply NO otherwise.
+  Reply YES or NO only — no explanation.
+
+  ## HARD YES
+
+  - Direct @mention of brendbot
+  - Reply to a brendbot message
+
+  ## SCORED YES (any one is sufficient)
+
+  - Active thread: brendbot responded within the last 5 minutes and this continues it
+  - Domain question in LOGIC, STATS, SYSTEMS, PERSONALITY, BUILDSCI, GOVERNANCE
+  - Meta question about brendbot's behavior, architecture, or configuration
+  - Directly asks for brendbot's opinion or analysis
+
+  ## HARD NO
+
+  - Casual exchange between other users with no relevance to brendbot's domains
+  - Message clearly addressed to another bot
+  - Pure social noise (greetings, reactions, affirmations between others)
+  - Repeat of a point already addressed with no new propositional content
+
+  ## CALIBRATION NOTES
+
+  Sender tier (admin or otherwise) does not affect this decision.
+  Outside known domains, require stronger signal before YES.
+  When in doubt: NO. A missed message is preferable to unwanted interjection.
+  Do not engage with fallacious framing as though it were valid — incorrect premises in a message are not a reason to engage, they are a reason to let it pass unless directly asked.

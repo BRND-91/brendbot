@@ -15,14 +15,14 @@
 #   classifier_prompt: text injected into the haiku ambiguity classifier
 
 thresholds:
-  hard_pass: 0.9        # at or above → engage without haiku
+  hard_pass: 0.85       # at or above → engage without haiku
   haiku_floor: 0.4      # below → drop; between → escalate to haiku
 
-recency_seconds: 300
+recency_seconds: 450
 
 address_levels:
-  high: 0.9             # @mention or score >= 0.9
-  moderate: 0.4         # 0.4 <= score < 0.9
+  high: 0.85            # @mention or score >= 0.85
+  moderate: 0.4         # 0.4 <= score < 0.85
   # below 0.4 = low (dropped before reaching session anyway)
 
 scoring:
@@ -31,7 +31,7 @@ scoring:
   domain_match: 0.4
   domain_match_in_context: 0.3
   conversational_in_thread: 0.2  # question/directive in active thread
-  name_mentioned: 0.4      # name in text without @mention
+  name_mentioned: 0.5      # name in text without @mention
 
 noise_tokens:
   - lol
@@ -101,6 +101,10 @@ directive_starters:
   - update
   - act
   - pretend
+  - draw
+  - make
+  - generate
+  - render
 
 domains:
   LOGIC:
@@ -207,6 +211,42 @@ domains:
     - envelope
     - rim joist
     - slab
+  IMAGEGEN:
+    - image
+    - picture
+    - pic
+    - photo
+    - draw
+    - drawing
+    - render
+    - generate
+    - paint
+    - painting
+    - sketch
+    - illustration
+    - illustrate
+    - art
+    - artwork
+    - portrait
+    - scene
+    - style
+    - prompt
+    - aspect ratio
+    - imagen
+    - dall-e
+    - midjourney
+    - stable diffusion
+    - manga
+    - anime
+    - cartoon
+    - photorealistic
+    - watercolor
+    - oil painting
+    - pencil
+    - charcoal
+    - 3d render
+    - pixel art
+    - concept art
 
 classifier_prompt: |
   # ENGAGEMENT CLASSIFIER
@@ -224,6 +264,7 @@ classifier_prompt: |
 
   - Direct @mention of brendbot
   - Reply to a brendbot message
+  - Message contains brendbot's name (brend, brendbot) directed at the bot, even without an @mention
 
   ## SCORED YES (any one is sufficient)
 

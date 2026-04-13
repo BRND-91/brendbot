@@ -52,6 +52,7 @@ async def run() -> None:
         domain_hint: str = "",
         address_level: str = "high",
         score: float | None = None,
+        haiku_invoked: bool = False,
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
@@ -74,6 +75,7 @@ async def run() -> None:
                 domain_hint=domain_hint,
                 address_level=address_level,
                 score=score,
+                haiku_invoked=haiku_invoked,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

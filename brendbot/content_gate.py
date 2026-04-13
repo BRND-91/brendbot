@@ -240,7 +240,7 @@ def format_refusal_explanation(classifier_result: ClassifierResult) -> str:
         floor = classifier_result.hard_floor
         floor_plain = {
             "minor_sexual": "sexual content involving a minor",
-            "wmd_synth": "weapons-of-mass-destruction synthesis",
+            "wmd_synth": "weapons of mass destruction synthesis",
             "malware": "malware or exploit code",
             "infra_attack": "infrastructure attack procedures",
             "extremist_recruit": "extremist recruitment material",

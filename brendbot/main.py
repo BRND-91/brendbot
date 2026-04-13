@@ -36,7 +36,21 @@ async def run() -> None:
             logger.exception("Failed to send text response to %s", chat_id)
             return None
 
-    pool = SessionPool(model=cfg.claude_model, bot_name=cfg.bot_name, on_text=on_text)
+    async def on_text_edit(chat_id: str, message_id: str, text: str) -> bool:
+        """Edit an existing Discord message in-place for streaming."""
+        from brendbot.discord import edit_message
+        try:
+            return await edit_message(chat_id, message_id, text)
+        except Exception:
+            logger.debug("Failed to edit streaming message %s", message_id)
+            return False
+
+    pool = SessionPool(
+        model=cfg.claude_model,
+        bot_name=cfg.bot_name,
+        on_text=on_text,
+        on_text_edit=on_text_edit,
+    )
 
     async def on_message(
         platform: str,

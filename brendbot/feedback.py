@@ -53,13 +53,13 @@ FEEDBACK_EVENTS_LOG = LOGS_DIR / "feedback_events.jsonl"
 FLAG_AUDIT_LOG = LOGS_DIR / "flag_audit.jsonl"
 BYPASS_AUDIT_LOG = LOGS_DIR / "bypass_audit.jsonl"
 
-# Branch tag regex — matches a leading [rejected]/[searching]/[unverified]/
-# [flagged]/[bypass] token. The tag is stripped from the chat-bound text
-# and written to branch_audit.jsonl. rejected/searching/unverified map 1:1
-# to the FUSED-CORE three-branch classifier. flagged is the content-gate
-# 2-of-3 outcome routed to the looser-safety model. bypass is the
-# admin-only *brend* italic backdoor that skips the gate classifier.
-_BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass)\]\s*')
+# Branch tag regex — matches a leading tag token. The tag is stripped from
+# the chat-bound text and written to branch_audit.jsonl.
+# rejected/searching/unverified: FUSED-CORE three-branch classifier.
+# flagged: content-gate middle-band reroute to looser-safety model.
+# bypass: admin-only *brend* italic backdoor.
+# uncertain: metacognitive confidence self-assessment (low confidence).
+_BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass|uncertain)\]\s*')
 
 # Admin-only feedback reactions. Anything else from anyone is ignored.
 # 👎 / 👍 — engagement quality (should/shouldn't have responded)
@@ -89,7 +89,8 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 
 def extract_branch_tag(text: str) -> tuple[str | None, str]:
-    """If `text` starts with [rejected]/[searching]/[unverified], return
+    """If `text` starts with a branch tag ([rejected]/[searching]/
+    [unverified]/[flagged]/[bypass]/[uncertain]), return
     (tag, text_without_tag). Otherwise return (None, text)."""
     m = _BRANCH_TAG_RE.match(text)
     if not m:

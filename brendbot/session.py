@@ -250,6 +250,14 @@ async def haiku_classify(payload: dict) -> dict:
         "Example: YES funny  or  NO neutral. Nothing else."
     )
 
+    # Check engagement cache before hitting the classifier pool.
+    from brendbot.classifier_cache import get_engage_cache
+    engage_cache = get_engage_cache()
+    cached = engage_cache.get(prompt)
+    if cached is not None:
+        logger.debug("haiku_classify cache hit")
+        return cached
+
     pool = get_classifier_pool()
     classifier_client: ClaudeSDKClient | None = None
     try:
@@ -274,7 +282,9 @@ async def haiku_classify(payload: dict) -> dict:
         engage = tokens[0].startswith("Y")
         _valid_tones = {"funny", "hype", "sad", "weird", "dumb", "wholesome", "neutral"}
         tone = tokens[1].lower() if len(tokens) > 1 and tokens[1].lower() in _valid_tones else "neutral"
-        return {"engage": engage, "reason": f"sdk:{answer_text[:8]}", "tone": tone}
+        result = {"engage": engage, "reason": f"sdk:{answer_text[:8]}", "tone": tone}
+        engage_cache.put(prompt, result)
+        return result
     except Exception as e:
         logger.warning("haiku_classify SDK error: %s", e)
         return {"engage": False, "reason": "error", "tone": "neutral"}
@@ -310,6 +320,14 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
         f"Request to classify:\n{user_text[:2000]}"
     )
 
+    # Check content-gate cache before hitting the classifier pool.
+    from brendbot.classifier_cache import get_content_cache
+    content_cache = get_content_cache()
+    cached = content_cache.get(prompt)
+    if cached is not None:
+        logger.debug("content_gate_classify cache hit")
+        return cached
+
     pool = get_classifier_pool()
     classifier_client: ClaudeSDKClient | None = None
     try:
@@ -325,7 +343,9 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
             if isinstance(msg, ResultMessage):
                 break
 
-        return parse_classifier_response(raw_text)
+        result = parse_classifier_response(raw_text)
+        content_cache.put(prompt, result)
+        return result
     except Exception as e:
         logger.warning("content_gate_classify SDK error: %s", e)
         return ClassifierResult(
@@ -494,6 +514,7 @@ class Session:
         cwd: str,
         model: str = "sonnet",
         on_text: Optional[Any] = None,
+        on_text_edit: Optional[Any] = None,
         chat_id: str = "",
     ) -> None:
         self.key = key
@@ -501,6 +522,7 @@ class Session:
         self.cwd = cwd
         self._model = model
         self._on_text = on_text
+        self._on_text_edit = on_text_edit
         self._chat_id = chat_id
         self._client: Optional[ClaudeSDKClient] = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
@@ -615,6 +637,15 @@ class Session:
         # Fixes the duplicate `turn complete` race observed when two messages
         # land while a result is still being handled.
         self._turn_lock: asyncio.Lock = asyncio.Lock()
+        # ── Streaming response state ──────────────────────────────────
+        # On text-only turns (no tool calls), TextBlocks are streamed to
+        # Discord via message edits as they arrive. The first chunk creates
+        # a new message; subsequent chunks edit it on a 400ms timer to
+        # stay under Discord's rate limit (~5 edits / 5s / channel).
+        self._stream_msg_id: str | None = None   # Discord message being streamed
+        self._stream_buffer: str = ""             # accumulated text so far
+        self._stream_timer: Optional[asyncio.Task] = None  # pending edit task
+        self._stream_dirty: bool = False          # buffer changed since last edit
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -875,6 +906,119 @@ class Session:
         asyncio.create_task(self._fire_on_text(refusal))
         return "handled"
 
+    async def _stream_chunk(self, text: str) -> None:
+        """Handle an incoming TextBlock for the streaming path.
+
+        First chunk: send a new Discord message via _on_text to get a
+        message ID. Subsequent chunks: schedule a 400ms debounced edit.
+        Only active for text-only turns (no tool calls yet this turn).
+        """
+        self._stream_buffer += text
+        self._stream_dirty = True
+
+        if self._stream_msg_id is None and self._on_text and self._chat_id:
+            # First chunk — send immediately to get message ID and show
+            # the user that the bot is responding. Truncate to 2000 chars
+            # (Discord limit); the final edit will handle overflow.
+            try:
+                msg_id = await self._on_text(self._chat_id, self._stream_buffer[:2000])
+                if msg_id:
+                    self._stream_msg_id = msg_id
+                    self._stream_dirty = False
+            except Exception as exc:
+                logger.debug("[%s] stream first-chunk send failed: %s", self.key, exc)
+        elif self._stream_msg_id and self._on_text_edit:
+            # Subsequent chunks — debounce edits at 400ms intervals
+            if self._stream_timer is None or self._stream_timer.done():
+                self._stream_timer = asyncio.create_task(
+                    self._stream_flush_after_delay(0.4)
+                )
+
+    async def _stream_flush_after_delay(self, delay: float) -> None:
+        """Wait `delay` seconds then edit the streamed message if dirty."""
+        await asyncio.sleep(delay)
+        await self._stream_flush()
+
+    async def _stream_flush(self) -> None:
+        """Edit the streamed Discord message with the current buffer."""
+        if (self._stream_msg_id
+                and self._stream_dirty
+                and self._on_text_edit
+                and self._chat_id):
+            try:
+                await self._on_text_edit(
+                    self._chat_id,
+                    self._stream_msg_id,
+                    self._stream_buffer[:2000],
+                )
+                self._stream_dirty = False
+            except Exception as exc:
+                logger.debug("[%s] stream edit failed: %s", self.key, exc)
+
+    def _stream_reset(self) -> None:
+        """Reset streaming state between turns."""
+        if self._stream_timer and not self._stream_timer.done():
+            self._stream_timer.cancel()
+        self._stream_msg_id = None
+        self._stream_buffer = ""
+        self._stream_timer = None
+        self._stream_dirty = False
+
+    async def _fire_on_text_streamed(self, text: str) -> None:
+        """Finalize a streamed response: do the last edit, then audit-log.
+
+        Like _fire_on_text but skips the initial send because the message
+        was already posted during streaming. Uses the stored _stream_msg_id
+        for audit correlation.
+        """
+        from brendbot.feedback import (
+            extract_branch_tag,
+            log_bot_response,
+            log_branch_audit,
+        )
+        # Cancel any pending edit timer and do one final flush
+        if self._stream_timer and not self._stream_timer.done():
+            self._stream_timer.cancel()
+
+        if self._turn_bypass_pending and not text.lstrip().startswith("["):
+            text = f"[bypass] {text}"
+
+        async with self._turn_lock:
+            branch_tag, stripped = extract_branch_tag(text)
+            # Final edit with the complete, tag-stripped text
+            if self._on_text_edit and self._stream_msg_id and self._chat_id:
+                try:
+                    await self._on_text_edit(
+                        self._chat_id,
+                        self._stream_msg_id,
+                        stripped[:2000],
+                    )
+                except Exception:
+                    pass
+            bot_message_id = self._stream_msg_id
+            self._stream_reset()
+            if not bot_message_id:
+                return
+            from brendbot.discord import record_bot_spoke
+            record_bot_spoke(self._chat_id)
+            log_bot_response(
+                channel_id=self._chat_id,
+                bot_message_id=bot_message_id,
+                user_message_id=self._turn_user_message_id,
+                user_text=self._turn_user_text,
+                score=self._turn_score,
+                domains=self._turn_domains,
+                address_level=self.current_address_level,
+                branch_tag=branch_tag,
+            )
+            if branch_tag:
+                log_branch_audit(
+                    channel_id=self._chat_id,
+                    bot_message_id=bot_message_id,
+                    branch=branch_tag,
+                    response_text=stripped,
+                )
+
     async def _fire_on_text(self, text: str) -> None:
         """Send a turn's response to Discord with feedback-log side effects.
 
@@ -1059,6 +1203,14 @@ class Session:
                     self.log_turn("assistant", block.text)
                     if block.text.strip():
                         self._turn_text_buffer.append(block.text)
+                        # Stream text to Discord as it arrives (text-only
+                        # turns only). Once a tool fires, streaming stops
+                        # and the final-segment-only dispatch in
+                        # ResultMessage takes over.
+                        if (not self._turn_tool_called
+                                and not self._turn_used_send_discord
+                                and self._on_text_edit):
+                            asyncio.create_task(self._stream_chunk(block.text))
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
                     self._turn_tool_called = True  # mark that tool use occurred this turn
@@ -1114,12 +1266,25 @@ class Session:
                 if self._turn_tool_called:
                     # Tools were called this turn — everything before the last
                     # TextBlock was mid-turn narration. Only the final segment
-                    # is the intended response.
+                    # is the intended response. Streaming was disabled when
+                    # tools fired, so send fresh.
+                    self._stream_reset()
                     text_to_send = self._turn_text_buffer[-1]
-                else:
-                    # Text-only turn — all segments are intentional, send in full.
+                    asyncio.create_task(self._fire_on_text(text_to_send))
+                elif self._stream_msg_id:
+                    # Streaming was active — the message is already on Discord.
+                    # Do a final flush to ensure the full text is shown, then
+                    # run the audit path with the pre-existing message ID.
                     text_to_send = "\n".join(self._turn_text_buffer)
-                asyncio.create_task(self._fire_on_text(text_to_send))
+                    asyncio.create_task(
+                        self._fire_on_text_streamed(text_to_send)
+                    )
+                else:
+                    # Text-only turn but streaming didn't activate (no
+                    # on_text_edit callback, or first chunk failed). Fall
+                    # back to the original single-send path.
+                    text_to_send = "\n".join(self._turn_text_buffer)
+                    asyncio.create_task(self._fire_on_text(text_to_send))
             elif (not self._turn_used_send_discord
                   and not self._turn_tool_called
                   and not is_housekeeping
@@ -1513,14 +1678,23 @@ class Session:
             ]
             perm_mode = "acceptEdits"
             turn_limit = 200
+            # Admin sessions get full reasoning depth — deep tool use,
+            # complex code generation, and multi-step planning are common.
+            effort = "high"
         elif self.tier == "trusted":
             tools = ["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"]
             perm_mode = "acceptEdits"
             turn_limit = 50
+            # Trusted users get balanced effort — enough depth for
+            # meaningful tool use, but not burning tokens on overanalysis.
+            effort = "medium"
         else:
             tools = ["Read", "Bash", "Glob", "Grep"]
             perm_mode = "acceptEdits"
             turn_limit = 30
+            # Default tier: optimize for speed and cost. Limited tool
+            # budget anyway, so deeper reasoning yields diminishing returns.
+            effort = "low"
 
         env: dict[str, str] = {}
 
@@ -1534,6 +1708,7 @@ class Session:
             max_turns=turn_limit,
             max_buffer_size=10 * 1024 * 1024,
             thinking={"type": "adaptive"},
+            effort=effort,
             env=env,
         )
 
@@ -1627,10 +1802,17 @@ class Session:
 class SessionPool:
     """Manages one Session per contact/channel."""
 
-    def __init__(self, model: str, bot_name: str, on_text: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        bot_name: str,
+        on_text: Optional[Any] = None,
+        on_text_edit: Optional[Any] = None,
+    ) -> None:
         self._model = model
         self._bot_name = bot_name
         self._on_text = on_text
+        self._on_text_edit = on_text_edit
         self._sessions: dict[str, Session] = {}
         self._lock = asyncio.Lock()          # guards _sessions dict reads/writes
         self._creation_locks: dict[str, asyncio.Lock] = {}  # per-key; serialises _create()
@@ -1961,6 +2143,7 @@ class SessionPool:
             cwd=str(transcript_dir),
             model=self._model,
             on_text=self._on_text,
+            on_text_edit=self._on_text_edit,
             chat_id=chat_id,
         )
         await session.start()

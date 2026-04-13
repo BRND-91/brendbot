@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Export engagement classifier training data from audit logs.
+
+Reads bot_responses.jsonl and reconstructs (prompt, label) pairs suitable
+for fine-tuning a local classifier to replace the haiku engagement gate.
+
+Output format: JSONL with fields:
+  - prompt: the message text that was classified
+  - context: recent context messages (if available)
+  - label: "engage" or "skip"
+  - score: the heuristic engagement score (float)
+  - address_level: high/moderate/low
+  - branch_tag: if present, the branch tag from the response
+
+Usage:
+  scripts/export-training-data [--min-score 0.3] [--output training.jsonl]
+
+The script infers labels from the audit trail:
+  - If a bot_response row exists for the message → label="engage"
+  - Messages below ENGAGE_THRESHOLD with no bot response → label="skip"
+    (these are not logged, so we can only export positive examples from
+    bot_responses.jsonl. Negative examples require a separate collection
+    pass — see --collect-negatives flag for future implementation.)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
+FEEDBACK_DIR = PROJECT_ROOT / "feedback"
+
+
+def export(
+    output_path: str = "training.jsonl",
+    min_score: float | None = None,
+) -> None:
+    bot_responses = FEEDBACK_DIR / "bot_responses.jsonl"
+    if not bot_responses.exists():
+        print(f"No audit log found at {bot_responses}", file=sys.stderr)
+        sys.exit(1)
+
+    count = 0
+    with open(output_path, "w") as out:
+        for line in bot_responses.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            score = row.get("score")
+            if min_score is not None and score is not None and score < min_score:
+                continue
+
+            record = {
+                "prompt": row.get("user_text", ""),
+                "label": "engage",
+                "score": score,
+                "address_level": row.get("address_level", ""),
+                "branch_tag": row.get("branch_tag"),
+                "channel_id": row.get("channel_id", ""),
+                "ts": row.get("ts", ""),
+            }
+            if not record["prompt"]:
+                continue
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+            count += 1
+
+    print(f"Exported {count} positive examples to {output_path}")
+    print(
+        "Note: only positive (engage) examples available from bot_responses.jsonl. "
+        "Negative examples (skip decisions) are not logged. To build a balanced "
+        "training set, add a logging hook to discord.py's drop path that writes "
+        "skipped messages to a separate JSONL stream."
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Export engagement classifier training data"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default="training.jsonl",
+        help="Output JSONL file path (default: training.jsonl)",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="Only export examples with heuristic score >= this value",
+    )
+    args = parser.parse_args()
+    export(output_path=args.output, min_score=args.min_score)
+
+
+if __name__ == "__main__":
+    main()

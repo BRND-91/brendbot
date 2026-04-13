@@ -265,6 +265,24 @@ async def send_message(channel_id: str, text: str) -> str | None:
         return None
 
 
+async def edit_message(channel_id: str, message_id: str, text: str) -> bool:
+    """Edit an existing Discord message in-place. Returns True on success.
+    Used by the streaming response path to update a message as tokens
+    arrive, giving users visual feedback before generation completes."""
+    if _discord_client is None:
+        return False
+    try:
+        channel = _discord_client.get_channel(int(channel_id))
+        if channel is None:
+            channel = await _discord_client.fetch_channel(int(channel_id))
+        msg = await channel.fetch_message(int(message_id))
+        await msg.edit(content=text[:2000])
+        return True
+    except Exception as e:
+        logger.debug("edit_message failed for %s: %s", message_id, e)
+        return False
+
+
 # ── Engagement config: single source of truth ────────────────────────────
 # All gating constants, scoring deltas, noise tokens, conversational starters,
 # and domain keywords come from engagement.yaml. The same file's

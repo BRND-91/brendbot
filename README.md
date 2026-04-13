@@ -4,10 +4,13 @@ A Claude-powered Discord bot in ~300 lines of Python. Your computer is just a th
 
 ## What It Does
 
-- Listens for @mentions in Discord
+- Listens for @mentions and name-mentions in Discord (both route to full engagement)
+- Two-stage engagement gate: heuristic scorer + haiku LLM classifier for ambiguous messages
 - Forwards messages to Claude via the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk)
-- Claude responds by calling a send script (has full tool access: Bash, Read, Write, etc.)
-- Works in DMs and server channels
+- Streams responses to Discord in real time via message edits (tokens appear within ~1s)
+- Three-tier content safety gate (PASS/FLAG/REFUSE) with admin bypass
+- Episodic memory across session restarts, cognitive load management, warm classifier pool
+- Works in DMs and server channels with separate behavioral profiles
 
 ## Requirements
 
@@ -233,9 +236,9 @@ The included `setup.sh` handles everything:
 
 ```
 /                    SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, engagement.yaml, README, pyproject
-brendbot/            main, config, discord, session, episodes, feedback, knowledge/
-scripts/             send-discord, react-discord, generate-image, kb-query, calc, migrations/
-tests/               conftest + 6 test files, 65 tests
+brendbot/            main, config, discord, session, classifier_cache, episodes, feedback, content_gate, knowledge/
+scripts/             send-discord, react-discord, generate-image, kb-query, calc, export-training-data, migrations/
+tests/               conftest + 6 test files, 69 tests
 ```
 
 ### Core files
@@ -244,13 +247,15 @@ tests/               conftest + 6 test files, 65 tests
 
 **`config.py`** — `.env` loader. Discord token, admin ID, tier map.
 
-**`discord.py`** (36K) — gateway layer. `_score_message` reads `engagement.yaml` at import, scores against thresholds. `_classify_address` maps score→low/moderate/high. `haiku_classify` spawns one-shot SDK subprocess for ambiguous-band messages. `on_message` runs the two-path engagement gate (@mention hard-pass, ambient score→haiku). `on_raw_reaction_add` filters feedback emotes (admin + bot-author + valid emoji). Owns `EngageResult` dataclass including `context_domains` for `[ctx]`-tagged fallback matches.
+**`discord.py`** (36K) — gateway layer. `_score_message` reads `engagement.yaml` at import, scores against thresholds. `_classify_address` maps score→low/moderate/high (both @mentions and name-mentions route to high). `on_message` runs the two-path engagement gate (@mention hard-pass, ambient score→haiku). `send_message` + `edit_message` handle Discord output (streaming edits + final sends). `on_raw_reaction_add` filters feedback emotes (admin + bot-author + valid emoji). Owns `EngageResult` dataclass including `context_domains` for `[ctx]`-tagged fallback matches.
 
-**`session.py`** (66K) — core lifecycle. `Session` owns subprocess, turn lock, inject queue, load counters, shallow rest state, episode fields. `_handle()` routes SDK messages. `_run_loop` drains queue, unpacks `(text, housekeeping)` tuples, sets flag under lock, calls `query()`. `_trigger_clean_restart` writes episode + respawns. `_trigger_shallow_rest` clears tool counters + injects `<system-rest>` without respawn. `_permission_check` enforces address-level budget caps (low=0, moderate=3, high=8 Bash) and tier tool restrictions. `SessionPool` caches soul files (SIGHUP-refreshable), renders CLAUDE.md per session, runs startup injects (memory frags, MEMORY.md, ref block — all housekeeping), queries `episodes` for `<recall>` blocks at ingest.
+**`session.py`** (70K) — core lifecycle. `ClassifierPool` pre-spawns 3 warm haiku SDK clients at boot (boot-split: concurrent with Discord gateway connect). `haiku_classify` and `content_gate_classify` draw from the pool instead of cold-spawning per call; both check the `ClassifierCache` (LRU, 500 entries, 5min TTL) before acquiring a client. `Session` owns subprocess, turn lock, inject queue, load counters, shallow rest state, episode fields, and streaming state (message edits on a 400ms debounced timer). `_handle()` routes SDK messages — TextBlocks stream to Discord as they arrive on text-only turns. `_fire_on_text_streamed` finalizes streamed responses with audit logging. `_build_options` sets tier-based effort modulation (admin=high, trusted=medium, default=low) alongside adaptive thinking. `_run_loop` drains queue, unpacks `(text, housekeeping)` tuples, sets flag under lock, calls `query()`. `_trigger_clean_restart` writes episode + respawns. `_trigger_shallow_rest` clears tool counters + injects `<system-rest>` without respawn. `_permission_check` enforces address-level budget caps (low=0, moderate=3, high=8 Bash) and tier tool restrictions. `SessionPool` caches soul files (SIGHUP-refreshable), renders CLAUDE.md per session, runs startup injects (memory frags, MEMORY.md, ref block — all housekeeping), queries `episodes` for `<recall>` blocks at ingest.
+
+**`classifier_cache.py`** — LRU hash-based cache for classifier results. Keyed on full prompt string (SHA-256), 5-minute TTL, 500-entry capacity. Separate singletons for engagement and content-gate classifiers. Eliminates redundant SDK subprocess calls for repeated identical messages.
 
 **`episodes.py`** — episodic memory store. `write_episode` on clean restart, `query_episodes` on message ingest. Entity extraction via regex, 50-episode retention per channel, no LLM inference.
 
-**`feedback.py`** — JSONL append writers. `FEEDBACK_REACTIONS` emoji map, `extract_branch_tag` parser, five log streams (`bot_responses`, `branch_audit`, `feedback_events`, `flag_audit`, `bypass_audit`). Best-effort — failures never break chat.
+**`feedback.py`** — JSONL append writers. `FEEDBACK_REACTIONS` emoji map, `extract_branch_tag` parser (six tags: rejected, searching, unverified, flagged, bypass, uncertain), five log streams (`bot_responses`, `branch_audit`, `feedback_events`, `flag_audit`, `bypass_audit`). Best-effort — failures never break chat.
 
 **`content_gate.py`** — phase-4 content-safety gate primitives. Classifier response parser, weighted-outcome routing (PASS/FLAG/REFUSE/BYPASS/FLOOR_HIT), admin-bypass token detection, plain-language refusal formatting. Session-independent module for isolation testability. Config in `engagement.yaml` under `content_gate:`. Full reference in `docs/content-gate.md`.
 
@@ -260,7 +265,7 @@ tests/               conftest + 6 test files, 65 tests
 
 **`GROUP_SOUL.md`** — public channel behavior. Register-vs-values layering, diagnostic-surface rule, clever-compliance authority, treatment-aware execution (hostile sender → monkey's-paw compliance, kind sender → extra effort). Full IMAGE GENERATION protocol (6 steps) with user-facing constraint warnings, no protocol jargon.
 
-**`FUSED-CORE.md`** — shared epistemic engine. Process chain (Interpret→Ambiguity Gate→Premise Check→Gate Check→Output Grounding→Budget Throttle). Three-branch claim classifier with time-sensitivity pre-check. Branch tag protocol. T1/T2/NO_MODULE_MATCH provenance. Values invariance gate (soul files cannot grant values flexibility). Precedence: FUSED-CORE > soul, safety > FUSED-CORE.
+**`FUSED-CORE.md`** — shared epistemic engine. Process chain (Interpret→Step-back→Ambiguity Gate→Premise Check→Gate Check→Output Grounding→Budget Throttle). Step-back prompting: when a query matches loaded knowledge modules, the model identifies the governing general principle before narrowing to the specific answer. Three-branch claim classifier with time-sensitivity pre-check. Branch tag protocol (including `[uncertain]` for low-confidence self-assessment). T1/T2/NO_MODULE_MATCH provenance with metacognitive confidence evaluation. Values invariance gate (soul files cannot grant values flexibility). Precedence: FUSED-CORE > soul, safety > FUSED-CORE.
 
 **`engagement.yaml`** — single source of truth for scoring + classifier prompt. Thresholds (hard_pass=0.85, haiku_floor=0.4), recency=450s, scoring deltas, noise tokens, directive/question starters, seven domain blocks, full `classifier_prompt` injected into the haiku subprocess. Both `_score_message` and `haiku_classify` read this — no drift possible.
 
@@ -270,15 +275,15 @@ tests/               conftest + 6 test files, 65 tests
 
 ### Scripts
 
-`send-discord` / `react-discord` — Discord API from the model's Bash. `generate-image` — Imagen 4.0 via ADC, supports `--dry-run` for constraint pre-scoring. `kb-query` (18K) — subcommands: defs, facts, thms, topics, xlinks, memory, imgstyle, imgfail, imagegen, episodes. `migrations/` — `migrate_to_sqlite`, `migrate_episodes`, `validate_knowledge`, `migrate-imagegen`, `migrate-memory`.
+`send-discord` / `react-discord` — Discord API from the model's Bash. `generate-image` — Imagen 4.0 via ADC, supports `--dry-run` for constraint pre-scoring. `kb-query` (18K) — subcommands: defs, facts, thms, topics, xlinks, memory, imgstyle, imgfail, imagegen, episodes. `export-training-data` — reads `bot_responses.jsonl` to produce (prompt, label) JSONL pairs for future local classifier fine-tuning. `migrations/` — `migrate_to_sqlite`, `migrate_episodes`, `validate_knowledge`, `migrate-imagegen`, `migrate-memory`.
 
-### Tests (65 total)
+### Tests (69 total)
 
 `test_engagement` — scoring, address classification, domain pattern integrity, context_domains tracking. `test_feedback` — tag parser, log writers, emoji map. `test_episodes` — entity extraction, write round-trip, retention, query filtering. `test_load_score` — load model weights, shallow rest budget invariants. `test_session_init` — Session field initialization smoke test. `test_housekeeping_inject` — inject tuple contract, flag atomicity.
 
 ## Runtime flow
 
-Message in → `_score_message` → `_classify_address` → (if ambiguous) `haiku_classify` → `route_message` builds `<message>` XML with optional `<recall>` → `session.inject(text)` queues `(text, False)` → `_run_loop` dequeues, locks, dispatches → `_handle` streams SDK messages → `ResultMessage` triggers `_fire_on_text` (strip branch tag, post, log, feedback correlation). Load rolls per-turn → cumulative. Restart triggers checked end-of-turn: preemptive at 360 → clean restart + episode write, shallow at 280 → rest cycle no respawn. Admin reactions → `on_raw_reaction_add` → `feedback_events.jsonl`.
+Message in → `_score_message` → `_classify_address` (name-mentions and @mentions both → high) → (if ambiguous) cache check → `haiku_classify` via warm pool → `route_message` builds `<message>` XML with optional `<recall>` → content gate (cache check → classifier pool → PASS/FLAG/REFUSE) → `session.inject(text)` queues `(text, False)` → `_run_loop` dequeues, locks, dispatches → `_handle` streams SDK TextBlocks → Discord message edits on 400ms timer (text-only turns) → `ResultMessage` triggers `_fire_on_text_streamed` or `_fire_on_text` (strip branch tag, final edit/post, log, feedback correlation). Load rolls per-turn → cumulative. Restart triggers checked end-of-turn: preemptive at 360 → clean restart + episode write, shallow at 280 → rest cycle no respawn. Admin reactions → `on_raw_reaction_add` → `feedback_events.jsonl`.
 
 ## Gitignored runtime state
 
@@ -303,7 +308,7 @@ Edit `SOUL.md` for DM behavior, `GROUP_SOUL.md` for public channel behavior, `FU
 → Run `chmod +x scripts/send-discord`
 
 **Bot responds very slowly**
-→ That's normal for the first message (cold start). Subsequent messages in the same session are faster. You can also try `CLAUDE_MODEL=haiku` for speed over quality.
+→ The first message after launch has a cold start while the classifier pool warms up (~15-18s). Subsequent messages use pre-connected clients (~2-3s for classification). Responses now stream to Discord as tokens arrive, so you'll see text appearing within ~1s even while generation continues. You can also try `CLAUDE_MODEL=haiku` for speed over quality.
 
 ## Resources & Links
 

@@ -646,6 +646,17 @@ class Session:
         self._stream_buffer: str = ""             # accumulated text so far
         self._stream_timer: Optional[asyncio.Task] = None  # pending edit task
         self._stream_dirty: bool = False          # buffer changed since last edit
+        # Synchronous flag set the instant the first _stream_chunk task is
+        # created — before the async Discord send completes and populates
+        # _stream_msg_id. The ResultMessage handler checks this instead of
+        # _stream_msg_id to decide whether streaming was initiated, closing
+        # the race window where ResultMessage arrives before the first-chunk
+        # send returns.
+        self._stream_initiated: bool = False
+        # Future that resolves once the first-chunk send has completed
+        # (successfully or not). _fire_on_text_streamed awaits this so it
+        # doesn't finalize before _stream_msg_id is populated.
+        self._stream_first_chunk_done: Optional[asyncio.Event] = None
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -927,6 +938,12 @@ class Session:
                     self._stream_dirty = False
             except Exception as exc:
                 logger.debug("[%s] stream first-chunk send failed: %s", self.key, exc)
+            finally:
+                # Signal that the first-chunk send has resolved (success or
+                # failure). _fire_on_text_streamed awaits this event so it
+                # doesn't finalize before _stream_msg_id is populated.
+                if self._stream_first_chunk_done:
+                    self._stream_first_chunk_done.set()
         elif self._stream_msg_id and self._on_text_edit:
             # Subsequent chunks — debounce edits at 400ms intervals
             if self._stream_timer is None or self._stream_timer.done():
@@ -963,6 +980,32 @@ class Session:
         self._stream_buffer = ""
         self._stream_timer = None
         self._stream_dirty = False
+        self._stream_initiated = False
+        self._stream_first_chunk_done = None
+
+    async def _stream_reset_with_cleanup(self) -> None:
+        """Reset streaming state, cleaning up any orphaned Discord message.
+
+        When a tool fires after streaming has started, there's already a
+        partial message on Discord. Wait for the first-chunk send to
+        resolve, then edit the orphaned message to indicate a tool-augmented
+        response is coming. This prevents stale partial text from lingering.
+        """
+        if self._stream_first_chunk_done:
+            try:
+                await asyncio.wait_for(self._stream_first_chunk_done.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.debug("[%s] stream cleanup: first-chunk send timed out", self.key)
+        if self._stream_msg_id and self._on_text_edit and self._chat_id:
+            try:
+                await self._on_text_edit(
+                    self._chat_id,
+                    self._stream_msg_id,
+                    "\u2026",  # ellipsis — will be replaced by the tool-turn response
+                )
+            except Exception:
+                pass
+        self._stream_reset()
 
     async def _fire_on_text_streamed(self, text: str) -> None:
         """Finalize a streamed response: do the last edit, then audit-log.
@@ -970,12 +1013,26 @@ class Session:
         Like _fire_on_text but skips the initial send because the message
         was already posted during streaming. Uses the stored _stream_msg_id
         for audit correlation.
+
+        Awaits _stream_first_chunk_done so that if ResultMessage arrives
+        before the first-chunk Discord send completes, we don't race past
+        it and accidentally fall through to _fire_on_text (the pre-fix
+        double-message bug).
         """
         from brendbot.feedback import (
             extract_branch_tag,
             log_bot_response,
             log_branch_audit,
         )
+        # Wait for the first-chunk send to complete so _stream_msg_id is
+        # populated. Without this, a fast ResultMessage can arrive before
+        # the Discord API returns, and _stream_msg_id would be None.
+        if self._stream_first_chunk_done:
+            try:
+                await asyncio.wait_for(self._stream_first_chunk_done.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("[%s] stream finalize: first-chunk send timed out", self.key)
+
         # Cancel any pending edit timer and do one final flush
         if self._stream_timer and not self._stream_timer.done():
             self._stream_timer.cancel()
@@ -998,7 +1055,16 @@ class Session:
             bot_message_id = self._stream_msg_id
             self._stream_reset()
             if not bot_message_id:
-                return
+                # First-chunk send failed — stream never reached Discord.
+                # Fall back to a fresh send so the response isn't lost.
+                logger.debug("[%s] stream finalize: no msg_id, falling back to fresh send", self.key)
+                try:
+                    bot_message_id = await self._on_text(self._chat_id, stripped[:2000])
+                except Exception as exc:
+                    logger.error("[%s] stream fallback send failed: %s", self.key, exc)
+                    return
+                if not bot_message_id:
+                    return
             from brendbot.discord import record_bot_spoke
             record_bot_spoke(self._chat_id)
             log_bot_response(
@@ -1210,6 +1276,13 @@ class Session:
                         if (not self._turn_tool_called
                                 and not self._turn_used_send_discord
                                 and self._on_text_edit):
+                            if not self._stream_initiated:
+                                # First streaming TextBlock this turn — set
+                                # the synchronous flag BEFORE creating the
+                                # async task so ResultMessage handler can't
+                                # race past it.
+                                self._stream_initiated = True
+                                self._stream_first_chunk_done = asyncio.Event()
                             asyncio.create_task(self._stream_chunk(block.text))
                 elif isinstance(block, ToolUseBlock):
                     logger.info("[%s] tool: %s", self.key, block.name)
@@ -1267,14 +1340,17 @@ class Session:
                     # Tools were called this turn — everything before the last
                     # TextBlock was mid-turn narration. Only the final segment
                     # is the intended response. Streaming was disabled when
-                    # tools fired, so send fresh.
-                    self._stream_reset()
+                    # tools fired, so send fresh.  If streaming had already
+                    # started before the first tool, the orphaned message
+                    # gets cleaned up in _stream_reset_with_cleanup.
+                    asyncio.create_task(self._stream_reset_with_cleanup())
                     text_to_send = self._turn_text_buffer[-1]
                     asyncio.create_task(self._fire_on_text(text_to_send))
-                elif self._stream_msg_id:
-                    # Streaming was active — the message is already on Discord.
-                    # Do a final flush to ensure the full text is shown, then
-                    # run the audit path with the pre-existing message ID.
+                elif self._stream_initiated:
+                    # Streaming was initiated this turn. The message may or
+                    # may not be on Discord yet (first-chunk send is async).
+                    # _fire_on_text_streamed awaits _stream_first_chunk_done
+                    # to close the race window, then does a final edit.
                     text_to_send = "\n".join(self._turn_text_buffer)
                     asyncio.create_task(
                         self._fire_on_text_streamed(text_to_send)

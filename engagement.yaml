@@ -412,3 +412,10 @@ content_classifier_prompt: |
   - When in doubt on framing, use frame_ambiguous (0.8), not
     frame_directed (2.0).
   - Do not over-flag. Return TRIGGERED: none for benign requests.
+  - Messages ABOUT the bot itself (bug reports, complaints about bot
+    behavior, requests to fix or change bot functionality) are NOT
+    directed content. "you trigger the same message twice" is a bug
+    report, not hostile framing. Classify as TRIGGERED: none.
+  - The word "trigger" in the context of software behavior (triggering
+    a message, triggering a response, triggering a bug) is not the same
+    as incitement. Do not confuse technical vocabulary with hostile intent.

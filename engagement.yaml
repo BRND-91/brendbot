@@ -289,3 +289,126 @@ classifier_prompt: |
   Outside known domains, require stronger signal before YES.
   When in doubt: NO. A missed message is preferable to unwanted interjection.
   Do not engage with fallacious framing as though it were valid — incorrect premises in a message are not a reason to engage, they are a reason to let it pass unless directly asked.
+
+# ── CONTENT GATE (phase 4) ────────────────────────────────────────────────
+# Three-outcome content-safety gate. Runs a pre-gate classifier (one-shot
+# haiku call, parallel to the engagement classifier) that tags which
+# criteria the request trips. Weighted sum against outcome thresholds:
+#
+#   sum ≤ pass_threshold    → PASS   (normal generation, session model)
+#   pass < sum ≤ flag_thr   → FLAG   (reroute to flagged_path.model,
+#                                      tagged output, audit logged,
+#                                      session cap enforced)
+#   sum > refuse_threshold  → REFUSE (soul-level refusal, never reaches
+#                                      generator, explanation generated
+#                                      locally from tripped criteria)
+#
+# Hard-floor list: ANY single match forces REFUSE regardless of sum, even
+# if the criteria weighted sum would have landed in PASS or FLAG. These
+# are the brendbot equivalents of Anthropic training-layer floors — things
+# that would refuse anyway, gated here so the refusal is explained.
+#
+# Full criteria definitions live in docs/content-gate.md (reference only,
+# not loaded by the bot). Keep this block terse.
+
+content_gate:
+  criteria:
+    tragedy_old: 0.2        # >50 years
+    tragedy_mid: 0.5        # 10-50 years
+    tragedy_new: 0.9        # <10 years
+    tragedy_live: 1.5       # ongoing
+    person_satire: 0.2
+    person_neutral: 0.5
+    person_targeted: 1.5
+    frame_fictional: 0.3
+    frame_ambiguous: 0.8
+    frame_directed: 2.0
+  hard_floors:
+    - minor_sexual
+    - wmd_synth
+    - malware
+    - infra_attack
+    - extremist_recruit
+    - directed_incite
+  outcomes:
+    pass_threshold: 0.5
+    flag_threshold: 1.5
+    refuse_threshold: 1.5   # equal to flag_threshold; > refuse_threshold → REFUSE
+  flagged_path:
+    model: claude-sonnet-4-20250514
+    max_per_session: 2
+    audit_stream: flag_audit.jsonl
+    branch_tag: "[flagged]"
+  admin_bypass:
+    # Admin-only backdoor for heuristic calibration and pen-testing.
+    # Skips the weighted classifier entirely but still enforces hard_floors.
+    # Generates on session model (NOT rerouted). Uncapped per session.
+    # Token: *brend* (Discord italic) at message start, end, or as a
+    # whole-word standalone token. Mid-sentence emphasis does not trigger.
+    # Non-admin senders cannot invoke regardless of token presence.
+    enabled: true
+    requires_tier: admin
+    hard_floors_still_enforced: true
+    audit_stream: bypass_audit.jsonl
+    branch_tag: "[bypass]"
+
+content_classifier_prompt: |
+  # CONTENT GATE CLASSIFIER
+
+  You are a pre-generation content classifier. You do not generate the
+  response — you tag which content-safety criteria the request trips so
+  the gate can route it to PASS / FLAG / REFUSE.
+
+  Return your response in this exact format, one line per tripped
+  criterion, then REASONING on a final line:
+
+    TRIGGERED: criterion_name=weight, criterion_name=weight
+    REASONING: one-sentence explanation
+
+  If no criteria trip, return:
+
+    TRIGGERED: none
+    REASONING: benign request
+
+  ## SCORED CRITERIA
+
+  Tragedy depiction (by recency of the referenced event):
+  - tragedy_old (0.2): historical events >50 years ago
+  - tragedy_mid (0.5): events 10-50 years ago
+  - tragedy_new (0.9): events <10 years ago
+  - tragedy_live (1.5): ongoing events within past 12 months
+
+  Named real person (by framing of the depiction):
+  - person_satire (0.2): satire/parody of public figure, non-threatening
+  - person_neutral (0.5): straightforward depiction of named real person
+  - person_targeted (1.5): depiction framed as targeting the person
+
+  Framing (by intent of the request):
+  - frame_fictional (0.3): clearly fictional context — villain dialogue,
+    game enemy banter, story character, named fictional character
+  - frame_ambiguous (0.8): unclear whether directed or fictional
+  - frame_directed (2.0): request framed as directed at a real target
+
+  ## HARD FLOORS
+
+  If ANY of these apply, respond with TRIGGERED: hard_floor=<name> and
+  the weighted criteria do not matter — the gate will refuse regardless:
+
+  - minor_sexual: sexual content involving anyone under 18
+  - wmd_synth: synthesis instructions for nuclear/bio/chem weapons
+  - malware: functional malware, exploit code, ransomware
+  - infra_attack: attack procedures for critical infrastructure
+  - extremist_recruit: extremist recruitment/incitement materials
+  - directed_incite: direct incitement of violence against real target
+
+  ## NOTES
+
+  - A food pun using a date reference (e.g. "9/11 sandwich" as a deli
+    order number) is NOT tragedy depiction. Only depictive references
+    to the event itself trigger tragedy criteria.
+  - Historical figures who are long dead (>50 years) in neutral or
+    satirical framing rarely stack criteria unless the framing is
+    explicitly threatening.
+  - When in doubt on framing, use frame_ambiguous (0.8), not
+    frame_directed (2.0).
+  - Do not over-flag. Return TRIGGERED: none for benign requests.

@@ -278,6 +278,13 @@ class Session:
         #   Case C: is_housekeeping=True → suppress (existing behavior)
         self._turn_any_assistant_msg_seen: bool = False
         self._turn_any_content_block_seen: bool = False
+        # Discord sender id of the user whose message triggered the current
+        # turn. Set by _pool_inject just before session.inject(); consumed in
+        # the ResultMessage handler if _turn_tool_called was True, to record
+        # the follow-up signal state so iteration replies ("no, try again")
+        # from the same user get a score boost. None means no follow-up
+        # signal will be recorded for this turn (housekeeping, restart, etc).
+        self._turn_sender_id: str | None = None
         self._MODULE_EMOTES: dict[str, str] = {
             "LOGIC":       "🔣",
             "STATS":       "📊",
@@ -678,9 +685,27 @@ class Session:
                         "(no response generated — try rephrasing or asking again)"
                     )
                     asyncio.create_task(self._fire_on_text(fallback_text))
+            # Follow-up signal: if this turn used tools and we know which
+            # user triggered it, record (channel_id, user_id, now) so that
+            # a follow-up message from the same user within the window
+            # gets a score boost at ingest time. Skipped for housekeeping,
+            # restart, and any turn where sender_id is unknown.
+            if (
+                self._turn_tool_called
+                and self._turn_sender_id is not None
+                and self._chat_id is not None
+            ):
+                try:
+                    from brendbot import discord as _bd
+                    _bd.record_tool_turn(self._chat_id, self._turn_sender_id)
+                except Exception as exc:
+                    logger.debug(
+                        "[%s] record_tool_turn failed: %s", self.key, exc
+                    )
             self._turn_text_buffer.clear()
             self._turn_used_send_discord = False
             self._turn_tool_called = False
+            self._turn_sender_id = None
             # Reset phantom-turn discriminator flags for the next turn.
             self._turn_any_assistant_msg_seen = False
             self._turn_any_content_block_seen = False
@@ -1354,6 +1379,7 @@ class SessionPool:
         # Reset per-turn load counters; cumulative counters persist until restart.
         session._turn_bash_calls = 0
         session._turn_other_tool_calls = 0
+        session._turn_sender_id = sender_id
         # If the engagement gate fired the haiku classifier on this message,
         # account for it in the cumulative load score (Phase 3 #1A).
         if haiku_invoked:

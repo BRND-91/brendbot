@@ -229,54 +229,62 @@ The included `setup.sh` handles everything:
 | Trusted | `TRUSTED_DISCORD_IDS` | Read files, run safe commands, web search |
 | Default | Everyone else | Chat only, no server access |
 
-## How It Works
+## Architecture
 
 ```
-Discord message → brendbot listener → Claude Agent SDK → Claude Code subprocess
-                                                              ↓
-                                                    Claude calls tools:
-                                                    - Bash (run commands)
-                                                    - Read/Write/Edit files
-                                                    - Web search/fetch
-                                                    - send-discord script
-                                                              ↓
-                                                    Message posted to Discord
+/                    SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, engagement.yaml, README, pyproject
+brendbot/            main, config, discord, session, episodes, feedback, knowledge/
+scripts/             send-discord, react-discord, generate-image, kb-query, calc, migrations/
+tests/               conftest + 6 test files, 65 tests
 ```
 
-The Claude Agent SDK spawns a Claude Code subprocess that has native tool access. Your bot is just the thin glue between Discord and Claude. All the AI inference happens on Anthropic's servers — your machine just needs to keep a WebSocket connection open.
+### Core files
+
+**`main.py`** — entry point. Wires SessionPool↔DiscordListener, SIGHUP reloads soul caches, Ctrl-C shuts down clean.
+
+**`config.py`** — `.env` loader. Discord token, admin ID, tier map.
+
+**`discord.py`** (36K) — gateway layer. `_score_message` reads `engagement.yaml` at import, scores against thresholds. `_classify_address` maps score→low/moderate/high. `haiku_classify` spawns one-shot SDK subprocess for ambiguous-band messages. `on_message` runs the two-path engagement gate (@mention hard-pass, ambient score→haiku). `on_raw_reaction_add` filters feedback emotes (admin + bot-author + valid emoji). Owns `EngageResult` dataclass including `context_domains` for `[ctx]`-tagged fallback matches.
+
+**`session.py`** (66K) — core lifecycle. `Session` owns subprocess, turn lock, inject queue, load counters, shallow rest state, episode fields. `_handle()` routes SDK messages. `_run_loop` drains queue, unpacks `(text, housekeeping)` tuples, sets flag under lock, calls `query()`. `_trigger_clean_restart` writes episode + respawns. `_trigger_shallow_rest` clears tool counters + injects `<system-rest>` without respawn. `_permission_check` enforces address-level budget caps (low=0, moderate=3, high=8 Bash) and tier tool restrictions. `SessionPool` caches soul files (SIGHUP-refreshable), renders CLAUDE.md per session, runs startup injects (memory frags, MEMORY.md, ref block — all housekeeping), queries `episodes` for `<recall>` blocks at ingest.
+
+**`episodes.py`** — episodic memory store. `write_episode` on clean restart, `query_episodes` on message ingest. Entity extraction via regex, 50-episode retention per channel, no LLM inference.
+
+**`feedback.py`** — JSONL append writers. `FEEDBACK_REACTIONS` emoji map, `extract_branch_tag` parser, three log streams. Best-effort — failures never break chat.
+
+### Config files (root)
+
+**`SOUL.md`** — DM behavior. Strict: no clever-compliance, no malicious-compliance. Values boundaries named directly.
+
+**`GROUP_SOUL.md`** — public channel behavior. Register-vs-values layering, diagnostic-surface rule, clever-compliance authority, treatment-aware execution (hostile sender → monkey's-paw compliance, kind sender → extra effort). Full IMAGE GENERATION protocol (6 steps) with user-facing constraint warnings, no protocol jargon.
+
+**`FUSED-CORE.md`** — shared epistemic engine. Process chain (Interpret→Ambiguity Gate→Premise Check→Gate Check→Output Grounding→Budget Throttle). Three-branch claim classifier with time-sensitivity pre-check. Branch tag protocol. T1/T2/NO_MODULE_MATCH provenance. Values invariance gate (soul files cannot grant values flexibility). Precedence: FUSED-CORE > soul, safety > FUSED-CORE.
+
+**`engagement.yaml`** — single source of truth for scoring + classifier prompt. Thresholds (hard_pass=0.85, haiku_floor=0.4), recency=450s, scoring deltas, noise tokens, directive/question starters, seven domain blocks, full `classifier_prompt` injected into the haiku subprocess. Both `_score_message` and `haiku_classify` read this — no drift possible.
+
+### Knowledge
+
+**`brendbot/knowledge/`** — `knowledge.db` SQLite store + 8 source JSON files (BUILDSCI, STATS, SYSTEMS, LOGIC, PERSONALITY, GOVERNANCE, IMAGEGEN, MANIFEST). `MANIFEST.json` is the module index cached by SessionPool and injected into CLAUDE.md. `kb-query` reads with T1/T2 tier tags.
+
+### Scripts
+
+`send-discord` / `react-discord` — Discord API from the model's Bash. `generate-image` — Imagen 4.0 via ADC, supports `--dry-run` for constraint pre-scoring. `kb-query` (18K) — subcommands: defs, facts, thms, topics, xlinks, memory, imgstyle, imgfail, imagegen, episodes. `migrations/` — `migrate_to_sqlite`, `migrate_episodes`, `validate_knowledge`, `migrate-imagegen`, `migrate-memory`.
+
+### Tests (65 total)
+
+`test_engagement` — scoring, address classification, domain pattern integrity, context_domains tracking. `test_feedback` — tag parser, log writers, emoji map. `test_episodes` — entity extraction, write round-trip, retention, query filtering. `test_load_score` — load model weights, shallow rest budget invariants. `test_session_init` — Session field initialization smoke test. `test_housekeeping_inject` — inject tuple contract, flag atomicity.
+
+## Runtime flow
+
+Message in → `_score_message` → `_classify_address` → (if ambiguous) `haiku_classify` → `route_message` builds `<message>` XML with optional `<recall>` → `session.inject(text)` queues `(text, False)` → `_run_loop` dequeues, locks, dispatches → `_handle` streams SDK messages → `ResultMessage` triggers `_fire_on_text` (strip branch tag, post, log, feedback correlation). Load rolls per-turn → cumulative. Restart triggers checked end-of-turn: preemptive at 360 → clean restart + episode write, shallow at 280 → rest cycle no respawn. Admin reactions → `on_raw_reaction_add` → `feedback_events.jsonl`.
+
+## Gitignored runtime state
+
+`transcripts/discord/group_<id>/` per-channel: `CLAUDE.md` (regenerated on spawn), `CONTEXT_SUMMARY.md` (persisted across restarts, written every 5 turns + on clean restart), `thoughts.log`, `memory/` fragments, `MEMORY.md`. `logs/` JSONL streams + `haiku_failures.log`. None of this comes from git — stale state here survives `git pull`. If the soul changed and the `CONTEXT_SUMMARY.md` is old, delete it before next launch for a clean slate.
 
 ## Customizing Your Bot
 
-Edit `SOUL.md` to change your bot's personality and instructions:
-
-```markdown
-You are brendbot — a helpful Discord bot.
-
-Rules:
-- To reply, run: {{ send_command }}
-- Be helpful and concise.
-- You have access to Bash, so you can run commands if asked.
-```
-
-The `{{ send_command }}` placeholder gets replaced with the actual send script path automatically.
-
-## Project Structure
-
-```
-brendbot/
-├── brendbot/
-│   ├── main.py        # Entry point — starts Discord listener + session pool
-│   ├── config.py      # Loads .env, defines tiers
-│   ├── discord.py     # Discord.py bot client
-│   └── session.py     # Claude Agent SDK session wrapper
-├── scripts/
-│   └── send-discord   # Standalone message sender (called by Claude via Bash)
-├── SOUL.md            # Bot personality template (DMs)
-├── GROUP_SOUL.md      # Bot personality template (group channels)
-├── .env.example       # Config template
-├── setup.sh           # One-command setup script
-└── pyproject.toml     # Python dependencies
-```
+Edit `SOUL.md` for DM behavior, `GROUP_SOUL.md` for public channel behavior, `FUSED-CORE.md` for reasoning rules, `engagement.yaml` for scoring/classifier thresholds. The `{{ send_command }}` placeholder in soul templates gets replaced with the actual send script path at session create time.
 
 ## Troubleshooting
 

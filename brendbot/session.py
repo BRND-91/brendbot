@@ -99,7 +99,9 @@ async def haiku_classify(payload: dict) -> dict:
         f"{classifier_rules}\n\n"
         f"Recent context:\n{context_lines}\n"
         f"New message: {text}\n"
-        "Reply YES or NO only."
+        "Reply YES or NO followed by one tone word from: "
+        "funny hype sad weird dumb wholesome neutral. "
+        "Example: YES funny  or  NO neutral. Nothing else."
     )
 
     # One-shot SDK session: no tools, no project settings inheritance, no
@@ -132,12 +134,15 @@ async def haiku_classify(payload: dict) -> dict:
                 break
 
         if not answer_text:
-            return {"engage": False, "reason": "sdk:empty"}
-        engage = answer_text.startswith("Y")
-        return {"engage": engage, "reason": f"sdk:{answer_text[:4]}"}
+            return {"engage": False, "reason": "sdk:empty", "tone": "neutral"}
+        tokens = answer_text.split()
+        engage = tokens[0].startswith("Y")
+        _valid_tones = {"funny", "hype", "sad", "weird", "dumb", "wholesome", "neutral"}
+        tone = tokens[1].lower() if len(tokens) > 1 and tokens[1].lower() in _valid_tones else "neutral"
+        return {"engage": engage, "reason": f"sdk:{answer_text[:8]}", "tone": tone}
     except Exception as e:
         logger.warning("haiku_classify SDK error: %s", e)
-        return {"engage": False, "reason": "error"}
+        return {"engage": False, "reason": "error", "tone": "neutral"}
     finally:
         if classifier_client is not None:
             try:

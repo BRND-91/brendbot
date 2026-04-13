@@ -32,6 +32,9 @@ scoring:
   domain_match_in_context: 0.3
   conversational_in_thread: 0.2  # question/directive in active thread
   name_mentioned: 0.5      # name in text without @mention
+  follow_up_after_tool_use: 0.3  # same user, within window of a bot tool-use turn
+
+follow_up_window_seconds: 120
 
 noise_tokens:
   - lol

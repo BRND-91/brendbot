@@ -37,6 +37,15 @@ type MessageCallback = Callable[..., Coroutine[Any, Any, None]]
 # Channel state: tracks last time bot spoke per channel
 _channel_last_spoke: dict[str, float] = {}
 
+# Follow-up signal state: tracks the last user who triggered a tool-using turn
+# per channel, and when that turn completed. A message from the same user
+# within follow_up_window_seconds gets a score boost, catching iteration
+# replies like "not what I meant, use this instead" that would otherwise
+# hard-drop because they lack a name-mention or domain keyword.
+# Updated by record_tool_turn() from session._handle() when a turn with
+# _turn_tool_called=True completes. Read by _score_message() at ingest.
+_channel_last_tool_turn: dict[str, tuple[str, float]] = {}
+
 # Per-channel rolling buffer — seeded from Discord API on first message, then appended in-memory
 _channel_context: dict[str, deque] = {}
 _channel_seeded: set[str] = set()  # channels whose buffers have been seeded from API
@@ -292,6 +301,7 @@ _ENGAGEMENT_CFG = _load_engagement_config()
 ENGAGE_HARD_PASS = float(_ENGAGEMENT_CFG["thresholds"]["hard_pass"])
 ENGAGE_THRESHOLD = float(_ENGAGEMENT_CFG["thresholds"]["haiku_floor"])
 RECENCY_WINDOW_SECONDS = int(_ENGAGEMENT_CFG.get("recency_seconds", 300))
+FOLLOW_UP_WINDOW_SECONDS = int(_ENGAGEMENT_CFG.get("follow_up_window_seconds", 120))
 
 # Address level cutoffs — passed downstream to enforce FUSED-CORE Budget Throttle.
 _ADDRESS_HIGH = float(_ENGAGEMENT_CFG["address_levels"]["high"])
@@ -303,6 +313,7 @@ _SCORE_RECENCY = float(_ENGAGEMENT_CFG["scoring"]["recency_active"])
 _SCORE_DOMAIN = float(_ENGAGEMENT_CFG["scoring"]["domain_match"])
 _SCORE_DOMAIN_CTX = float(_ENGAGEMENT_CFG["scoring"]["domain_match_in_context"])
 _SCORE_CONVERSATIONAL = float(_ENGAGEMENT_CFG["scoring"]["conversational_in_thread"])
+_SCORE_FOLLOW_UP = float(_ENGAGEMENT_CFG["scoring"].get("follow_up_after_tool_use", 0.3))
 SCORE_NAME_MENTIONED = float(_ENGAGEMENT_CFG["scoring"]["name_mentioned"])
 
 # Noise tokens — frozen set for O(1) lookup.
@@ -355,6 +366,7 @@ def _score_message(
     channel_id: str,
     is_reply_to_bot: bool,
     recent_context: list[dict] | None = None,
+    sender_id: str | None = None,
 ) -> EngageResult:
     """
     Score a message for engagement likelihood.
@@ -365,6 +377,9 @@ def _score_message(
       score  < ENGAGE_THRESHOLD : drop
       domains: set of module IDs matched by keywords
       address_level: caller fills this via _classify_address after adding name boost
+
+    sender_id is optional for backward compatibility with existing callers
+    and tests. When provided, enables the follow-up-after-tool-use boost.
     """
     result = EngageResult()
     text_lower = text.lower()
@@ -382,6 +397,20 @@ def _score_message(
     recency_active = time.time() - last_spoke < RECENCY_WINDOW_SECONDS
     if recency_active and word_count >= 3:
         result.score += _SCORE_RECENCY
+
+    # Follow-up after bot tool use: same user, within window, gets a boost.
+    # Catches iteration replies like "not quite, try again" that lack name
+    # mentions or domain keywords but are clearly directed at the bot because
+    # the user just prompted a tool-using turn.
+    if sender_id is not None:
+        tool_entry = _channel_last_tool_turn.get(channel_id)
+        if tool_entry is not None:
+            last_user_id, last_ts = tool_entry
+            if (
+                sender_id == last_user_id
+                and time.time() - last_ts < FOLLOW_UP_WINDOW_SECONDS
+            ):
+                result.score += _SCORE_FOLLOW_UP
 
     # Domain keyword match via compiled regex — single pass, word-boundary aware.
     domain_scored = False
@@ -424,6 +453,19 @@ def _score_message(
 def record_bot_spoke(channel_id: str) -> None:
     """Call this after the bot sends a message to update recency state."""
     _channel_last_spoke[channel_id] = time.time()
+
+
+def record_tool_turn(channel_id: str, user_id: str) -> None:
+    """Record that the bot just completed a tool-using turn in response to
+    a specific user. Subsequent messages from the same user within
+    FOLLOW_UP_WINDOW_SECONDS will get a follow-up scoring boost, catching
+    iteration replies ('not that one, try again') that would otherwise
+    hard-drop because they lack a name-mention or domain keyword.
+
+    Called from session._handle() in the ResultMessage branch when
+    _turn_tool_called was True for the just-completed turn.
+    """
+    _channel_last_tool_turn[channel_id] = (user_id, time.time())
 
 
 _seeding_locks: dict[str, asyncio.Lock] = {}
@@ -596,6 +638,7 @@ class DiscordListener:
                         channel_id,
                         reply_to_bot,
                         recent_context=context_snapshot,
+                        sender_id=str(message.author.id),
                     )
                     # Name mention boosts score — sufficient signal that the message
                     # is directed at the bot, but not a bypass. Boost magnitude

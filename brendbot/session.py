@@ -265,6 +265,19 @@ class Session:
         self._turn_text_buffer: list[str] = []
         self._turn_used_send_discord: bool = False
         self._turn_tool_called: bool = False  # True once any ToolUseBlock seen this turn
+        # Phantom-turn discriminator flags (Phase 3 phantom-fix-v2).
+        # The silent-drop fallback was firing on two distinct failure modes:
+        # (a) intentional silent drops where the model correctly declined
+        # to respond per the soul rules (case A), and (b) true broken turns
+        # where no output arrived at all (case B). These two flags plus
+        # ResultMessage.stop_reason are the three-way discriminator:
+        #   Case A: any_assistant_msg_seen=True, content_block_seen=True,
+        #           stop_reason='end_turn' → suppress fallback
+        #   Case B: any_assistant_msg_seen=False OR content_block_seen=False,
+        #           stop_reason=None or error → fire fallback
+        #   Case C: is_housekeeping=True → suppress (existing behavior)
+        self._turn_any_assistant_msg_seen: bool = False
+        self._turn_any_content_block_seen: bool = False
         self._MODULE_EMOTES: dict[str, str] = {
             "LOGIC":       "🔣",
             "STATS":       "📊",
@@ -515,7 +528,18 @@ class Session:
 
     def _handle(self, message: Any) -> None:
         if isinstance(message, AssistantMessage):
+            # Discriminator flag: an AssistantMessage arrived this turn
+            # at all. Combined with any_content_block_seen below, this
+            # distinguishes true broken turns (no message) from thinking-only
+            # turns where the model correctly declined to respond.
+            self._turn_any_assistant_msg_seen = True
             for block in message.content:
+                # Discriminator flag: any content block at all (Text,
+                # Thinking, ToolUse, ToolResult). An empty content list
+                # combined with an AssistantMessage still means the SDK
+                # gave us nothing actionable. A thinking-only content list
+                # is the canonical shape of an intentional silent drop.
+                self._turn_any_content_block_seen = True
                 if isinstance(block, ThinkingBlock):
                     try:
                         import datetime
@@ -569,6 +593,17 @@ class Session:
                 self._turn_text_buffer.clear()
                 logger.debug("[%s] housekeeping turn — suppressing dispatch", self.key)
 
+            # Read stop_reason defensively — the Python SDK docs claim
+            # this field is TypeScript-only but the dataclass actually
+            # defines it as `stop_reason: str | None = None`. Using getattr
+            # tolerates SDK versions where the field is missing entirely.
+            # Values we care about: 'end_turn' (normal completion, model
+            # chose to stop), 'refusal' (model declined), 'max_tokens'
+            # (output cap hit), 'tool_use' (pause for tool call, should
+            # not reach this branch). None means the SDK either didn't
+            # populate it or the turn ended abnormally.
+            stop_reason = getattr(message, "stop_reason", None)
+
             if (self._turn_text_buffer
                     and not self._turn_used_send_discord
                     and self._on_text
@@ -587,31 +622,68 @@ class Session:
                   and not is_housekeeping
                   and self._on_text
                   and self._chat_id):
-                # Silent-drop diagnostic: turn produced no text blocks, no
-                # tool calls, and didn't call send-discord directly. The
-                # model spent tokens (cost > 0 will appear below) but emitted
-                # nothing the result handler can route. Most common cause:
-                # adaptive thinking returned a thinking-only response when
-                # the model decided no further output was needed. Without
-                # this branch the user sees nothing and there's no log line
-                # explaining the drop.
+                # ── Phantom-turn discriminator (Phase 3 phantom-fix-v2) ──
+                # Three cases to distinguish, previously all collapsed into
+                # "fire fallback":
                 #
-                # Fallback behavior: post a minimal acknowledgement so the
-                # user knows the turn ran. This is preferable to silent
-                # failure on @mentions where the user is explicitly asking
-                # for a response.
-                logger.warning(
-                    "[%s] turn produced no output blocks (thinking-only or empty) — "
-                    "sending fallback",
-                    self.key,
+                # Case A: Intentional silent drop. The model received a
+                #   message, ran thinking tokens, and correctly decided
+                #   not to respond per the soul's silent-drop rule (e.g.
+                #   cross-talk addressed to another user). Shape:
+                #     - AssistantMessage arrived (any_assistant_msg_seen=True)
+                #     - ContentBlock(s) inside it (any_content_block_seen=True)
+                #       — typically ThinkingBlock only, no TextBlock
+                #     - stop_reason == 'end_turn' (clean completion)
+                #   Correct handling: SUPPRESS fallback. The silence is
+                #   the response.
+                #
+                # Case B: True broken turn. Something structurally failed —
+                #   no AssistantMessage at all, or an empty content list
+                #   with no blocks, or an error stop_reason. The user is
+                #   waiting and nothing's coming. Shape:
+                #     - any_assistant_msg_seen=False OR
+                #       any_content_block_seen=False
+                #     - stop_reason None or indicates error
+                #   Correct handling: FIRE fallback so user knows it broke.
+                #
+                # Case C: Housekeeping turn (context injection, shallow rest).
+                #   Handled above by is_housekeeping check — already suppressed.
+                #
+                # Decision rule: if the model got as far as emitting an
+                # AssistantMessage with at least one content block AND the
+                # stop_reason is 'end_turn', treat it as Case A and suppress.
+                # Anything else falls through to the fallback path.
+                is_intentional_silent_drop = (
+                    self._turn_any_assistant_msg_seen
+                    and self._turn_any_content_block_seen
+                    and stop_reason == "end_turn"
                 )
-                fallback_text = (
-                    "(no response generated — try rephrasing or asking again)"
-                )
-                asyncio.create_task(self._fire_on_text(fallback_text))
+                if is_intentional_silent_drop:
+                    logger.info(
+                        "[%s] intentional silent drop — model declined to respond "
+                        "(thinking-only, stop_reason=end_turn) — suppressing fallback",
+                        self.key,
+                    )
+                else:
+                    logger.warning(
+                        "[%s] phantom turn — no output blocks "
+                        "(assistant_msg=%s, content_block=%s, stop_reason=%s) — "
+                        "sending fallback",
+                        self.key,
+                        self._turn_any_assistant_msg_seen,
+                        self._turn_any_content_block_seen,
+                        stop_reason,
+                    )
+                    fallback_text = (
+                        "(no response generated — try rephrasing or asking again)"
+                    )
+                    asyncio.create_task(self._fire_on_text(fallback_text))
             self._turn_text_buffer.clear()
             self._turn_used_send_discord = False
             self._turn_tool_called = False
+            # Reset phantom-turn discriminator flags for the next turn.
+            self._turn_any_assistant_msg_seen = False
+            self._turn_any_content_block_seen = False
 
             cost = f" (${message.total_cost_usd:.4f})" if message.total_cost_usd else ""
             usage = message.usage or {}

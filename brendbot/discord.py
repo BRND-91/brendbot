@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 from collections import deque
@@ -77,10 +78,11 @@ async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
         return {
             "engage": bool(decision.get("engage", False)),
             "reason": reason,
+            "tone": decision.get("tone", "neutral"),
         }
     except Exception as e:
         logger.warning("Haiku gate failed: %s", e)
-        return {"engage": False, "reason": "error"}
+        return {"engage": False, "reason": "error", "tone": "neutral"}
 
 
 # ── Haiku failure log ─────────────────────────────────────────────────────
@@ -106,6 +108,95 @@ def _log_haiku_failure(channel_id: str, text: str, score: float) -> None:
         logger.warning("Failed to write haiku failure log: %s", exc)
     # TODO: when cfg.admin_alert_channel is added, post a rate-limited
     # alert (1/hr) to that channel here so outages aren't quiet.
+
+
+# ── Tone-mapped reaction palette ──────────────────────────────────────────────
+# Middle-band fallback reactions. Custom server emotes get 2x weight over
+# unicode so the bot reads as a channel native rather than a generic bot.
+# Palette spec from seb (1484069313802666064), signed off by Brendan, 2026-04-12.
+#
+# Tolerance: custom emote IDs can rot (server changes, emoji removed, wrong ID
+# at paste time). _pick_reaction returns a fallback-ordered list rather than
+# a single emote, and react_with_fallback walks it until one succeeds. The
+# first item is the weighted pick; subsequent items are the palette's unicode
+# entries in order. Unicode emotes never fail, so the fallback chain always
+# terminates in a reaction the user actually sees.
+
+_UNICODE = 1
+_CUSTOM = 2
+
+_REACTION_PALETTES: dict[str, list[tuple[str, int]]] = {
+    "funny":     [("😂", _UNICODE), ("💀", _UNICODE), ("<:wholesquadslaughing:968321154488098816>", _CUSTOM)],
+    "hype":      [("🔥", _UNICODE), ("<:this:840937418156933140>", _CUSTOM), ("<:hyperomegapoggers:680628570921500847>", _CUSTOM)],
+    "sad":       [("😔", _UNICODE), ("<:sadbad:836301301402828860>", _CUSTOM)],
+    "weird":     [("👀", _UNICODE), ("<:rusrs:1338759240751255592>", _CUSTOM)],
+    "dumb":      [("🤦", _UNICODE), ("<:rusrs:1338759240751255592>", _CUSTOM)],
+    "wholesome": [("🫡", _UNICODE), ("❤️", _UNICODE)],
+    "neutral":   [("👀", _UNICODE), ("👍", _UNICODE), ("<:this:840937418156933140>", _CUSTOM)],
+}
+
+
+def _pick_reaction(tone: str) -> list[str]:
+    """Weighted random pick from the palette for the given tone bucket,
+    returned as a fallback-ordered list.
+
+    Position 0 is the weighted pick (may be custom or unicode).
+    Positions 1+ are the palette's unicode emotes in palette order, with
+    the position-0 emote deduplicated if it was also unicode.
+
+    The caller walks this list via react_with_fallback until one succeeds.
+    Since every palette has at least one unicode entry and unicode emotes
+    cannot fail on Discord, the list always contains a guaranteed-safe tail.
+
+    Falls back to the 'neutral' palette for any unrecognised tone.
+    """
+    palette = _REACTION_PALETTES.get(tone, _REACTION_PALETTES["neutral"])
+    emotes, weights = zip(*palette)
+    picked = random.choices(emotes, weights=weights, k=1)[0]
+    # Fallback tail: unicode entries from the same palette, in palette order,
+    # minus the picked emote if it was already unicode.
+    fallback_tail = [e for e, w in palette if w == _UNICODE and e != picked]
+    return [picked] + fallback_tail
+
+
+async def react_with_fallback(
+    channel_id: str, message_id: str, emotes: list[str]
+) -> bool:
+    """Try each emote in order until one successfully reacts.
+
+    Returns True if any reaction landed, False if every attempt failed
+    (which should be impossible in practice — every palette's fallback
+    tail contains at least one unicode emote, and unicode never fails
+    on Discord).
+
+    Logs each failure at DEBUG so dead custom emote IDs surface in the
+    runtime log without spamming WARNING for expected retries.
+    """
+    if _discord_client is None:
+        return False
+    try:
+        channel = _discord_client.get_channel(int(channel_id))
+        if channel is None:
+            channel = await _discord_client.fetch_channel(int(channel_id))
+        msg = await channel.fetch_message(int(message_id))
+    except Exception as exc:
+        logger.warning("react_with_fallback: message lookup failed %s: %s", message_id, exc)
+        return False
+    for emote in emotes:
+        try:
+            await msg.add_reaction(emote)
+            logger.debug("Reacted to %s with %s", message_id, emote)
+            return True
+        except Exception as exc:
+            logger.debug(
+                "react_with_fallback: %s failed on %s (%s), trying next",
+                emote, message_id, exc,
+            )
+    logger.warning(
+        "react_with_fallback: all %d emotes failed on %s",
+        len(emotes), message_id,
+    )
+    return False
 
 
 async def react_to_message(channel_id: str, message_id: str, emoji: str) -> None:
@@ -559,8 +650,9 @@ class DiscordListener:
                                     engage_result.score,
                                 )
                         if not engage:
-                            await react_to_message(
-                                channel_id, str(message.id), "👀"
+                            tone = haiku_result.get("tone", "neutral")
+                            await react_with_fallback(
+                                channel_id, str(message.id), _pick_reaction(tone)
                             )
                             return
                     else:

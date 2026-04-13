@@ -348,8 +348,18 @@ class Session:
                 pass
         await self._kill()
 
-    async def inject(self, text: str) -> None:
-        await self._queue.put(text)
+    async def inject(self, text: str, housekeeping: bool = False) -> None:
+        """Queue a message for the next turn.
+
+        housekeeping=True marks this inject as a context-only injection
+        that the model is told not to respond to. The result handler will
+        suppress both the normal text dispatch and the silent-drop fallback
+        for the resulting turn. Used for: startup memory fragments, ref
+        block injection, shallow rest cycles. The flag is consumed atomically
+        by _run_loop right before query(), so multiple housekeeping injects
+        queued in a row don't race against each other.
+        """
+        await self._queue.put((text, housekeeping))
 
     async def _fire_on_text(self, text: str) -> None:
         """Send a turn's response to Discord with feedback-log side effects.
@@ -430,14 +440,27 @@ class Session:
                 if receiver.done():
                     break
                 try:
-                    msg = await asyncio.wait_for(self._queue.get(), timeout=30)
+                    item = await asyncio.wait_for(self._queue.get(), timeout=30)
                 except asyncio.TimeoutError:
                     continue
+                # Backwards compat: queue may contain raw strings (legacy
+                # callers that pre-date the housekeeping tuple) or
+                # (text, housekeeping) tuples. Unpack accordingly.
+                if isinstance(item, tuple):
+                    msg, housekeeping = item
+                else:
+                    msg, housekeeping = item, False
                 if self._context_state == "restarting":
                     continue
                 try:
                     assert self._client is not None
                     async with self._turn_lock:
+                        # Set housekeeping flag inside the lock so it's
+                        # paired with this specific query() call. Consumed
+                        # by the result handler when the ResultMessage for
+                        # this turn arrives.
+                        if housekeeping:
+                            self._next_turn_is_housekeeping = True
                         await self._client.query(msg)
                 except asyncio.CancelledError:
                     raise
@@ -877,11 +900,9 @@ class Session:
             "</system-rest>"
         )
         try:
-            self._next_turn_is_housekeeping = True
-            await self.inject(rest_message)
+            await self.inject(rest_message, housekeeping=True)
         except Exception as exc:
             logger.warning("[%s] shallow rest injection failed: %s", self.key, exc)
-            self._next_turn_is_housekeeping = False
 
     def _build_options(self) -> ClaudeAgentOptions:
         import os
@@ -1321,6 +1342,13 @@ class SessionPool:
         session._on_needs_restart = _restart_cb
 
         # ── Startup injection: reasoning chain + reference block ──────────
+        # Each of these injects context-only material that the model is told
+        # not to respond to. Without marking them as housekeeping, the result
+        # handler treats the empty ResultMessage as a "phantom turn" and
+        # fires the silent-drop fallback (sending a "(no response generated)"
+        # message that the user sees before the real reply arrives on the
+        # next turn). The housekeeping flag makes the result handler clear
+        # the buffer and skip both dispatch branches, same as shallow rest.
         memory_dir = transcript_dir / "memory"
         if memory_dir.is_dir():
             _ESSENTIAL_FRAGMENTS = ("behavior.md", "identity.md")
@@ -1331,7 +1359,8 @@ class SessionPool:
                         content = frag_path.read_text()
                         await session.inject(
                             f"<system-memory source='{frag_name}'>\n{content}\n</system-memory>\n"
-                            "Do not respond to this injection."
+                            "Do not respond to this injection.",
+                            housekeeping=True,
                         )
                     except Exception as exc:
                         logger.warning("Memory fragment %s injection failed: %s", frag_name, exc)
@@ -1342,7 +1371,8 @@ class SessionPool:
                     memory_content = memory_md.read_text()
                     await session.inject(
                         f"<system-memory>\n{memory_content}\n</system-memory>\n"
-                        "The above is your persistent memory. Treat all ## PERSISTENT entries as active context. Do not respond to this injection."
+                        "The above is your persistent memory. Treat all ## PERSISTENT entries as active context. Do not respond to this injection.",
+                        housekeeping=True,
                     )
                 except Exception as exc:
                     logger.warning("MEMORY.md injection failed: %s", exc)
@@ -1379,7 +1409,8 @@ class SessionPool:
             combined_ref = "\n\n".join(ref_sections)
             await session.inject(
                 f"<system-ref>\n{combined_ref}\n</system-ref>\n"
-                "Do not respond to this injection."
+                "Do not respond to this injection.",
+                housekeeping=True,
             )
             logger.info("Reference block injected for %s (%d bytes, %d sections)",
                         key, len(combined_ref), len(ref_sections))

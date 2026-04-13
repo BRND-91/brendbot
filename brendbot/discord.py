@@ -242,6 +242,11 @@ class EngageResult:
     """Result from _score_message with score, matched domains, and address level."""
     score: float = 0.0
     domains: set[str] = field(default_factory=set)
+    # Domains matched only via recent-channel-context fallback (not in the
+    # current message text). Tracked separately so logging and downstream
+    # consumers can tell whether the domain hint reflects the current
+    # message or stale context. Always a subset of `domains`.
+    context_domains: set[str] = field(default_factory=set)
     address_level: str = "low"  # low | moderate | high — see FUSED-CORE Budget Throttle
 
 
@@ -308,6 +313,7 @@ def _score_message(
             module = KEYWORD_TO_MODULE.get(kw)
             if module:
                 result.domains.add(module)
+                result.context_domains.add(module)  # mark as context-source
                 if not domain_scored:
                     result.score += _SCORE_DOMAIN_CTX
                     domain_scored = True
@@ -468,6 +474,7 @@ class DiscordListener:
             # DMs are always treated as direct address — full tool budget.
             address_level = "high"
             matched_domains: set[str] = set()
+            matched_context_domains: set[str] = set()  # Phase 3 fix: context-only domains
             final_score: float | None = None  # set in guild path; None in DMs
 
             if message.guild:
@@ -506,6 +513,7 @@ class DiscordListener:
                         engage_result.score += SCORE_NAME_MENTIONED
 
                     matched_domains = engage_result.domains
+                    matched_context_domains = engage_result.context_domains
                     address_level = _classify_address(
                         engage_result.score, is_at_mention=False
                     )
@@ -633,6 +641,23 @@ class DiscordListener:
                     return False
                 filtered_context = [m for m in context_snapshot if _relevant(m)][-5:]
 
+            # Build domain_hint with [ctx] suffix on domains that matched
+            # only via recent-channel-context fallback (Phase 3 fix). Helps
+            # distinguish "current message contains BUILDSCI keyword" from
+            # "prior chatter in this channel mentioned BUILDSCI." Without
+            # this distinction, the routing log says domains=IMAGEGEN on
+            # messages like "hey brend; how's it going?" which is misleading.
+            if matched_domains:
+                domain_parts = []
+                for d in sorted(matched_domains):
+                    if d in matched_context_domains:
+                        domain_parts.append(f"{d}[ctx]")
+                    else:
+                        domain_parts.append(d)
+                _domain_hint_str = ",".join(domain_parts)
+            else:
+                _domain_hint_str = ""
+
             await self._on_message(
                 platform,
                 sender_id,
@@ -644,7 +669,7 @@ class DiscordListener:
                 reply_to_author=reply_to_author,
                 context_messages=filtered_context,
                 is_direct_mention=is_direct_mention,
-                domain_hint=",".join(sorted(matched_domains)) if matched_domains else "",
+                domain_hint=_domain_hint_str,
                 address_level=address_level,
                 score=final_score,
                 haiku_invoked=haiku_invoked,

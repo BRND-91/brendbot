@@ -56,7 +56,160 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIPTS_DIR = PROJECT_ROOT / "transcripts"
 
 # ---------------------------------------------------------------------------
-# Haiku ambiguity classifier — direct Anthropic API (no subprocess)
+# Warm classifier pool — pre-spawned ClaudeSDKClient instances
+# ---------------------------------------------------------------------------
+#
+# Both the engagement classifier (haiku_classify) and the content-gate
+# classifier (content_gate_classify) previously spawned a fresh
+# ClaudeSDKClient per call. Subprocess spawn + connect is ~18s cold,
+# ~7-8s warm.  ClassifierPool pre-spawns N connected clients at boot
+# and replenishes in the background after each acquisition, eliminating
+# the cold-start penalty for classifier calls.
+#
+# The pool is a module-level singleton initialised by SessionPool or
+# by calling warm_classifier_pool() from main.py during boot-split.
+# ---------------------------------------------------------------------------
+
+_CLASSIFIER_POOL_SIZE = 3  # target warm clients in the pool
+
+
+class ClassifierPool:
+    """Maintains a rotating pool of pre-connected haiku ClaudeSDKClient
+    instances for one-shot classifier calls.
+
+    Usage:
+        client = await pool.acquire()   # returns a connected client
+        try:
+            await client.query(prompt)
+            ... read response ...
+        finally:
+            await pool.dispose(client)  # tear down used client, replenish
+    """
+
+    def __init__(self, pool_size: int = _CLASSIFIER_POOL_SIZE) -> None:
+        self._target_size = pool_size
+        self._ready: asyncio.Queue[ClaudeSDKClient] = asyncio.Queue()
+        self._spawning = 0  # number of in-flight background spawns
+        self._closed = False
+        self._replenish_tasks: list[asyncio.Task] = []
+
+    async def warm_up(self) -> None:
+        """Pre-spawn pool_size clients concurrently. Call at startup."""
+        tasks = [self._spawn_one() for _ in range(self._target_size)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        ok = sum(1 for r in results if r is True)
+        logger.info(
+            "ClassifierPool warmed: %d/%d clients ready", ok, self._target_size
+        )
+
+    async def _spawn_one(self) -> bool:
+        """Create and connect one haiku client. Returns True on success."""
+        if self._closed:
+            return False
+        self._spawning += 1
+        try:
+            opts = ClaudeAgentOptions(
+                model="haiku",
+                allowed_tools=[],
+                permission_mode="default",
+                setting_sources=[],
+                max_turns=1,
+            )
+            client = ClaudeSDKClient(options=opts)
+            await client.connect()
+            if self._closed:
+                await self._teardown(client)
+                return False
+            self._ready.put_nowait(client)
+            return True
+        except Exception as exc:
+            logger.warning("ClassifierPool spawn failed: %s", exc)
+            return False
+        finally:
+            self._spawning -= 1
+
+    async def acquire(self) -> ClaudeSDKClient:
+        """Return a warm, connected client. If the pool is empty, spawns
+        one on-demand (fallback to cold path)."""
+        try:
+            return self._ready.get_nowait()
+        except asyncio.QueueEmpty:
+            logger.debug("ClassifierPool empty — cold-spawning on demand")
+            opts = ClaudeAgentOptions(
+                model="haiku",
+                allowed_tools=[],
+                permission_mode="default",
+                setting_sources=[],
+                max_turns=1,
+            )
+            client = ClaudeSDKClient(options=opts)
+            await client.connect()
+            return client
+
+    async def dispose(self, client: ClaudeSDKClient) -> None:
+        """Tear down a used client and kick off background replenishment."""
+        await self._teardown(client)
+        self._schedule_replenish()
+
+    def _schedule_replenish(self) -> None:
+        """Ensure the pool stays topped up without blocking the caller."""
+        deficit = self._target_size - (self._ready.qsize() + self._spawning)
+        for _ in range(max(0, deficit)):
+            task = asyncio.create_task(self._spawn_one(), name="classifier-pool-replenish")
+            self._replenish_tasks.append(task)
+            # Clean up finished tasks periodically
+            self._replenish_tasks = [t for t in self._replenish_tasks if not t.done()]
+
+    @staticmethod
+    async def _teardown(client: ClaudeSDKClient) -> None:
+        """Best-effort transport close for a consumed one-shot client."""
+        try:
+            transport = getattr(client, "_transport", None)
+            if transport and hasattr(transport, "close"):
+                close_result = transport.close()
+                if asyncio.iscoroutine(close_result):
+                    await close_result
+        except Exception:
+            pass
+
+    async def drain(self) -> None:
+        """Shut down all pooled clients. Call at process exit."""
+        self._closed = True
+        # Cancel pending replenish tasks
+        for task in self._replenish_tasks:
+            task.cancel()
+        # Drain ready queue
+        while not self._ready.empty():
+            try:
+                client = self._ready.get_nowait()
+                await self._teardown(client)
+            except asyncio.QueueEmpty:
+                break
+        logger.info("ClassifierPool drained")
+
+
+# Module-level singleton — initialised lazily or at boot via warm_classifier_pool()
+_classifier_pool: ClassifierPool | None = None
+
+
+def get_classifier_pool() -> ClassifierPool:
+    """Return the module-level ClassifierPool, creating it if needed.
+    The pool is not yet warmed — call pool.warm_up() separately."""
+    global _classifier_pool
+    if _classifier_pool is None:
+        _classifier_pool = ClassifierPool()
+    return _classifier_pool
+
+
+async def warm_classifier_pool() -> None:
+    """Public entry point for boot-split: create the pool and pre-spawn
+    clients. Safe to call from main.py concurrently with gateway connect."""
+    pool = get_classifier_pool()
+    await pool.warm_up()
+
+
+# ---------------------------------------------------------------------------
+# Haiku ambiguity classifier — warm-pool path
 # ---------------------------------------------------------------------------
 
 
@@ -64,13 +217,11 @@ async def haiku_classify(payload: dict) -> dict:
     """
     Engagement classifier via the Claude Agent SDK (OAuth/subscription path).
 
-    Spawns a one-shot ClaudeSDKClient with model='haiku', no tools, no
-    permission overhead, sends the classifier prompt, and parses the first
-    TextBlock for a leading Y/N. Slower than a direct API call (subprocess
-    spawn cost) but routed through the Claude Code CLI's OAuth credential —
-    no API key required, all usage covered by the Pro/Max subscription.
+    Draws a pre-connected client from the ClassifierPool instead of spawning
+    a fresh subprocess per call. If the pool is empty, falls back to cold
+    spawn so behaviour is never worse than before.
 
-    Returns {"engage": bool, "reason": str}.
+    Returns {"engage": bool, "reason": str, "tone": str}.
     """
     text = payload.get("message", "")
     recent = payload.get("recent_context", [])
@@ -79,11 +230,6 @@ async def haiku_classify(payload: dict) -> dict:
         for m in recent[-5:]
     )
 
-    # Classifier rules come from engagement.yaml's classifier_prompt block.
-    # Single source of truth: discord.py uses the same yaml for heuristic
-    # scoring and this function uses it for the LLM ambiguity gate.
-    # Hard-coded fallback only for the case where the yaml load itself
-    # failed at module init (which would have prevented startup anyway).
     try:
         from brendbot.discord import _ENGAGEMENT_CFG
         classifier_rules = _ENGAGEMENT_CFG.get("classifier_prompt", "").strip()
@@ -104,21 +250,10 @@ async def haiku_classify(payload: dict) -> dict:
         "Example: YES funny  or  NO neutral. Nothing else."
     )
 
-    # One-shot SDK session: no tools, no project settings inheritance, no
-    # custom cwd. The classifier needs nothing but the model. setting_sources
-    # is empty so the spawned subprocess doesn't load CLAUDE.md or any
-    # project-level config — keeps the call fast and isolated.
+    pool = get_classifier_pool()
     classifier_client: ClaudeSDKClient | None = None
     try:
-        opts = ClaudeAgentOptions(
-            model="haiku",
-            allowed_tools=[],
-            permission_mode="default",
-            setting_sources=[],
-            max_turns=1,
-        )
-        classifier_client = ClaudeSDKClient(options=opts)
-        await classifier_client.connect()
+        classifier_client = await pool.acquire()
         await classifier_client.query(prompt)
 
         answer_text = ""
@@ -145,24 +280,15 @@ async def haiku_classify(payload: dict) -> dict:
         return {"engage": False, "reason": "error", "tone": "neutral"}
     finally:
         if classifier_client is not None:
-            try:
-                transport = getattr(classifier_client, "_transport", None)
-                if transport and hasattr(transport, "close"):
-                    close_result = transport.close()
-                    if asyncio.iscoroutine(close_result):
-                        await close_result
-            except Exception:
-                pass
+            await pool.dispose(classifier_client)
 
 
 async def content_gate_classify(user_text: str) -> "ContentGateResult":
-    """Content-gate classifier: one-shot haiku spawn that tags which
-    content-safety criteria a request trips. Separate from haiku_classify
-    (engagement) because the classification task is different and keeping
-    them separate lets each prompt evolve independently.
+    """Content-gate classifier: one-shot haiku call that tags which
+    content-safety criteria a request trips.
 
-    Returns a brendbot.content_gate.ClassifierResult. On SDK error, returns
-    a parse_error result which will fail conservative to REFUSE.
+    Draws from the ClassifierPool for reduced latency. On SDK error,
+    returns a parse_error result which will fail conservative to REFUSE.
     """
     from brendbot.content_gate import parse_classifier_response, ClassifierResult
 
@@ -172,7 +298,6 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
     except Exception:
         classifier_rules = ""
     if not classifier_rules:
-        # Hard-coded fallback — minimum viable prompt if yaml load failed.
         classifier_rules = (
             "Return TRIGGERED: <criteria or none> and REASONING: <explanation>. "
             "Criteria: tragedy_old/mid/new/live, person_satire/neutral/targeted, "
@@ -185,17 +310,10 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
         f"Request to classify:\n{user_text[:2000]}"
     )
 
+    pool = get_classifier_pool()
     classifier_client: ClaudeSDKClient | None = None
     try:
-        opts = ClaudeAgentOptions(
-            model="haiku",
-            allowed_tools=[],
-            permission_mode="default",
-            setting_sources=[],
-            max_turns=1,
-        )
-        classifier_client = ClaudeSDKClient(options=opts)
-        await classifier_client.connect()
+        classifier_client = await pool.acquire()
         await classifier_client.query(prompt)
 
         raw_text = ""
@@ -217,14 +335,7 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
         )
     finally:
         if classifier_client is not None:
-            try:
-                transport = getattr(classifier_client, "_transport", None)
-                if transport and hasattr(transport, "close"):
-                    close_result = transport.close()
-                    if asyncio.iscoroutine(close_result):
-                        await close_result
-            except Exception:
-                pass
+            await pool.dispose(classifier_client)
 
 
 async def flagged_generate(
@@ -1967,4 +2078,7 @@ class SessionPool:
             for session in self._sessions.values():
                 await session.stop()
             self._sessions.clear()
+        # Drain the warm classifier pool so spawned subprocesses don't leak
+        pool = get_classifier_pool()
+        await pool.drain()
 

@@ -396,9 +396,20 @@ class EngageResult:
     address_level: str = "low"  # low | moderate | high — see FUSED-CORE Budget Throttle
 
 
-def _classify_address(score: float, is_at_mention: bool) -> str:
-    """Map score → address level. @mention is always high regardless of score."""
-    if is_at_mention or score >= _ADDRESS_HIGH:
+def _classify_address(
+    score: float,
+    is_at_mention: bool,
+    is_name_mention: bool = False,
+) -> str:
+    """Map score → address level.
+
+    @mention or name-mention is always high regardless of score.
+    Name-mentions (brend/brendan/brendbot matched by _NAME_PATTERN)
+    carry the same address-level weight as a direct @mention because
+    a user typing the bot's name is explicitly directing conversation
+    at it and deserves full tool-budget engagement.
+    """
+    if is_at_mention or is_name_mention or score >= _ADDRESS_HIGH:
         return "high"
     if score >= _ADDRESS_MODERATE:
         return "moderate"
@@ -693,7 +704,9 @@ class DiscordListener:
                     matched_domains = engage_result.domains
                     matched_context_domains = engage_result.context_domains
                     address_level = _classify_address(
-                        engage_result.score, is_at_mention=False
+                        engage_result.score,
+                        is_at_mention=False,
+                        is_name_mention=name_mentioned,
                     )
                     final_score = engage_result.score
 

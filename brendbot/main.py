@@ -9,7 +9,7 @@ import sys
 
 from brendbot.config import get_config
 from brendbot.discord import DiscordListener
-from brendbot.session import SessionPool
+from brendbot.session import SessionPool, warm_classifier_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,12 +113,28 @@ async def run() -> None:
     logger.info("brendbot STARTED (model=%s)", cfg.claude_model)
     logger.info("=" * 50)
 
+    # ── Boot-split: warm classifier pool concurrently with gateway ────
+    # The Discord gateway handshake (IDENTIFY, READY, guild sync) and the
+    # classifier pool warm-up (spawning 3 haiku subprocesses) are
+    # independent I/O-bound operations. Running them concurrently cuts
+    # ~15-18s off time-to-first-response vs sequential startup.
+    warm_task = asyncio.create_task(
+        warm_classifier_pool(), name="classifier-pool-warmup"
+    )
+
     try:
         await listener.run()
     except asyncio.CancelledError:
         pass
     finally:
         logger.info("brendbot shutting down...")
+        # Cancel warm-up if it's still running at shutdown
+        if not warm_task.done():
+            warm_task.cancel()
+            try:
+                await warm_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await pool.stop_all()
         import gc
         gc.collect()

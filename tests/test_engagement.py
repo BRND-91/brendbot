@@ -102,13 +102,14 @@ class TestClassifyAddress:
         assert bd._classify_address(0.1, is_at_mention=True) == "high"
 
     def test_score_at_hard_pass_is_high(self) -> None:
+        assert bd._classify_address(0.85, is_at_mention=False) == "high"
         assert bd._classify_address(0.9, is_at_mention=False) == "high"
         assert bd._classify_address(1.5, is_at_mention=False) == "high"
 
     def test_moderate_band(self) -> None:
         assert bd._classify_address(0.4, is_at_mention=False) == "moderate"
         assert bd._classify_address(0.7, is_at_mention=False) == "moderate"
-        assert bd._classify_address(0.89, is_at_mention=False) == "moderate"
+        assert bd._classify_address(0.84, is_at_mention=False) == "moderate"
 
     def test_low_band(self) -> None:
         assert bd._classify_address(0.0, is_at_mention=False) == "low"

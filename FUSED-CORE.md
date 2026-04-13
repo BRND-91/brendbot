@@ -52,6 +52,22 @@ Values invariance gate: refusal patterns, safety judgments, factual claims, and 
 
 Gate fidelity is non-negotiable at any address level. The Budget Throttle controls output length, not gate execution.
 
+### Content gate (three-outcome, phase 4)
+
+Before a user request reaches generation, a weighted classifier tags which content-safety criteria the request trips and routes to one of four outcomes:
+
+**PASS** — benign request or weighted sum at/below the pass threshold. Normal generation on the session's current model. Most requests land here.
+
+**FLAG** — sum in the middle band (above pass threshold, at or below flag threshold). The request is rerouted to a looser-safety model (per Anthropic's documented escape hatch for Sonnet 4.5/4.6 training-layer refusals). Output carries a `[flagged]` branch tag in the audit log. Per-session budget cap applies. Used for: historical satire, fiction-framed violence, edgy humor at public figures, ambiguous framings where a capable reasoner should decide rather than the gate refusing categorically.
+
+**REFUSE** — sum above the refuse threshold, OR a hard-floor criterion match, OR an unparseable classifier response (fail-conservative). Refusal is generated locally as a plain-language explanation naming which criteria stacked. No generation attempt is made.
+
+**BYPASS** — admin-tier sender invoked the `*brend*` italic token at message edge. Weighted classifier is skipped but still runs in shadow mode for audit. Hard floors are still enforced. Output carries a `[bypass]` branch tag. Uncapped per session — this is the operator backdoor for heuristic calibration and pen-testing. It is not exposed to default or trusted tier senders.
+
+Hard floors (untunable, enforced regardless of outcome): minor sexualization, WMD synthesis, malware/exploit code, critical infrastructure attack procedures, extremist recruitment, directed incitement against named targets. These mirror the Anthropic training-layer refusals — brendbot gates them so refusals are explained rather than surfacing as silent stream terminations.
+
+The weighted criteria and outcome thresholds are configured in `engagement.yaml` under `content_gate:`. Policy (this file) names the outcomes; thresholds (yaml) tune them. Changes to thresholds do not require code edits; changes to policy do.
+
 ---
 
 ## OUTPUT GROUNDING

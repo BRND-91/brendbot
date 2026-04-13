@@ -1,17 +1,33 @@
-"""Feedback infrastructure: three append-only JSONL streams.
+"""Feedback infrastructure: five append-only JSONL streams.
 
-Three independent log streams, joined at audit time by bot_message_id:
+Five independent log streams, joined at audit time by bot_message_id:
 
 1. bot_responses.jsonl   — every response the bot posts
    Schema: {ts, channel_id, bot_message_id, user_message_id, user_text,
             score, domains, address_level, branch_tag}
 
-2. branch_audit.jsonl    — every response that began with a [rejected]/
-                           [searching]/[unverified] tag (subset of #1)
+2. branch_audit.jsonl    — every response that began with a
+                           [rejected]/[searching]/[unverified]/[flagged]/
+                           [bypass] tag (subset of #1)
    Schema: {ts, channel_id, bot_message_id, branch, response_text}
 
 3. feedback_events.jsonl — every admin reaction on a bot message
    Schema: {ts, channel_id, bot_message_id, emoji, signal, admin_id}
+
+4. flag_audit.jsonl      — every content-gate FLAG outcome (2-of-3 band,
+                           routed to looser-safety model via reroute)
+   Schema: {ts, channel_id, user_message_id, user_text, admin_sender_id,
+            tier, criteria_tripped, weighted_sum, flagged_model,
+            bot_message_id, session_flag_count}
+
+5. bypass_audit.jsonl    — every admin *brend* italic-bypass invocation
+                           (admin-only backdoor, uncapped, hard-floors
+                           still enforced). Shadow-runs the classifier
+                           so would_have_* fields record the normal
+                           gate's decision for audit review.
+   Schema: {ts, channel_id, user_message_id, user_text, admin_sender_id,
+            tier, would_have_tripped, would_have_summed,
+            would_have_outcome, hard_floor_hit, bot_message_id}
 
 Files are append-only. No record is ever mutated. Audit pipelines join
 by bot_message_id.
@@ -34,13 +50,16 @@ LOGS_DIR = Path(__file__).parent.parent / "logs"
 BOT_RESPONSES_LOG = LOGS_DIR / "bot_responses.jsonl"
 BRANCH_AUDIT_LOG = LOGS_DIR / "branch_audit.jsonl"
 FEEDBACK_EVENTS_LOG = LOGS_DIR / "feedback_events.jsonl"
+FLAG_AUDIT_LOG = LOGS_DIR / "flag_audit.jsonl"
+BYPASS_AUDIT_LOG = LOGS_DIR / "bypass_audit.jsonl"
 
-# Branch tag regex — matches a leading [rejected], [searching], or
-# [unverified] token. The tag is stripped from the chat-bound text and
-# written to branch_audit.jsonl. The names map 1:1 to the FUSED-CORE
-# three-branch classifier (Branch 1: rejected, Branch 2: searching,
-# Branch 3: unverified) but stay human-readable in log output.
-_BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified)\]\s*')
+# Branch tag regex — matches a leading [rejected]/[searching]/[unverified]/
+# [flagged]/[bypass] token. The tag is stripped from the chat-bound text
+# and written to branch_audit.jsonl. rejected/searching/unverified map 1:1
+# to the FUSED-CORE three-branch classifier. flagged is the content-gate
+# 2-of-3 outcome routed to the looser-safety model. bypass is the
+# admin-only *brend* italic backdoor that skips the gate classifier.
+_BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass)\]\s*')
 
 # Admin-only feedback reactions. Anything else from anyone is ignored.
 # 👎 / 👍 — engagement quality (should/shouldn't have responded)
@@ -138,4 +157,73 @@ def log_feedback_event(
         "emoji": emoji,
         "signal": FEEDBACK_REACTIONS[emoji],
         "admin_id": admin_id,
+    })
+
+
+def log_flag_event(
+    channel_id: str,
+    user_message_id: str,
+    user_text: str,
+    admin_sender_id: str,
+    tier: str,
+    criteria_tripped: dict[str, float],
+    weighted_sum: float,
+    flagged_model: str,
+    bot_message_id: str | None,
+    session_flag_count: int,
+) -> None:
+    """One line per content-gate FLAG outcome. The gate classifier tagged
+    the request as 2-of-3 weight-band (above pass_threshold, at or below
+    flag_threshold) and the request was routed through the flagged path
+    on the looser-safety model. bot_message_id is None if dispatch failed
+    or the request was refused after hard-floor re-check at flag time."""
+    _append_jsonl(FLAG_AUDIT_LOG, {
+        "ts": _now_iso(),
+        "channel_id": channel_id,
+        "user_message_id": user_message_id,
+        "user_text": user_text[:500],
+        "admin_sender_id": admin_sender_id,
+        "tier": tier,
+        "criteria_tripped": criteria_tripped,
+        "weighted_sum": weighted_sum,
+        "flagged_model": flagged_model,
+        "bot_message_id": bot_message_id,
+        "session_flag_count": session_flag_count,
+    })
+
+
+def log_bypass_event(
+    channel_id: str,
+    user_message_id: str,
+    user_text: str,
+    admin_sender_id: str,
+    tier: str,
+    would_have_tripped: dict[str, float] | None,
+    would_have_summed: float | None,
+    would_have_outcome: str | None,
+    hard_floor_hit: str | None,
+    bot_message_id: str | None,
+) -> None:
+    """One line per admin-bypass invocation. The *brend* italic token was
+    detected in an admin-tier message and the weighted content gate was
+    skipped. The classifier is still run (in shadow mode) so would_have_*
+    fields record what the normal gate would have decided — this lets
+    audit reviewers see which bypasses actually exercised the gate vs
+    which were admin testing benign prompts.
+
+    hard_floor_hit is non-None if a hard-floor criterion matched despite
+    the bypass; in that case the request was still refused and
+    bot_message_id will be None."""
+    _append_jsonl(BYPASS_AUDIT_LOG, {
+        "ts": _now_iso(),
+        "channel_id": channel_id,
+        "user_message_id": user_message_id,
+        "user_text": user_text[:500],
+        "admin_sender_id": admin_sender_id,
+        "tier": tier,
+        "would_have_tripped": would_have_tripped or {},
+        "would_have_summed": would_have_summed,
+        "would_have_outcome": would_have_outcome,
+        "hard_floor_hit": hard_floor_hit,
+        "bot_message_id": bot_message_id,
     })

@@ -132,3 +132,71 @@ class TestDomainPattern:
         # Some keywords may be deduped if they appear in multiple domains.
         assert len(bd.KEYWORD_TO_MODULE) <= yaml_total
         assert len(bd.KEYWORD_TO_MODULE) >= yaml_total * 0.9  # allow ≤10% dedup
+
+
+# ── Context domain tracking (Phase 3 fix) ────────────────────────────────
+
+class TestContextDomainTracking:
+    """Verify that context_domains correctly distinguishes domains matched
+    via the recent-channel-context fallback from domains matched in the
+    current message. Regression test for the IMAGEGEN false-positive on
+    'hey brend; how is it going?' observed 2026-04-12.
+    """
+    def setup_method(self) -> None:
+        bd._channel_last_spoke.clear()
+
+    def test_current_message_match_not_in_context_domains(self) -> None:
+        """A domain matched by the current message is NOT flagged as context-only."""
+        result = bd._score_message(
+            "can you draw me a picture of a dragon",
+            "ch1", False, None,
+        )
+        # "draw" and "picture" are both IMAGEGEN keywords in the current message
+        assert "IMAGEGEN" in result.domains
+        assert result.context_domains == set()  # none from context fallback
+
+    def test_context_fallback_populates_context_domains(self) -> None:
+        """When the current message has no domain match but recent context
+        does, the matched domain lands in BOTH domains AND context_domains.
+        This is the exact false-positive path: 'hey brend how is it going'
+        has no domain keywords; the fallback picks up IMAGEGEN from a prior
+        image-gen discussion and tags it — correctly — as context-only.
+        """
+        recent = [
+            {"text": "can you make me a picture of a dragon", "has_keyword": True},
+        ]
+        result = bd._score_message(
+            "hey brend how is it going",
+            "ch1", False, recent,
+        )
+        assert "IMAGEGEN" in result.domains
+        assert "IMAGEGEN" in result.context_domains
+        # And the score got the smaller context-fallback boost, not the full
+        # domain_match boost.
+        assert result.score == bd._SCORE_DOMAIN_CTX
+
+    def test_no_match_anywhere_leaves_context_domains_empty(self) -> None:
+        """No keywords in message or context → no domain match at all."""
+        recent = [
+            {"text": "hello world", "has_keyword": True},
+        ]
+        result = bd._score_message(
+            "hey brend",
+            "ch1", False, recent,
+        )
+        assert result.domains == set()
+        assert result.context_domains == set()
+
+    def test_current_match_beats_context_match(self) -> None:
+        """If the current message matches, the context fallback is skipped
+        entirely — domain_scored gate blocks it. context_domains stays empty.
+        """
+        recent = [
+            {"text": "logic argument proof", "has_keyword": True},  # LOGIC
+        ]
+        result = bd._score_message(
+            "can you draw me a cat",  # IMAGEGEN (draw)
+            "ch1", False, recent,
+        )
+        assert "IMAGEGEN" in result.domains
+        assert result.context_domains == set()  # context fallback didn't run

@@ -116,9 +116,11 @@ For any safety-sensitive content (named real persons, sensitive topics):
 
 ### Step 3 — Complexity gate
 
-categories_hit 0-1: generate, standard model.
-categories_hit 2: tell the sender before generating — "competing constraints, first pass may not be clean." Then generate.
-categories_hit 3: tell the sender — "all three constraint categories active, high failure risk." Offer to simplify or proceed. If they confirm: generate with best-effort prompt, use ultra model for style-heavy requests.
+categories_hit 0-1: generate, standard model. No commentary.
+categories_hit 2: generate. After posting, add a brief user-facing note like "might need a second pass" or "first one might be a little off." Do NOT name the constraint categories, the dry-run output, or the scoring mechanism. The sender is told the result might miss; they are not told why in protocol language.
+categories_hit 3: generate with best-effort prompt, use ultra model for style-heavy requests. After posting, briefly note that the result is a stretch and you can iterate. Do NOT enumerate constraint categories or quote the dry-run.
+
+The sender warning is preserved. The internal jargon is not. "Two constraint categories hit," "competing constraints," "categories_hit=2," "the dry-run said," and similar phrasings do not appear in chat output. They belong in thinking blocks if anywhere.
 
 ### Step 4 — One call per turn
 

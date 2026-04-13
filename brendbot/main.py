@@ -93,10 +93,11 @@ async def run() -> None:
     loop.add_signal_handler(signal.SIGTERM, _shutdown)
 
     def _refresh_caches() -> None:
-        # Reread engagement.yaml is module-load only (would need a process
-        # restart), but soul/FUSED-CORE/manifest are pool-cached and can
-        # be refreshed in place. Use `kill -HUP <pid>` to trigger.
-        logger.info("SIGHUP received — refreshing prompt caches")
+        # All cached config is now SIGHUP-refreshable: soul files,
+        # FUSED-CORE, MANIFEST, and engagement.yaml (scoring deltas,
+        # thresholds, domains, classifier prompts, content gate config).
+        # Use `kill -HUP <pid>` to trigger.
+        logger.info("SIGHUP received — refreshing all caches")
         try:
             pool.refresh_cache()
         except Exception:

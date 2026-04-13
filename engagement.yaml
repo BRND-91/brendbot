@@ -333,7 +333,7 @@ content_gate:
   outcomes:
     pass_threshold: 0.5
     flag_threshold: 1.5
-    refuse_threshold: 1.5   # equal to flag_threshold; > refuse_threshold → REFUSE
+    refuse_threshold: 2.0   # > flag_threshold; opens (1.5, 2.0] band for FLAG reroute
   flagged_path:
     model: claude-sonnet-4-20250514
     max_per_session: 2

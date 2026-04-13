@@ -297,31 +297,30 @@ def _load_engagement_config() -> dict:
 
 _ENGAGEMENT_CFG = _load_engagement_config()
 
-# Threshold constants — read once at module load.
-ENGAGE_HARD_PASS = float(_ENGAGEMENT_CFG["thresholds"]["hard_pass"])
-ENGAGE_THRESHOLD = float(_ENGAGEMENT_CFG["thresholds"]["haiku_floor"])
-RECENCY_WINDOW_SECONDS = int(_ENGAGEMENT_CFG.get("recency_seconds", 300))
-FOLLOW_UP_WINDOW_SECONDS = int(_ENGAGEMENT_CFG.get("follow_up_window_seconds", 120))
+# ── Derived engagement constants ─────────────────────────────────────────
+# All derived from _ENGAGEMENT_CFG. Populated at module load and refreshed
+# in-place by refresh_engagement_config(), which is wired to SIGHUP via
+# SessionPool.refresh_cache(). No process restart needed to pick up
+# engagement.yaml edits.
 
-# Address level cutoffs — passed downstream to enforce FUSED-CORE Budget Throttle.
-_ADDRESS_HIGH = float(_ENGAGEMENT_CFG["address_levels"]["high"])
-_ADDRESS_MODERATE = float(_ENGAGEMENT_CFG["address_levels"]["moderate"])
-
-# Scoring deltas.
-_SCORE_REPLY_TO_BOT = float(_ENGAGEMENT_CFG["scoring"]["reply_to_bot"])
-_SCORE_RECENCY = float(_ENGAGEMENT_CFG["scoring"]["recency_active"])
-_SCORE_DOMAIN = float(_ENGAGEMENT_CFG["scoring"]["domain_match"])
-_SCORE_DOMAIN_CTX = float(_ENGAGEMENT_CFG["scoring"]["domain_match_in_context"])
-_SCORE_CONVERSATIONAL = float(_ENGAGEMENT_CFG["scoring"]["conversational_in_thread"])
-_SCORE_FOLLOW_UP = float(_ENGAGEMENT_CFG["scoring"].get("follow_up_after_tool_use", 0.3))
-SCORE_NAME_MENTIONED = float(_ENGAGEMENT_CFG["scoring"]["name_mentioned"])
-
-# Noise tokens — frozen set for O(1) lookup.
-_NOISE_TOKENS = frozenset(_ENGAGEMENT_CFG["noise_tokens"])
-
-# Conversational starters — preserve list ordering for startswith() checks.
-_QUESTION_STARTERS = tuple(_ENGAGEMENT_CFG["question_starters"])
-_DIRECTIVE_STARTERS = tuple(_ENGAGEMENT_CFG["directive_starters"])
+ENGAGE_HARD_PASS: float = 0.0
+ENGAGE_THRESHOLD: float = 0.0
+RECENCY_WINDOW_SECONDS: int = 0
+FOLLOW_UP_WINDOW_SECONDS: int = 0
+_ADDRESS_HIGH: float = 0.0
+_ADDRESS_MODERATE: float = 0.0
+_SCORE_REPLY_TO_BOT: float = 0.0
+_SCORE_RECENCY: float = 0.0
+_SCORE_DOMAIN: float = 0.0
+_SCORE_DOMAIN_CTX: float = 0.0
+_SCORE_CONVERSATIONAL: float = 0.0
+_SCORE_FOLLOW_UP: float = 0.0
+SCORE_NAME_MENTIONED: float = 0.0
+_NOISE_TOKENS: frozenset = frozenset()
+_QUESTION_STARTERS: tuple = ()
+_DIRECTIVE_STARTERS: tuple = ()
+DOMAIN_PATTERN: re.Pattern = re.compile(r"(?!)")  # placeholder, never matches
+KEYWORD_TO_MODULE: dict[str, str] = {}
 
 
 def _build_domain_pattern(domains: dict[str, list[str]]) -> tuple[re.Pattern, dict[str, str]]:
@@ -336,7 +335,52 @@ def _build_domain_pattern(domains: dict[str, list[str]]) -> tuple[re.Pattern, di
     return re.compile(pattern_str, re.IGNORECASE), keyword_to_module
 
 
-DOMAIN_PATTERN, KEYWORD_TO_MODULE = _build_domain_pattern(_ENGAGEMENT_CFG["domains"])
+def _apply_engagement_constants(cfg: dict) -> None:
+    """Populate module-level engagement constants from a loaded config dict.
+    Called at module init and on SIGHUP refresh."""
+    global ENGAGE_HARD_PASS, ENGAGE_THRESHOLD, RECENCY_WINDOW_SECONDS
+    global FOLLOW_UP_WINDOW_SECONDS, _ADDRESS_HIGH, _ADDRESS_MODERATE
+    global _SCORE_REPLY_TO_BOT, _SCORE_RECENCY, _SCORE_DOMAIN
+    global _SCORE_DOMAIN_CTX, _SCORE_CONVERSATIONAL, _SCORE_FOLLOW_UP
+    global SCORE_NAME_MENTIONED, _NOISE_TOKENS
+    global _QUESTION_STARTERS, _DIRECTIVE_STARTERS
+    global DOMAIN_PATTERN, KEYWORD_TO_MODULE
+
+    ENGAGE_HARD_PASS = float(cfg["thresholds"]["hard_pass"])
+    ENGAGE_THRESHOLD = float(cfg["thresholds"]["haiku_floor"])
+    RECENCY_WINDOW_SECONDS = int(cfg.get("recency_seconds", 300))
+    FOLLOW_UP_WINDOW_SECONDS = int(cfg.get("follow_up_window_seconds", 120))
+    _ADDRESS_HIGH = float(cfg["address_levels"]["high"])
+    _ADDRESS_MODERATE = float(cfg["address_levels"]["moderate"])
+    _SCORE_REPLY_TO_BOT = float(cfg["scoring"]["reply_to_bot"])
+    _SCORE_RECENCY = float(cfg["scoring"]["recency_active"])
+    _SCORE_DOMAIN = float(cfg["scoring"]["domain_match"])
+    _SCORE_DOMAIN_CTX = float(cfg["scoring"]["domain_match_in_context"])
+    _SCORE_CONVERSATIONAL = float(cfg["scoring"]["conversational_in_thread"])
+    _SCORE_FOLLOW_UP = float(cfg["scoring"].get("follow_up_after_tool_use", 0.3))
+    SCORE_NAME_MENTIONED = float(cfg["scoring"]["name_mentioned"])
+    _NOISE_TOKENS = frozenset(cfg["noise_tokens"])
+    _QUESTION_STARTERS = tuple(cfg["question_starters"])
+    _DIRECTIVE_STARTERS = tuple(cfg["directive_starters"])
+    DOMAIN_PATTERN, KEYWORD_TO_MODULE = _build_domain_pattern(cfg["domains"])
+
+
+def refresh_engagement_config() -> None:
+    """Re-read engagement.yaml and update all derived constants in-place.
+    Wire to SIGHUP via SessionPool.refresh_cache(). On load failure, the
+    previous constants remain — partial state is worse than stale state."""
+    global _ENGAGEMENT_CFG
+    try:
+        new_cfg = _load_engagement_config()
+        _ENGAGEMENT_CFG = new_cfg
+        _apply_engagement_constants(new_cfg)
+        logger.info("engagement.yaml reloaded — all derived constants updated")
+    except Exception as exc:
+        logger.error("engagement.yaml reload failed — keeping previous config: %s", exc)
+
+
+# Initial population at module load.
+_apply_engagement_constants(_ENGAGEMENT_CFG)
 
 
 @dataclass

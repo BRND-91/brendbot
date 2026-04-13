@@ -1592,9 +1592,10 @@ class SessionPool:
             return ""
 
     def refresh_cache(self) -> None:
-        """Re-read all cached prompt fragments. Wire to SIGHUP in main.py
-        so live edits to SOUL.md / FUSED-CORE.md / MANIFEST.json take
-        effect on the next _create() without a full process restart."""
+        """Re-read all cached prompt fragments and engagement config. Wire
+        to SIGHUP in main.py so live edits to SOUL.md / FUSED-CORE.md /
+        MANIFEST.json / engagement.yaml take effect without a full process
+        restart."""
         self._cached_soul = _load_template("SOUL.md")
         self._cached_group_soul = _load_template("GROUP_SOUL.md")
         try:
@@ -1605,6 +1606,13 @@ class SessionPool:
         except Exception as exc:
             logger.warning("FUSED-CORE.md refresh failed: %s", exc)
         self._cached_kb_index_block = self._build_kb_index_block()
+        # Hot-reload engagement.yaml — scoring deltas, thresholds, noise
+        # tokens, domain keywords, classifier prompts, content gate config.
+        try:
+            from brendbot.discord import refresh_engagement_config
+            refresh_engagement_config()
+        except Exception as exc:
+            logger.warning("engagement.yaml refresh failed: %s", exc)
         logger.info("SessionPool cache refreshed")
 
     async def route_message(

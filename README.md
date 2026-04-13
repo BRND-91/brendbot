@@ -250,7 +250,9 @@ tests/               conftest + 6 test files, 65 tests
 
 **`episodes.py`** — episodic memory store. `write_episode` on clean restart, `query_episodes` on message ingest. Entity extraction via regex, 50-episode retention per channel, no LLM inference.
 
-**`feedback.py`** — JSONL append writers. `FEEDBACK_REACTIONS` emoji map, `extract_branch_tag` parser, three log streams. Best-effort — failures never break chat.
+**`feedback.py`** — JSONL append writers. `FEEDBACK_REACTIONS` emoji map, `extract_branch_tag` parser, five log streams (`bot_responses`, `branch_audit`, `feedback_events`, `flag_audit`, `bypass_audit`). Best-effort — failures never break chat.
+
+**`content_gate.py`** — phase-4 content-safety gate primitives. Classifier response parser, weighted-outcome routing (PASS/FLAG/REFUSE/BYPASS/FLOOR_HIT), admin-bypass token detection, plain-language refusal formatting. Session-independent module for isolation testability. Config in `engagement.yaml` under `content_gate:`. Full reference in `docs/content-gate.md`.
 
 ### Config files (root)
 

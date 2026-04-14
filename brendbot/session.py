@@ -55,6 +55,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 TRANSCRIPTS_DIR = PROJECT_ROOT / "transcripts"
 
+CRON_FILE = "crons.json"  # per-session cron persistence file (lives in session cwd)
+
 # ---------------------------------------------------------------------------
 # Warm classifier pool — pre-spawned ClaudeSDKClient instances
 # ---------------------------------------------------------------------------
@@ -1301,6 +1303,12 @@ class Session:
                             )
                             if _mod_match:
                                 self._turn_modules_queried.add(_mod_match.group(1).upper())
+                    elif block.name == "CronCreate":
+                        # Persist cron definition so it survives session restarts.
+                        self._persist_cron(block.input or {})
+                    elif block.name == "CronDelete":
+                        # Remove persisted cron entry.
+                        self._remove_cron(block.input or {})
                     else:
                         # Non-Bash tool use (Read, Write, Edit, Grep, Glob,
                         # WebSearch, WebFetch, Task, NotebookEdit). Counted
@@ -1751,6 +1759,7 @@ class Session:
             tools = [
                 "Read", "Write", "Edit", "Bash", "Glob", "Grep",
                 "WebSearch", "WebFetch", "Task", "NotebookEdit",
+                "CronCreate", "CronDelete", "CronList",
             ]
             perm_mode = "acceptEdits"
             turn_limit = 200
@@ -1869,6 +1878,85 @@ class Session:
                 )
 
         return PermissionResultAllow()
+
+    # ------------------------------------------------------------------
+    # Cron persistence helpers
+    # ------------------------------------------------------------------
+
+    def _cron_file_path(self) -> Path:
+        """Return the path to this session's cron persistence file."""
+        return Path(self.cwd) / CRON_FILE
+
+    def _persist_cron(self, tool_input: dict) -> None:
+        """Append or update a cron entry from a CronCreate tool call."""
+        cron_path = self._cron_file_path()
+        try:
+            existing: list[dict] = []
+            if cron_path.exists():
+                existing = json.loads(cron_path.read_text())
+
+            entry = {
+                "schedule": tool_input.get("schedule", ""),
+                "command": tool_input.get("command", ""),
+            }
+            # Optional fields the SDK may include
+            for opt_field in ("description", "remaining_runs"):
+                if opt_field in tool_input:
+                    entry[opt_field] = tool_input[opt_field]
+
+            # Deduplicate by schedule+command (updating if same cron re-created)
+            existing = [
+                e for e in existing
+                if not (e.get("schedule") == entry["schedule"]
+                        and e.get("command") == entry["command"])
+            ]
+            existing.append(entry)
+            cron_path.write_text(json.dumps(existing, indent=2))
+            logger.info("[%s] Persisted cron: %s", self.key, entry.get("schedule"))
+        except Exception as exc:
+            logger.warning("[%s] Failed to persist cron: %s", self.key, exc)
+
+    def _remove_cron(self, tool_input: dict) -> None:
+        """Remove a cron entry matching a CronDelete tool call."""
+        cron_path = self._cron_file_path()
+        if not cron_path.exists():
+            return
+        try:
+            existing: list[dict] = json.loads(cron_path.read_text())
+            # CronDelete provides an id or description; match flexibly
+            delete_id = tool_input.get("id", "")
+            delete_schedule = tool_input.get("schedule", "")
+            delete_command = tool_input.get("command", "")
+
+            def _matches(e: dict) -> bool:
+                if delete_id and e.get("id") == delete_id:
+                    return True
+                if delete_schedule and e.get("schedule") == delete_schedule:
+                    if not delete_command or e.get("command") == delete_command:
+                        return True
+                if delete_command and e.get("command") == delete_command:
+                    return True
+                return False
+
+            filtered = [e for e in existing if not _matches(e)]
+            if len(filtered) < len(existing):
+                cron_path.write_text(json.dumps(filtered, indent=2))
+                logger.info("[%s] Removed %d cron(s)", self.key,
+                            len(existing) - len(filtered))
+        except Exception as exc:
+            logger.warning("[%s] Failed to remove cron: %s", self.key, exc)
+
+    @staticmethod
+    def load_persisted_crons(cwd: str) -> list[dict]:
+        """Load persisted crons from a session's working directory."""
+        cron_path = Path(cwd) / CRON_FILE
+        if not cron_path.exists():
+            return []
+        try:
+            data = json.loads(cron_path.read_text())
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
 
 
 # ---------------------------------------------------------------------------
@@ -2304,6 +2392,21 @@ class SessionPool:
             )
             logger.info("Reference block injected for %s (%d bytes, %d sections)",
                         key, len(combined_ref), len(ref_sections))
+
+        # ── Phase 3: Cron job replay ─────────────────────────────────────
+        # If previous sessions had active cron jobs, inject a housekeeping
+        # message asking Claude to re-create them via CronCreate.
+        persisted_crons = Session.load_persisted_crons(str(transcript_dir))
+        if persisted_crons:
+            cron_specs = json.dumps(persisted_crons, indent=2)
+            await session.inject(
+                "[SYSTEM] The following cron jobs were active before your last session reset. "
+                "Please re-create them now using CronCreate for each entry:\n"
+                f"```json\n{cron_specs}\n```",
+                housekeeping=False,
+            )
+            logger.info("Cron replay injected for %s (%d cron(s))",
+                        key, len(persisted_crons))
 
         return session
 

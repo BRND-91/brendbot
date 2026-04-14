@@ -654,6 +654,15 @@ class Session:
         # _stream_msg_id to decide whether streaming was initiated, closing
         # the race window where ResultMessage arrives before the first-chunk
         # send returns.
+        # Patch A — deduplicated recall injection.
+        # Tracks episode IDs (SQLite rowid from episodes table) that have
+        # already been injected into this session. On subsequent turns,
+        # query_episodes may return the same episode(s) — skipping them
+        # prevents re-injecting identical recall fragments every message,
+        # which was adding 200–600 chars of context to every turn with
+        # zero marginal information gain. Reset on session restart via
+        # fresh Session.__init__ in _restart_session → _create.
+        self._recalled_episode_ids: set[int] = set()
         self._stream_initiated: bool = False
         # Future that resolves once the first-chunk send has completed
         # (successfully or not). _fire_on_text_streamed awaits this so it
@@ -1073,6 +1082,12 @@ class Session:
                     return
                 if not bot_message_id:
                     return
+            if self._turn_sender_id:
+                try:
+                    from brendbot.user_registry import record_engagement
+                    record_engagement(self._turn_sender_id)
+                except Exception:
+                    pass
             from brendbot.discord import record_bot_spoke
             record_bot_spoke(self._chat_id)
             log_bot_response(
@@ -1132,6 +1147,16 @@ class Session:
             if not bot_message_id:
                 # Send failed or pre-ready dispatch — nothing to correlate against.
                 return
+            # Increment per-user engaged_count in the registry so the model's
+            # compact user table reflects actual interaction history over time.
+            if self._turn_sender_id:
+                try:
+                    from brendbot.user_registry import record_engagement
+                    record_engagement(self._turn_sender_id)
+                except Exception:
+                    pass
+            from brendbot.discord import record_bot_spoke
+            record_bot_spoke(self._chat_id)
             log_bot_response(
                 channel_id=self._chat_id,
                 bot_message_id=bot_message_id,
@@ -2287,9 +2312,19 @@ class SessionPool:
                 limit=3,
             )
             if episodes:
+                # Patch A: filter out episodes already injected this session.
+                # Episodes are keyed by their SQLite rowid (ep["id"]). An
+                # episode already in _recalled_episode_ids is already in the
+                # model's context window — re-injecting it adds identical
+                # text to every subsequent message with zero information gain.
+                novel_episodes = [
+                    ep for ep in episodes
+                    if ep.get("id") not in session._recalled_episode_ids
+                ]
                 recall_lines = []
                 used_chars = 0
-                for ep in episodes:
+                injected_ids: list[int] = []
+                for ep in novel_episodes:
                     summary = (ep.get("summary") or "")[:200]
                     if not summary:
                         continue
@@ -2303,13 +2338,23 @@ class SessionPool:
                         break
                     recall_lines.append(line)
                     used_chars += len(line)
+                    if ep.get("id") is not None:
+                        injected_ids.append(ep["id"])
                 if recall_lines:
                     recall_block = (
                         "\n<recall>\n" + "\n".join(recall_lines) + "\n</recall>\n"
                     )
+                    session._recalled_episode_ids.update(injected_ids)
                     logger.info(
-                        "[%s] recall injected: %d episode(s), %d chars",
+                        "[%s] recall injected: %d novel episode(s), %d chars "
+                        "(%d already known, skipped)",
                         key, len(recall_lines), used_chars,
+                        len(episodes) - len(novel_episodes),
+                    )
+                elif episodes:
+                    logger.debug(
+                        "[%s] recall: all %d episode(s) already in context — skipped",
+                        key, len(episodes),
                     )
         except Exception as exc:
             logger.warning("[%s] recall query skipped: %s", key, exc)
@@ -2442,6 +2487,27 @@ class SessionPool:
         # note in SessionPool._build_kb_index_stub for rationale.
         if self._cached_kb_index_stub:
             prompt += self._cached_kb_index_stub
+
+        # Append compact user registry table so the model can resolve
+        # @mention snowflakes at reasoning time without a tool call. Lists
+        # the _COMPACT_TABLE_MAX most recently active server members with
+        # their display names, tiers, message counts, and domain history.
+        # The bot's own ID is excluded from the table.
+        try:
+            from brendbot.user_registry import compact_table
+            from brendbot.discord import _discord_client as _dc
+            _bot_id = str(_dc.user.id) if _dc and _dc.user else ""
+            _user_table = compact_table(bot_id=_bot_id)
+            if _user_table:
+                prompt += (
+                    "\n\n## SERVER MEMBERS\n"
+                    "Known server members. Use this table to resolve @mention "
+                    "snowflakes — if a mention target is not you, do not respond "
+                    "unless your name also appears in the message.\n"
+                    + _user_table
+                )
+        except Exception as exc:
+            logger.debug("user_registry compact_table inject failed: %s", exc)
 
         claude_md.write_text(prompt)
 

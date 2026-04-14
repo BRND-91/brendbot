@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Create user_registry table in knowledge.db if it doesn't exist.
+
+Run once after pulling this commit, or let the bot create it automatically
+on first message (user_registry._conn() runs CREATE TABLE IF NOT EXISTS).
+This script is provided for explicit migration tracking."""
+
+from pathlib import Path
+import sqlite3
+
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "brendbot" / "knowledge" / "knowledge.db"
+
+if not DB_PATH.exists():
+    print(f"knowledge.db not found at {DB_PATH}. Run scripts/migrations/migrate_to_sqlite.py first.")
+    raise SystemExit(1)
+
+conn = sqlite3.connect(str(DB_PATH))
+conn.execute("""
+CREATE TABLE IF NOT EXISTS user_registry (
+    user_id       TEXT PRIMARY KEY,
+    display_name  TEXT NOT NULL,
+    username      TEXT,
+    tier          TEXT DEFAULT 'default',
+    first_seen    TEXT,
+    last_seen     TEXT,
+    msg_count     INTEGER DEFAULT 0,
+    engaged_count INTEGER DEFAULT 0,
+    domains_seen  TEXT DEFAULT '',
+    notes         TEXT DEFAULT ''
+)
+""")
+conn.commit()
+conn.close()
+print("user_registry table ready.")

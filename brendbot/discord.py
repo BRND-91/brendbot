@@ -683,6 +683,22 @@ class DiscordListener:
             sender_id = str(message.author.id)
             msg_id = str(message.id)
 
+            # ── User registry update ─────────────────────────────────────
+            # Record every sender seen, regardless of whether the bot
+            # engages. This builds the persistent member table used for
+            # @mention resolution and per-user engagement priors.
+            try:
+                from brendbot.user_registry import record_user
+                _tier = get_config().tier_for(sender_id)
+                record_user(
+                    user_id=sender_id,
+                    display_name=message.author.display_name,
+                    username=str(message.author) if hasattr(message.author, "name") else "",
+                    tier=_tier,
+                )
+            except Exception:
+                pass
+
             # Ensure context buffer is seeded (API fetch on first message per channel/restart).
             buf = await _ensure_seeded(message.channel, channel_id)
 
@@ -728,6 +744,40 @@ class DiscordListener:
             # Determine whether bot is @mentioned or name-mentioned.
             mentioned = client.user and client.user.id in [m.id for m in message.mentions]
             name_mentioned = bool(_NAME_PATTERN.search(text))
+
+            # ── @mention pre-filter using user registry ───────────────────
+            # If the message contains @mentions but none of them is the bot,
+            # and there is no name-mention and no reply-to-bot, the message
+            # is very likely addressed to another user. Resolve mentions via
+            # the user registry and drop early so the haiku classifier never
+            # fires on misdirected @mentions (e.g. VoX @mentioning seb while
+            # the bot sees it as ambiguous and responds erroneously).
+            #
+            # Condition: guild message + at least one @mention in the raw
+            # text + none resolve to the bot's own ID + no name-mention.
+            # DMs never enter this branch (no guild, no cross-user @mentions).
+            if message.guild and not mentioned and not name_mentioned and message.mentions:
+                try:
+                    from brendbot.user_registry import resolve_mentions
+                    _resolved = resolve_mentions(text, self.bot_id)
+                    # If all mentions are non-bot users and no name trigger,
+                    # hard-drop before scoring. Log as 'wrong_mention_target'.
+                    if _resolved and all(uid != self.bot_id for uid in _resolved):
+                        try:
+                            from brendbot.feedback import log_skip_decision
+                            log_skip_decision(
+                                channel_id=channel_id,
+                                sender_id=sender_id,
+                                user_message_id=msg_id,
+                                user_text=text,
+                                score=None,
+                                reason="wrong_mention_target",
+                            )
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass  # registry unavailable — fall through to normal gate
 
             # ── Fetch reply reference once ────────────────────────────────────
             # If this message is a reply, fetch the referenced message a single

@@ -31,7 +31,7 @@ scoring:
   domain_match: 0.4
   domain_match_in_context: 0.3
   conversational_in_thread: 0.2  # question/directive in active thread
-  name_mentioned: 0.5      # name in text without @mention
+  name_mentioned: 0.85     # name in text without @mention — clears hard_pass, bypasses haiku
   follow_up_after_tool_use: 0.3  # same user, within window of a bot tool-use turn
 
 follow_up_window_seconds: 120

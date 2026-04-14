@@ -228,6 +228,79 @@ def decide_outcome(
     return Outcome.PASS
 
 
+def check_mlp_lock(
+    user_id: str,
+    db_path: str,
+    exempt_users: list[str] | None = None,
+    exempt_tiers: list[str] | None = None,
+    tier: str = "default",
+) -> bool:
+    """Return True if user_id is currently under an active MLP lock.
+
+    Exempt users and tiers always return False. Expired rows are pruned
+    on read so the table stays clean without a separate cleanup job."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    if exempt_users and user_id in exempt_users:
+        return False
+    if exempt_tiers and tier in exempt_tiers:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(db_path)
+    try:
+        # Prune expired rows for this user while we're here.
+        conn.execute(
+            "DELETE FROM mlp_punishments WHERE user_id=? AND expires_at <= ?",
+            (user_id, now),
+        )
+        row = conn.execute(
+            "SELECT expires_at FROM mlp_punishments WHERE user_id=? AND expires_at > ?",
+            (user_id, now),
+        ).fetchone()
+        conn.commit()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def set_mlp_lock(user_id: str, db_path: str, duration_hours: int = 24, reason: str = "") -> str:
+    """Lock user_id into MLP-only image gen for duration_hours.
+    Returns the ISO expiry timestamp. Overwrites any existing lock."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(hours=duration_hours)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO mlp_punishments (user_id, punished_at, expires_at, reason) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, now.isoformat(), expires.isoformat(), reason),
+        )
+        conn.commit()
+        return expires.isoformat()
+    finally:
+        conn.close()
+
+
+def clear_mlp_lock(user_id: str, db_path: str) -> bool:
+    """Remove any active MLP lock for user_id. Returns True if a row was deleted."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM mlp_punishments WHERE user_id=?", (user_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def format_refusal_explanation(classifier_result: ClassifierResult) -> str:
     """Generate a user-facing refusal message from a REFUSE or FLOOR_HIT
     classifier result. Keeps the mechanism language short — names the

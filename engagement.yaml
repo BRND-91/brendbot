@@ -342,6 +342,19 @@ content_gate:
   channel_overrides:
     "1484079826166874162":
       gate2_bypass: true    # FLAG band disabled; hard floors still enforced
+
+  punishment_mode:
+    mlp_lock:
+      enabled: true
+      duration_hours: 24
+      style_override: mlp           # kb-query imgstyle mlp applied to all image gen
+      scope: image_gen              # only image generation requests are intercepted
+      hard_floor_routes: floor_hit  # safety violations still get FLOOR_HIT, not MLP
+      exempt_tiers:
+        - admin
+      exempt_users:
+        - "369485175329128448"      # Brendan
+
   admin_bypass:
     # Admin-only backdoor for heuristic calibration and pen-testing.
     # Skips the weighted classifier entirely but still enforces hard_floors.

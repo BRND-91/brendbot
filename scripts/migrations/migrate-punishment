@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""
+Create the mlp_punishments table for behavioral punishment tracking.
+
+Tracks which users are currently locked into MLP-only image generation,
+when the lock was issued, and when it expires.
+
+Run from project root:
+    python scripts/migrations/migrate-punishment
+    # or after chmod +x:
+    ./scripts/migrations/migrate-punishment
+
+Safe to re-run. Uses CREATE TABLE IF NOT EXISTS.
+"""
+
+import sqlite3
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DB_PATH = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
+
+
+def migrate(conn):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS mlp_punishments (
+            user_id     TEXT PRIMARY KEY,
+            punished_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at  TIMESTAMP NOT NULL,
+            reason      TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mlp_expires ON mlp_punishments (expires_at);
+    """)
+
+
+def main():
+    if not DB_PATH.exists():
+        print(f"Error: {DB_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(str(DB_PATH))
+    migrate(conn)
+    conn.commit()
+    conn.close()
+    print("Done. mlp_punishments table ready.")
+
+
+if __name__ == "__main__":
+    main()

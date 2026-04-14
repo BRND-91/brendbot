@@ -328,6 +328,92 @@ def cmd_imgstyle(arg):
         print(f"notes: {notes}")
 
 
+def cmd_imgstyle_assemble(visual_id, tonal_id):
+    """Assemble a flat prompt descriptor from visual base + tonal base + optional delta.
+
+    Priority for negative_space conflicts: delta > tonal > visual.
+    Returns assembled fields in the same format as cmd_imgstyle.
+    """
+    conn = get_conn()
+
+    def fetch_style(sid):
+        return conn.execute(
+            "SELECT id, label, core_descriptors, supplemental_descriptors, negative_space, model_tier, notes "
+            "FROM prompt_styles WHERE id=?",
+            (sid.lower(),)
+        ).fetchone()
+
+    visual = fetch_style(visual_id)
+    tonal = fetch_style(tonal_id)
+
+    if not visual:
+        print(f"Visual style '{visual_id}' not found.")
+        return
+    if not tonal:
+        print(f"Tonal style '{tonal_id}' not found.")
+        return
+
+    # Check for a delta row
+    delta_id = f"{visual_id.lower()}:{tonal_id.lower()}"
+    delta = fetch_style(delta_id)
+
+    def split_terms(text):
+        return [t.strip() for t in (text or "").split(",") if t.strip()]
+
+    def merge_avoid(vis_avoid, ton_avoid, delta_avoid):
+        """Union base avoids, then delta overrides: removes contradictions, adds its own."""
+        base = split_terms(vis_avoid) + split_terms(ton_avoid)
+        if not delta_avoid:
+            return ", ".join(dict.fromkeys(base))  # dedup, preserve order
+        delta_terms = split_terms(delta_avoid)
+        # Delta is authoritative: start from delta, add non-conflicting base terms
+        delta_lower = {t.lower() for t in delta_terms}
+        filtered_base = [t for t in base if t.lower() not in delta_lower]
+        merged = delta_terms + filtered_base
+        return ", ".join(dict.fromkeys(merged))
+
+    # Merge cores: visual first, tonal second, delta additions appended
+    core_parts = split_terms(visual[2]) + split_terms(tonal[2])
+    if delta:
+        core_parts += split_terms(delta[2])
+    core = ", ".join(dict.fromkeys(core_parts))
+
+    # Merge supplemental
+    sup_parts = split_terms(visual[3]) + split_terms(tonal[3])
+    if delta:
+        sup_parts += split_terms(delta[3])
+    supplemental = ", ".join(dict.fromkeys(sup_parts))
+
+    # Merge avoid with priority: delta > tonal > visual
+    avoid = merge_avoid(visual[4], tonal[4], delta[4] if delta else None)
+
+    # Tier: take the highest (ultra > standard > fast)
+    tier_rank = {"fast": 0, "standard": 1, "ultra": 2, "ultra final / standard iteration": 2}
+    tiers = [visual[5], tonal[5]]
+    if delta:
+        tiers.append(delta[5])
+    tier = max((t for t in tiers if t), key=lambda t: tier_rank.get(t, 1), default="standard")
+
+    # Notes: delta note takes precedence if present
+    notes = (delta[6] if delta and delta[6] else None) or tonal[6] or visual[6]
+
+    label = f"{visual[1]} x {tonal[1]}"
+    assembled_id = delta_id if delta else f"{visual_id}+{tonal_id} (untested)"
+
+    print(f"id: {assembled_id}")
+    print(f"label: {label}")
+    print(f"tier: {tier}")
+    print(f"core: {core}")
+    if supplemental:
+        print(f"supplemental: {supplemental}")
+    if avoid:
+        print(f"avoid: {avoid}")
+    if notes:
+        print(f"notes: {notes}")
+    if not delta:
+        print("warning: no interaction delta found — composition is untested, may need a pass")
+
+
 def cmd_imgfail(arg):
     """Look up remediation for a known failure class, or list all classes."""
     conn = get_conn()
@@ -516,6 +602,8 @@ def main():
         cmd_imagegen(sys.argv[2])
     elif cmd == "imgstyle" and len(sys.argv) >= 3:
         cmd_imgstyle(sys.argv[2])
+    elif cmd == "imgstyle_assemble" and len(sys.argv) >= 4:
+        cmd_imgstyle_assemble(sys.argv[2], sys.argv[3])
     elif cmd == "imgfail" and len(sys.argv) >= 3:
         cmd_imgfail(sys.argv[2])
     elif cmd == "imglog":

@@ -7,8 +7,8 @@
 
 Usage: generate-image <channel_id> <prompt> [--caption <text>] [--reply-to <message_id>] [--model <model_id>] [--dry-run]
 
-Reads DISCORD_TOKEN from environment or .env file.
-GCP project: project-c8f6fa31-5aef-432f-8ad
+Reads DISCORD_TOKEN, GCP_PROJECT, GCP_LOCATION, IMAGEN_MODEL from
+environment or .env file. GCP_PROJECT must be set — there is no default.
 Uses ADC credentials (gcloud auth application-default login).
 
 Model options:
@@ -31,9 +31,13 @@ import tempfile
 from pathlib import Path
 
 
-GCP_PROJECT = "project-c8f6fa31-5aef-432f-8ad"
-GCP_LOCATION = "us-central1"
-IMAGEN_MODEL = "imagen-4.0-generate-001"
+# GCP config comes from env (loaded from .env below). Keep defaults for
+# location and model; project must be set explicitly — the script exits
+# with a clean error in main() if unset rather than calling Imagen with
+# an empty project and getting an opaque SDK error.
+GCP_PROJECT_DEFAULT = ""
+GCP_LOCATION_DEFAULT = "us-central1"
+IMAGEN_MODEL_DEFAULT = "imagen-4.0-generate-001"
 
 STYLE_KEYWORDS = [
     "ukiyo-e", "woodblock", "watercolor", "oil painting", "pixel art", "manga",
@@ -98,7 +102,22 @@ def main() -> None:
         if idx + 1 < len(sys.argv):
             reply_to = sys.argv[idx + 1]
 
-    model = IMAGEN_MODEL
+    # Load .env early so GCP and model env vars are visible when we
+    # read them for defaults below.
+    for env_path in [
+        Path(__file__).parent.parent / ".env",
+        Path.home() / "brendbot" / ".env",
+    ]:
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip())
+
+    gcp_project = os.getenv("GCP_PROJECT", GCP_PROJECT_DEFAULT)
+    gcp_location = os.getenv("GCP_LOCATION", GCP_LOCATION_DEFAULT)
+    model = os.getenv("IMAGEN_MODEL", IMAGEN_MODEL_DEFAULT)
     model_explicit = "--model" in sys.argv
     if model_explicit:
         idx = sys.argv.index("--model")
@@ -131,27 +150,33 @@ def main() -> None:
         if dry_run:
             return
 
-    # Load .env if DISCORD_TOKEN not set
-    for env_path in [
-        Path(__file__).parent.parent / ".env",
-        Path.home() / "brendbot" / ".env",
-    ]:
-        if env_path.exists() and not os.getenv("DISCORD_TOKEN"):
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    os.environ.setdefault(key.strip(), value.strip())
+    if not gcp_project:
+        print(
+            "Error: GCP_PROJECT not set. Add it to .env or export it in the "
+            "environment. Imagen requires a Google Cloud project ID.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Generate image
     try:
         import google.genai as genai
 
-        client = genai.Client(
-            vertexai=True,
-            project=GCP_PROJECT,
-            location=GCP_LOCATION,
-        )
+        try:
+            client = genai.Client(
+                vertexai=True,
+                project=gcp_project,
+                location=gcp_location,
+            )
+        except Exception as auth_exc:
+            print(
+                f"Error: could not initialise Vertex AI client. Most likely "
+                f"cause: ADC credentials missing. Run "
+                f"`gcloud auth application-default login` and retry.\n"
+                f"Underlying error: {auth_exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         response = client.models.generate_images(
             model=model,
             prompt=prompt,

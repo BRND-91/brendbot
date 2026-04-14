@@ -101,11 +101,36 @@ async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
 # of truth for "did the gate fail today?").
 _HAIKU_FAILURE_LOG = Path(__file__).parent.parent / "logs" / "haiku_failures.log"
 
+# Rate limit for Discord-side admin alerts on classifier failures.
+# One post per hour per category; file log is always written.
+_ADMIN_ALERT_MIN_INTERVAL_SECONDS = 3600
+_admin_alert_last_posted: dict[str, float] = {}
+
+
+def _admin_alert(category: str, message: str) -> None:
+    """Post a rate-limited operator alert to ADMIN_ALERT_CHANNEL if set.
+    Category is a short tag used for independent rate limiting
+    (e.g. 'haiku_outage', 'session_evict). Silent no-op when the channel
+    is unset or the last alert in this category is within the window."""
+    cfg = get_config()
+    if not cfg.admin_alert_channel:
+        return
+    now = time.time()
+    last = _admin_alert_last_posted.get(category, 0.0)
+    if now - last < _ADMIN_ALERT_MIN_INTERVAL_SECONDS:
+        return
+    _admin_alert_last_posted[category] = now
+    try:
+        asyncio.create_task(send_message(cfg.admin_alert_channel, message))
+    except Exception as exc:
+        logger.debug("admin alert dispatch failed: %s", exc)
+
 
 def _log_haiku_failure(channel_id: str, text: str, score: float) -> None:
     """Append a single line to logs/haiku_failures.log when the haiku
     classifier returns reason='error'. Format: ISO timestamp, channel,
-    score, first 80 chars of message."""
+    score, first 80 chars of message. Also posts a rate-limited (1/hr)
+    alert to ADMIN_ALERT_CHANNEL if configured."""
     try:
         _HAIKU_FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
         import datetime
@@ -115,8 +140,12 @@ def _log_haiku_failure(channel_id: str, text: str, score: float) -> None:
             f.write(line)
     except Exception as exc:
         logger.warning("Failed to write haiku failure log: %s", exc)
-    # TODO: when cfg.admin_alert_channel is added, post a rate-limited
-    # alert (1/hr) to that channel here so outages aren't quiet.
+    _admin_alert(
+        "haiku_outage",
+        f"⚠️ haiku classifier failure in <#{channel_id}> (score={score:.2f}). "
+        f"Outages silently drop ambiguous messages below score=0.6. "
+        f"Check logs/haiku_failures.log for details.",
+    )
 
 
 # ── Tone-mapped reaction palette ──────────────────────────────────────────────
@@ -523,9 +552,37 @@ def _score_message(
     return result
 
 
+# TTL for channel recency/tool-turn dicts — any entry older than this is
+# evicted on the next prune sweep. Prevents unbounded dict growth over
+# long uptimes in busy servers.
+_CHANNEL_STATE_TTL_SECONDS = 86400  # 24 hours
+_CHANNEL_PRUNE_INTERVAL_SECONDS = 3600  # sweep at most once per hour
+_channel_last_pruned: float = 0.0
+
+
+def _prune_channel_state() -> None:
+    """Evict entries older than TTL from the recency and tool-turn dicts.
+    Rate-limited to one sweep per hour; no-op otherwise. Called from
+    record_bot_spoke (hot path, cheap check)."""
+    global _channel_last_pruned
+    now = time.time()
+    if now - _channel_last_pruned < _CHANNEL_PRUNE_INTERVAL_SECONDS:
+        return
+    _channel_last_pruned = now
+    cutoff = now - _CHANNEL_STATE_TTL_SECONDS
+    for cid in list(_channel_last_spoke.keys()):
+        if _channel_last_spoke[cid] < cutoff:
+            del _channel_last_spoke[cid]
+    for cid in list(_channel_last_tool_turn.keys()):
+        _, ts = _channel_last_tool_turn[cid]
+        if ts < cutoff:
+            del _channel_last_tool_turn[cid]
+
+
 def record_bot_spoke(channel_id: str) -> None:
     """Call this after the bot sends a message to update recency state."""
     _channel_last_spoke[channel_id] = time.time()
+    _prune_channel_state()
 
 
 def record_tool_turn(channel_id: str, user_id: str) -> None:
@@ -654,6 +711,18 @@ class DiscordListener:
                 directly_mentioned = client.user and client.user.id in [m.id for m in message.mentions]
                 name_mentioned_by_bot = bool(_NAME_PATTERN.search(text))
                 if not directly_mentioned and not name_mentioned_by_bot:
+                    try:
+                        from brendbot.feedback import log_skip_decision
+                        log_skip_decision(
+                            channel_id=channel_id,
+                            sender_id=sender_id,
+                            user_message_id=msg_id,
+                            user_text=text,
+                            score=None,
+                            reason="bot_author_not_mentioned",
+                        )
+                    except Exception:
+                        pass
                     return
 
             # Determine whether bot is @mentioned or name-mentioned.
@@ -772,8 +841,39 @@ class DiscordListener:
                             await react_with_fallback(
                                 channel_id, str(message.id), _pick_reaction(tone)
                             )
+                            try:
+                                from brendbot.feedback import log_skip_decision
+                                _reason = (
+                                    "haiku_error_low_score"
+                                    if haiku_result["reason"] == "error"
+                                    else "haiku_no"
+                                )
+                                log_skip_decision(
+                                    channel_id=channel_id,
+                                    sender_id=sender_id,
+                                    user_message_id=msg_id,
+                                    user_text=text,
+                                    score=engage_result.score,
+                                    reason=_reason,
+                                    domains=sorted(engage_result.domains),
+                                )
+                            except Exception:
+                                pass
                             return
                     else:
+                        try:
+                            from brendbot.feedback import log_skip_decision
+                            log_skip_decision(
+                                channel_id=channel_id,
+                                sender_id=sender_id,
+                                user_message_id=msg_id,
+                                user_text=text,
+                                score=engage_result.score,
+                                reason="hard_drop",
+                                domains=sorted(engage_result.domains),
+                            )
+                        except Exception:
+                            pass
                         return
             else:
                 # DM path — no engagement gate, no haiku.

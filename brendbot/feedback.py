@@ -52,6 +52,11 @@ BRANCH_AUDIT_LOG = LOGS_DIR / "branch_audit.jsonl"
 FEEDBACK_EVENTS_LOG = LOGS_DIR / "feedback_events.jsonl"
 FLAG_AUDIT_LOG = LOGS_DIR / "flag_audit.jsonl"
 BYPASS_AUDIT_LOG = LOGS_DIR / "bypass_audit.jsonl"
+# Negative-example stream — one row per engagement-gate drop. Pairs with
+# bot_responses.jsonl (positive examples) to form a balanced training
+# corpus for replacing the haiku ambiguity classifier with a local model.
+# Written from discord.py's on_message drop paths via log_skip_decision.
+SKIP_DECISIONS_LOG = LOGS_DIR / "skip_decisions.jsonl"
 
 # Branch tag regex — matches a leading tag token. The tag is stripped from
 # the chat-bound text and written to branch_audit.jsonl.
@@ -227,4 +232,34 @@ def log_bypass_event(
         "would_have_outcome": would_have_outcome,
         "hard_floor_hit": hard_floor_hit,
         "bot_message_id": bot_message_id,
+    })
+
+
+def log_skip_decision(
+    channel_id: str,
+    sender_id: str,
+    user_message_id: str,
+    user_text: str,
+    score: float | None,
+    reason: str,
+    domains: list[str] | None = None,
+) -> None:
+    """One line per engagement-gate drop. Written from discord.py's
+    on_message handler at any return path that skipped generation:
+    hard drop (score below threshold), haiku NO, or haiku error with
+    insufficient score for fail-loud escalation.
+
+    reason is a short tag identifying the drop path: 'hard_drop',
+    'haiku_no', 'haiku_error_low_score', 'bot_author_not_mentioned',
+    'other'. Downstream training-data export joins this stream against
+    bot_responses.jsonl to build balanced (engage, skip) pairs."""
+    _append_jsonl(SKIP_DECISIONS_LOG, {
+        "ts": _now_iso(),
+        "channel_id": channel_id,
+        "sender_id": sender_id,
+        "user_message_id": user_message_id,
+        "user_text": user_text[:500],
+        "score": score,
+        "reason": reason,
+        "domains": domains or [],
     })

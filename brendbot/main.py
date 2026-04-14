@@ -50,6 +50,7 @@ async def run() -> None:
         bot_name=cfg.bot_name,
         on_text=on_text,
         on_text_edit=on_text_edit,
+        max_sessions=cfg.max_sessions,
     )
 
     async def on_message(

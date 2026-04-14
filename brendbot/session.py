@@ -659,6 +659,12 @@ class Session:
         # (successfully or not). _fire_on_text_streamed awaits this so it
         # doesn't finalize before _stream_msg_id is populated.
         self._stream_first_chunk_done: Optional[asyncio.Event] = None
+        # Stage 4 — deferred KB index expansion. True after the full
+        # FUSED-CORE MODULES + KNOWLEDGE QUERY TOOL block has been
+        # injected into this session (happens on the first domain-matched
+        # message). Sessions that never touch a knowledge module never
+        # incur the full-index cost.
+        self._kb_index_expanded: bool = False
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -1972,6 +1978,7 @@ class SessionPool:
         bot_name: str,
         on_text: Optional[Any] = None,
         on_text_edit: Optional[Any] = None,
+        max_sessions: int = 0,
     ) -> None:
         self._model = model
         self._bot_name = bot_name
@@ -1980,6 +1987,12 @@ class SessionPool:
         self._sessions: dict[str, Session] = {}
         self._lock = asyncio.Lock()          # guards _sessions dict reads/writes
         self._creation_locks: dict[str, asyncio.Lock] = {}  # per-key; serialises _create()
+        # LRU eviction (Stage 3). _lru_order is the recency list, most-recent
+        # last. max_sessions=0 disables the cap (previous unbounded behaviour).
+        # When a new session would exceed the cap, the oldest idle session
+        # (not currently processing a turn) is stopped and evicted.
+        self._max_sessions: int = max_sessions
+        self._lru_order: list[str] = []
 
         # ── Static prompt-fragment cache ──────────────────────────────────
         # SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, and the MANIFEST.json
@@ -1997,6 +2010,25 @@ class SessionPool:
         except Exception as exc:
             logger.warning("FUSED-CORE.md cache load failed: %s", exc)
         self._cached_kb_index_block: str = self._build_kb_index_block()
+        self._cached_kb_index_stub: str = self._build_kb_index_stub()
+
+    def _build_kb_index_stub(self) -> str:
+        """Small pointer injected at session-creation time in place of the
+        full FUSED-CORE MODULES + KNOWLEDGE QUERY TOOL block. The full
+        block is deferred until the first domain-matched message on this
+        channel, injected as housekeeping. Keeps initial system prompt
+        lean (~2-3k tokens saved on first-response prefill for sessions
+        that never touch a knowledge module, which is the majority in
+        casual group chat)."""
+        kb_query_path = SCRIPTS_DIR / "kb-query"
+        return (
+            "\n\n## KNOWLEDGE BASE\n"
+            f"Domain knowledge modules are available via `{kb_query_path}` "
+            f"(Bash). Full module index and query reference will be injected "
+            f"when a domain keyword matches the incoming message. Until then, "
+            f"answer from general knowledge — do not fabricate claims that "
+            f"would require a module lookup.\n"
+        )
 
     def _build_kb_index_block(self) -> str:
         """Build the FUSED-CORE MODULES + KNOWLEDGE QUERY TOOL block once.
@@ -2063,6 +2095,7 @@ class SessionPool:
         except Exception as exc:
             logger.warning("FUSED-CORE.md refresh failed: %s", exc)
         self._cached_kb_index_block = self._build_kb_index_block()
+        self._cached_kb_index_stub = self._build_kb_index_stub()
         # Hot-reload engagement.yaml — scoring deltas, thresholds, noise
         # tokens, domain keywords, classifier prompts, content gate config.
         try:
@@ -2071,6 +2104,79 @@ class SessionPool:
         except Exception as exc:
             logger.warning("engagement.yaml refresh failed: %s", exc)
         logger.info("SessionPool cache refreshed")
+
+    def _bump_lru(self, key: str) -> None:
+        """Move `key` to the most-recently-used position. Caller must hold
+        self._lock (or be in a create path where the new key isn't yet
+        visible to other coroutines)."""
+        try:
+            self._lru_order.remove(key)
+        except ValueError:
+            pass
+        self._lru_order.append(key)
+
+    async def _evict_if_over_cap(self, protect_key: str) -> None:
+        """If _sessions count exceeds max_sessions, evict the oldest idle
+        session. `protect_key` is the key currently being created — never
+        evicted even if it sits at the head of the LRU list.
+
+        An 'idle' session is one with an empty queue and no current turn
+        lock held. If every session is busy, no eviction happens and the
+        cap is soft — we log a warning and proceed. This keeps the hot
+        path from blocking on arbitrary turn latency."""
+        if self._max_sessions <= 0:
+            return
+        excess = len(self._sessions) - self._max_sessions
+        if excess <= 0:
+            return
+        evicted = 0
+        for candidate in list(self._lru_order):
+            if evicted >= excess:
+                break
+            if candidate == protect_key:
+                continue
+            sess = self._sessions.get(candidate)
+            if sess is None:
+                try:
+                    self._lru_order.remove(candidate)
+                except ValueError:
+                    pass
+                continue
+            # Idle check: queue empty and turn lock not held.
+            if not sess._queue.empty():
+                continue
+            if sess._turn_lock.locked():
+                continue
+            logger.info(
+                "SessionPool LRU eviction: stopping idle session %s "
+                "(cap=%d, size=%d)",
+                candidate, self._max_sessions, len(self._sessions),
+            )
+            try:
+                await sess.stop()
+            except Exception as exc:
+                logger.warning("LRU evict: stop failed for %s: %s", candidate, exc)
+            self._sessions.pop(candidate, None)
+            try:
+                self._lru_order.remove(candidate)
+            except ValueError:
+                pass
+            try:
+                from brendbot import discord as _bd
+                _bd._admin_alert(
+                    "session_evict",
+                    f"ℹ️ session pool evicted idle session `{candidate}` "
+                    f"(cap={self._max_sessions}).",
+                )
+            except Exception:
+                pass
+            evicted += 1
+        if evicted < excess:
+            logger.warning(
+                "SessionPool at %d/%d sessions — all candidates busy, "
+                "cap temporarily exceeded",
+                len(self._sessions), self._max_sessions,
+            )
 
     async def route_message(
         self,
@@ -2103,10 +2209,16 @@ class SessionPool:
                 logger.warning("Dead session for %s, recreating", key)
                 await session.stop()
                 del self._sessions[key]
+                try:
+                    self._lru_order.remove(key)
+                except ValueError:
+                    pass
                 session = None
             if key not in self._creation_locks:
                 self._creation_locks[key] = asyncio.Lock()
             creation_lock = self._creation_locks[key]
+            if session is not None:
+                self._bump_lru(key)
 
         is_new_session = False
         if session is None:
@@ -2121,6 +2233,8 @@ class SessionPool:
                     session = await self._create(key, tier, platform, chat_id, is_group)
                     async with self._lock:
                         self._sessions[key] = session
+                        self._bump_lru(key)
+                        await self._evict_if_over_cap(protect_key=key)
                     is_new_session = True
 
         context_block = ""
@@ -2258,6 +2372,33 @@ class SessionPool:
             gate_action = "inject"
 
         if gate_action == "inject":
+            # Stage 4 — expand the KB index on first domain match. The
+            # stub injected at session creation points to this mechanism.
+            # The full block is injected as housekeeping so the model
+            # doesn't respond to it but learns the full query reference
+            # before tackling the domain-matching message.
+            if (
+                domain_hint
+                and not session._kb_index_expanded
+                and self._cached_kb_index_block
+            ):
+                try:
+                    session._next_turn_is_housekeeping = True
+                    await session.inject(
+                        "<kb_index_expansion>\n"
+                        "The following index is now live. Use it to answer "
+                        "the next message and any subsequent domain-matched "
+                        "queries in this session.\n"
+                        + self._cached_kb_index_block
+                        + "\n</kb_index_expansion>",
+                        housekeeping=True,
+                    )
+                    session._kb_index_expanded = True
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] KB index expansion inject failed: %s",
+                        session.key, exc,
+                    )
             await session.inject(wrapped)
         # else 'handled' — gate dispatched directly, no inject needed
 
@@ -2294,9 +2435,13 @@ class SessionPool:
         if self._cached_fused_core:
             prompt += "\n\n" + self._cached_fused_core
 
-        # Append cached knowledge index block (was a per-spawn JSON parse).
-        if self._cached_kb_index_block:
-            prompt += self._cached_kb_index_block
+        # Append the lightweight KB stub instead of the full index.
+        # The full MODULES + KNOWLEDGE QUERY TOOL block is deferred to the
+        # first domain-matched message and injected as housekeeping via
+        # route_message. See Session._kb_index_expanded and the Stage 4
+        # note in SessionPool._build_kb_index_stub for rationale.
+        if self._cached_kb_index_stub:
+            prompt += self._cached_kb_index_stub
 
         claude_md.write_text(prompt)
 
@@ -2431,6 +2576,7 @@ class SessionPool:
                 new_session = await self._create(key, tier, platform, chat_id, is_group)
                 async with self._lock:
                     self._sessions[key] = new_session
+                    self._bump_lru(key)
                 logger.info("Session %s restarted successfully", key)
             except Exception as exc:
                 logger.error("Failed to recreate session %s after restart: %s", key, exc)

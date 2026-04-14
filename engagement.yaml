@@ -339,6 +339,9 @@ content_gate:
     max_per_session: 2
     audit_stream: flag_audit.jsonl
     branch_tag: "[flagged]"
+  channel_overrides:
+    "1484079826166874162":
+      gate2_bypass: true    # FLAG band disabled; hard floors still enforced
   admin_bypass:
     # Admin-only backdoor for heuristic calibration and pen-testing.
     # Skips the weighted classifier entirely but still enforces hard_floors.

@@ -1967,53 +1967,87 @@ class Session:
         return Path(self.cwd) / CRON_FILE
 
     def _persist_cron(self, tool_input: dict) -> None:
-        """Append or update a cron entry from a CronCreate tool call."""
+        """Append or update a cron entry from a CronCreate tool call.
+
+        Stores the full tool_input dict as-is. Earlier versions looked for
+        hard-coded "schedule"/"command" keys, but the CronCreate tool
+        actually uses taskId/cronExpression/fireAt/prompt/description —
+        so every entry collapsed to the same empty (schedule, command)
+        tuple and the dedupe filter wiped prior entries, leaving only
+        one cron in the file regardless of how many were created.
+
+        Dedupe now uses a canonical JSON serialisation of the full entry,
+        so identical re-creations collapse but genuinely distinct crons
+        (different taskId or fire time) each persist as their own row."""
         cron_path = self._cron_file_path()
         try:
             existing: list[dict] = []
             if cron_path.exists():
                 existing = json.loads(cron_path.read_text())
 
-            entry = {
-                "schedule": tool_input.get("schedule", ""),
-                "command": tool_input.get("command", ""),
-            }
-            # Optional fields the SDK may include
-            for opt_field in ("description", "remaining_runs"):
-                if opt_field in tool_input:
-                    entry[opt_field] = tool_input[opt_field]
-
-            # Deduplicate by schedule+command (updating if same cron re-created)
+            entry = dict(tool_input)
+            entry_canonical = json.dumps(entry, sort_keys=True)
             existing = [
                 e for e in existing
-                if not (e.get("schedule") == entry["schedule"]
-                        and e.get("command") == entry["command"])
+                if json.dumps(e, sort_keys=True) != entry_canonical
             ]
             existing.append(entry)
             cron_path.write_text(json.dumps(existing, indent=2))
-            logger.info("[%s] Persisted cron: %s", self.key, entry.get("schedule"))
+            # Log a human-readable marker. Try the canonical CronCreate
+            # fields first, then legacy names, then fall back to a tag.
+            marker = (
+                entry.get("taskId")
+                or entry.get("fireAt")
+                or entry.get("cronExpression")
+                or entry.get("schedule")
+                or entry.get("description")
+                or "cron"
+            )
+            logger.info(
+                "[%s] Persisted cron: %s (total=%d)",
+                self.key, marker, len(existing),
+            )
         except Exception as exc:
             logger.warning("[%s] Failed to persist cron: %s", self.key, exc)
 
     def _remove_cron(self, tool_input: dict) -> None:
-        """Remove a cron entry matching a CronDelete tool call."""
+        """Remove a cron entry matching a CronDelete tool call.
+
+        Matches across all plausible identifier fields (taskId, id,
+        cronExpression, fireAt, schedule, command, prompt) so removal
+        works regardless of which naming convention the SDK passes."""
         cron_path = self._cron_file_path()
         if not cron_path.exists():
             return
         try:
             existing: list[dict] = json.loads(cron_path.read_text())
-            # CronDelete provides an id or description; match flexibly
+
+            # Identifier candidates from the CronDelete input. An empty
+            # string never matches anything in _matches, so missing keys
+            # simply don't contribute to the match predicate.
+            delete_task_id = tool_input.get("taskId", "")
             delete_id = tool_input.get("id", "")
+            delete_cron_expr = tool_input.get("cronExpression", "")
+            delete_fire_at = tool_input.get("fireAt", "")
             delete_schedule = tool_input.get("schedule", "")
             delete_command = tool_input.get("command", "")
+            delete_prompt = tool_input.get("prompt", "")
 
             def _matches(e: dict) -> bool:
+                if delete_task_id and e.get("taskId") == delete_task_id:
+                    return True
                 if delete_id and e.get("id") == delete_id:
+                    return True
+                if delete_cron_expr and e.get("cronExpression") == delete_cron_expr:
+                    return True
+                if delete_fire_at and e.get("fireAt") == delete_fire_at:
                     return True
                 if delete_schedule and e.get("schedule") == delete_schedule:
                     if not delete_command or e.get("command") == delete_command:
                         return True
                 if delete_command and e.get("command") == delete_command:
+                    return True
+                if delete_prompt and e.get("prompt") == delete_prompt:
                     return True
                 return False
 

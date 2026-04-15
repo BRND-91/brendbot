@@ -65,15 +65,25 @@ CREATE TABLE IF NOT EXISTS user_registry (
     msg_count     INTEGER DEFAULT 0,
     engaged_count INTEGER DEFAULT 0,
     domains_seen  TEXT DEFAULT '',
+    guild_ids     TEXT DEFAULT '',
     notes         TEXT DEFAULT ''
 )
 """
+
+# Additive migration for rows created before guild_ids existed. sqlite3
+# raises OperationalError on duplicate column, which we swallow so the
+# module is safe to import on both fresh and pre-existing databases.
+_MIGRATE_SQL = "ALTER TABLE user_registry ADD COLUMN guild_ids TEXT DEFAULT ''"
 
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute(_CREATE_SQL)
+    try:
+        conn.execute(_MIGRATE_SQL)
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     return conn
 
@@ -88,30 +98,36 @@ def record_user(
     username: str = "",
     tier: str = "default",
     domains: list[str] | None = None,
+    guild_id: str = "",
 ) -> None:
     """Upsert a user record on every message seen. Increments msg_count,
-    updates last_seen and display_name (users can change their nicknames),
-    and merges any new domain IDs into domains_seen. Best-effort — never
-    raises; failures are logged and swallowed so the hot message path is
-    never blocked."""
+    updates last_seen and display_name, merges any new domain IDs into
+    domains_seen, and merges the current guild_id into guild_ids (so the
+    registry tracks which servers each user has appeared in).
+
+    guild_id is the Discord guild/server snowflake. DM-originated records
+    pass empty string — those rows remain filterable by the absence of a
+    guild match. Best-effort — never raises."""
     if not user_id:
         return
     try:
         conn = _conn()
         now = _now()
         existing = conn.execute(
-            "SELECT domains_seen, msg_count FROM user_registry WHERE user_id = ?",
+            "SELECT domains_seen, guild_ids, msg_count FROM user_registry WHERE user_id = ?",
             (user_id,),
         ).fetchone()
 
         if existing is None:
             merged_domains = ",".join(sorted(set(domains or [])))
+            merged_guilds = guild_id if guild_id else ""
             conn.execute(
                 """INSERT INTO user_registry
                    (user_id, display_name, username, tier, first_seen, last_seen,
-                    msg_count, engaged_count, domains_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)""",
-                (user_id, display_name, username, tier, now, now, merged_domains),
+                    msg_count, engaged_count, domains_seen, guild_ids)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)""",
+                (user_id, display_name, username, tier, now, now,
+                 merged_domains, merged_guilds),
             )
         else:
             existing_domains = set(
@@ -119,12 +135,19 @@ def record_user(
             )
             new_domains = existing_domains | set(domains or [])
             merged_domains = ",".join(sorted(new_domains))
+            existing_guilds = set(
+                g for g in (existing["guild_ids"] or "").split(",") if g
+            )
+            if guild_id:
+                existing_guilds.add(guild_id)
+            merged_guilds = ",".join(sorted(existing_guilds))
             conn.execute(
                 """UPDATE user_registry
                    SET display_name = ?, username = ?, tier = ?, last_seen = ?,
-                       msg_count = msg_count + 1, domains_seen = ?
+                       msg_count = msg_count + 1, domains_seen = ?, guild_ids = ?
                    WHERE user_id = ?""",
-                (display_name, username, tier, now, merged_domains, user_id),
+                (display_name, username, tier, now, merged_domains,
+                 merged_guilds, user_id),
             )
         conn.commit()
         conn.close()
@@ -190,11 +213,18 @@ def resolve_mentions(text: str, bot_id: str) -> dict[str, str]:
     return out
 
 
-def compact_table(bot_id: str = "") -> str:
+def compact_table(bot_id: str = "", guild_id: str = "") -> str:
     """Return a short, newline-separated text block mapping snowflake IDs to
     display names for the _COMPACT_TABLE_MAX most-recently-active users.
     Injected into session system prompt so the model can resolve @mentions
     at reasoning time without a Bash/Read tool call.
+
+    When guild_id is provided, the result is filtered to users whose
+    guild_ids column contains that snowflake — so a Wheat session sees
+    only Wheat users and a Pizzacord session sees only Pizzacord users.
+    Passing empty string (default) returns the unfiltered global list
+    (backward-compatible for DM sessions or call sites that don't plumb
+    guild_id yet).
 
     Format: one line per user:
       <user id="..." name="..." tier="..." msgs="..." engaged="..." domains="..."/>
@@ -203,14 +233,30 @@ def compact_table(bot_id: str = "") -> str:
     if the registry is empty or the DB isn't initialised yet."""
     try:
         conn = _conn()
-        rows = conn.execute(
-            """SELECT user_id, display_name, tier, msg_count, engaged_count, domains_seen
-               FROM user_registry
-               WHERE user_id != ?
-               ORDER BY last_seen DESC
-               LIMIT ?""",
-            (bot_id or "", _COMPACT_TABLE_MAX),
-        ).fetchall()
+        if guild_id:
+            # LIKE-match with %,id,% delimiters so a guild snowflake like
+            # "1277236474231787552" doesn't partially match another guild
+            # that shares a prefix. The stored column is comma-joined, so
+            # wrapping with commas on both sides guarantees whole-token
+            # matching regardless of position in the list.
+            rows = conn.execute(
+                """SELECT user_id, display_name, tier, msg_count, engaged_count, domains_seen
+                   FROM user_registry
+                   WHERE user_id != ?
+                     AND (',' || COALESCE(guild_ids, '') || ',') LIKE ?
+                   ORDER BY last_seen DESC
+                   LIMIT ?""",
+                (bot_id or "", f"%,{guild_id},%", _COMPACT_TABLE_MAX),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT user_id, display_name, tier, msg_count, engaged_count, domains_seen
+                   FROM user_registry
+                   WHERE user_id != ?
+                   ORDER BY last_seen DESC
+                   LIMIT ?""",
+                (bot_id or "", _COMPACT_TABLE_MAX),
+            ).fetchall()
         conn.close()
         if not rows:
             return ""

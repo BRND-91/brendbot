@@ -526,6 +526,7 @@ class Session:
         on_text: Optional[Any] = None,
         on_text_edit: Optional[Any] = None,
         chat_id: str = "",
+        guild_id: str = "",
     ) -> None:
         self.key = key
         self.tier = tier
@@ -534,6 +535,10 @@ class Session:
         self._on_text = on_text
         self._on_text_edit = on_text_edit
         self._chat_id = chat_id
+        # Guild snowflake for multi-server user_registry filtering.
+        # Stashed here so _restart_session can preserve it across restarts
+        # without re-plumbing it through every caller.
+        self._guild_id: str = guild_id
         self._client: Optional[ClaudeSDKClient] = None
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
@@ -2303,6 +2308,7 @@ class SessionPool:
         address_level: str = "high",
         score: float | None = None,
         haiku_invoked: bool = False,
+        guild_id: str = "",
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -2337,12 +2343,19 @@ class SessionPool:
                 async with self._lock:
                     session = self._sessions.get(key)
                 if session is None or not session.is_alive():
-                    session = await self._create(key, tier, platform, chat_id, is_group)
+                    session = await self._create(
+                        key, tier, platform, chat_id, is_group, guild_id=guild_id,
+                    )
                     async with self._lock:
                         self._sessions[key] = session
                         self._bump_lru(key)
                         await self._evict_if_over_cap(protect_key=key)
                     is_new_session = True
+        # Keep the stashed guild_id fresh on pre-existing sessions too —
+        # allows an existing session to pick up a guild association if it
+        # was created before this plumbing existed.
+        if session is not None and guild_id and not getattr(session, "_guild_id", ""):
+            session._guild_id = guild_id
 
         context_block = ""
         if context_messages and is_new_session:
@@ -2532,7 +2545,8 @@ class SessionPool:
         # else 'handled' — gate dispatched directly, no inject needed
 
     async def _create(
-        self, key: str, tier: str, platform: str, chat_id: str, is_group: bool
+        self, key: str, tier: str, platform: str, chat_id: str, is_group: bool,
+        guild_id: str = "",
     ) -> Session:
         safe_id = chat_id.replace("+", "_").replace("/", "_").replace("=", "")
         prefix = "group_" if is_group else ""
@@ -2581,7 +2595,11 @@ class SessionPool:
             from brendbot.user_registry import compact_table
             from brendbot.discord import _discord_client as _dc
             _bot_id = str(_dc.user.id) if _dc and _dc.user else ""
-            _user_table = compact_table(bot_id=_bot_id)
+            # Filter to this guild's users so a Wheat session doesn't see
+            # Pizzacord members in its user table (multi-server isolation).
+            # Empty guild_id (DM sessions or unplumbed callers) falls back
+            # to the unfiltered global list.
+            _user_table = compact_table(bot_id=_bot_id, guild_id=guild_id)
             if _user_table:
                 prompt += (
                     "\n\n## SERVER MEMBERS\n"
@@ -2604,13 +2622,17 @@ class SessionPool:
             on_text=self._on_text,
             on_text_edit=self._on_text_edit,
             chat_id=chat_id,
+            guild_id=guild_id,
         )
         await session.start()
 
         _key, _tier, _platform, _chat_id, _is_group = key, tier, platform, chat_id, is_group
+        _guild_id = guild_id
 
         async def _restart_cb() -> None:
-            await self._restart_session(_key, _tier, _platform, _chat_id, _is_group)
+            await self._restart_session(
+                _key, _tier, _platform, _chat_id, _is_group, guild_id=_guild_id,
+            )
 
         session._on_needs_restart = _restart_cb
 
@@ -2706,11 +2728,16 @@ class SessionPool:
         return session
 
     async def _restart_session(
-        self, key: str, tier: str, platform: str, chat_id: str, is_group: bool
+        self, key: str, tier: str, platform: str, chat_id: str, is_group: bool,
+        guild_id: str = "",
     ) -> None:
         logger.info("Restarting session %s after context refresh", key)
         async with self._lock:
             old_session = self._sessions.pop(key, None)
+        # Preserve guild_id across restarts: fall back to the dying
+        # session's stashed value if no explicit guild_id was passed.
+        if not guild_id and old_session is not None:
+            guild_id = getattr(old_session, "_guild_id", "") or ""
         if old_session:
             try:
                 await old_session.stop()
@@ -2723,7 +2750,9 @@ class SessionPool:
             self._creation_locks[key] = creation_lock
         async with creation_lock:
             try:
-                new_session = await self._create(key, tier, platform, chat_id, is_group)
+                new_session = await self._create(
+                    key, tier, platform, chat_id, is_group, guild_id=guild_id,
+                )
                 async with self._lock:
                     self._sessions[key] = new_session
                     self._bump_lru(key)

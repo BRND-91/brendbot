@@ -682,6 +682,10 @@ class DiscordListener:
             channel_id = str(message.channel.id)
             sender_id = str(message.author.id)
             msg_id = str(message.id)
+            # Guild snowflake for multi-server isolation of user_registry.
+            # Empty for DMs — user_registry filters by guild only when
+            # non-empty, so DM sessions still work with the global list.
+            guild_id = str(message.guild.id) if message.guild else ""
 
             # ── User registry update ─────────────────────────────────────
             # Record every sender seen, regardless of whether the bot
@@ -695,6 +699,7 @@ class DiscordListener:
                     display_name=message.author.display_name,
                     username=str(message.author) if hasattr(message.author, "name") else "",
                     tier=_tier,
+                    guild_id=guild_id,
                 )
             except Exception:
                 pass
@@ -1033,6 +1038,7 @@ class DiscordListener:
                 address_level=address_level,
                 score=final_score,
                 haiku_invoked=haiku_invoked,
+                guild_id=guild_id,
             )
 
         @client.event

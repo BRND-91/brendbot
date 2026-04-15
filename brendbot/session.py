@@ -1835,11 +1835,24 @@ class Session:
     async def _permission_check(
         self, tool_name: str, tool_input: dict[str, Any], context: Any
     ) -> PermissionResultAllow | PermissionResultDeny:
-        if tool_name in ("Write", "Edit"):
+        if tool_name in ("Write", "Edit", "NotebookEdit"):
             path = tool_input.get("file_path", "")
-            if "CLAUDE.md" in path:
+            # Hard block on credential and config files — no tier bypasses this.
+            # .env contains Discord tokens and GCP credentials; the model must
+            # never write to it regardless of admin status. Fixes the observed
+            # behaviour where the bot edited .env directly to add GCP_PROJECT.
+            # If config needs updating, the human does it.
+            _PROTECTED_PATHS = (".env", "CLAUDE.md")
+            _PROTECTED_SUFFIXES = (".env",)
+            if (
+                any(p in path for p in _PROTECTED_PATHS)
+                or any(path.endswith(s) for s in _PROTECTED_SUFFIXES)
+            ):
                 return PermissionResultDeny(
-                    message="CLAUDE.md is managed by admin only"
+                    message=(
+                        f"{path} is a protected file and cannot be written by "
+                        "the bot. Update it manually on the host."
+                    )
                 )
 
         self._tool_call_count += 1

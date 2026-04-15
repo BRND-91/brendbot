@@ -49,8 +49,9 @@ async def run() -> None:
         model=cfg.claude_model,
         bot_name=cfg.bot_name,
         on_text=on_text,
-        on_text_edit=on_text_edit,
-        max_sessions=cfg.max_sessions,
+        # on_text_edit disabled — streaming edits produce Discord "edited" tags.
+        # Text buffers in _turn_text_buffer and fires as a single POST at turn end.
+        # on_text_edit=on_text_edit,
     )
 
     async def on_message(

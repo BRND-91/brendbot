@@ -876,6 +876,16 @@ class Session:
             return "inject"
 
         if shadow_outcome == Outcome.FLAG:
+            # Check channel-level gate2_bypass before routing to flagged path.
+            channel_overrides = gate_cfg.get("channel_overrides", {}) or {}
+            ch_cfg = channel_overrides.get(str(self._chat_id), {}) or {}
+            if ch_cfg.get("gate2_bypass", False):
+                logger.info(
+                    "[%s] FLAG outcome but gate2_bypass active for channel — treating as PASS",
+                    self.key,
+                )
+                return "inject"
+
             # Budget cap check.
             if self._flagged_count >= flagged_cap:
                 refusal = (

@@ -5,7 +5,7 @@
 # ///
 """Generate an image with Imagen and send it to a Discord channel.
 
-Usage: generate-image <channel_id> <prompt> [--caption <text>] [--reply-to <message_id>] [--model <model_id>] [--dry-run]
+Usage: generate-image <channel_id> <prompt> [--caption <text>] [--reply-to <message_id>] [--model <model_id>] [--dry-run] [--feedback]
 
 Reads DISCORD_TOKEN, GCP_PROJECT, GCP_LOCATION, IMAGEN_MODEL from
 environment or .env file. GCP_PROJECT must be set — there is no default.
@@ -18,6 +18,9 @@ Model options:
 
 Flags:
   --dry-run    Print constraint analysis and selected model; do not call API or send image.
+  --feedback   Keep the generated image on disk after sending and print its path as
+               FEEDBACK_PATH:<path>. Lets the caller read the image for self-assessment.
+               The caller is responsible for deleting the file when done.
 
 Constraint heuristic:
   Scans prompt for style keywords (ukiyo-e, watercolor, etc.), spatial terms (foreground,
@@ -131,6 +134,7 @@ def main() -> None:
             aspect_ratio = sys.argv[idx + 1]
 
     dry_run = "--dry-run" in sys.argv
+    feedback = "--feedback" in sys.argv
 
     # Constraint analysis
     analysis = analyze_constraints(prompt)
@@ -209,8 +213,11 @@ def main() -> None:
             print(f"Error sending: {result.stderr}", file=sys.stderr)
             sys.exit(1)
         print(result.stdout.strip())
+        if feedback:
+            print(f"FEEDBACK_PATH:{tmp_path}")
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        if not feedback:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

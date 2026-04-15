@@ -123,6 +123,20 @@
       "fail_modes": ["Defaults to full horror OR full cute — specify both attributes explicitly"],
       "tier": "standard",
       "note": "Not yet tested directly."
+    },
+    "demon_slayer": {
+      "core": ["vivid saturated jewel-tone colors", "watercolor ink-wash halos", "non-photographic"],
+      "supplemental": ["dramatic gradient sky", "smooth cel shading", "natural Japanese landscape"],
+      "fail_modes": [],
+      "tier": "standard",
+      "note": "First render passed — admin rated great. Fail modes not yet confirmed."
+    },
+    "your_lie_in_april": {
+      "core": ["soft pastel color palette", "warm diffuse bloom lighting", "non-photographic"],
+      "supplemental": ["impressionistic watercolor backgrounds", "delicate linework", "cherry blossom"],
+      "fail_modes": [],
+      "tier": "standard",
+      "note": "First render passed — admin rated good. Fail modes not yet confirmed."
     }
   },
 
@@ -158,6 +172,7 @@
     "Psychedelic colorization over coherent forms — exact prompt not confirmed",
     "Uncanny valley / playful register — not yet tested directly",
     "Named landmark photorealism pull — no reliable workaround beyond generic description",
-    "seb's woodblock prompt patterns not yet fully documented here"
+    "seb's woodblock prompt patterns not yet fully documented here",
+    "Evangelion style not yet confirmed — descriptor override attempted (take 2), outcome pending admin review"
   ]
 }

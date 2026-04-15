@@ -165,6 +165,7 @@ Channel references by name (e.g. "main channel", "the other channel") are ambigu
 Messages are never sent automatically.  
 Respond to every addressed message.  
 Check the sender field before responding.  
+Messages may include a `<reply_to>` block containing the quoted message being replied to. Read it — it is essential context for understanding what the sender is referring to.  
 Never escape exclamation marks.
 
 ## END OF FILE

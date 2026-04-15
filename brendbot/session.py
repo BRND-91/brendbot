@@ -662,6 +662,11 @@ class Session:
         # _stream_msg_id to decide whether streaming was initiated, closing
         # the race window where ResultMessage arrives before the first-chunk
         # send returns.
+        # Per-turn haiku-invoked flag. Set by route_message before each
+        # inject from the haiku_invoked parameter passed through from
+        # discord.py. Read by _fire_on_text / _fire_on_text_streamed for
+        # flow-class and fabrication-risk diagnostics in log_bot_response.
+        self._turn_haiku_invoked: bool = False
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -1117,6 +1122,8 @@ class Session:
                 domains=self._turn_domains,
                 address_level=self.current_address_level,
                 branch_tag=branch_tag,
+                modules_queried=sorted(self._turn_modules_queried),
+                haiku_invoked=self._turn_haiku_invoked,
             )
             if branch_tag:
                 log_branch_audit(
@@ -1184,6 +1191,8 @@ class Session:
                 domains=self._turn_domains,
                 address_level=self.current_address_level,
                 branch_tag=branch_tag,
+                modules_queried=sorted(self._turn_modules_queried),
+                haiku_invoked=self._turn_haiku_invoked,
             )
             if branch_tag:
                 log_branch_audit(
@@ -2430,7 +2439,9 @@ class SessionPool:
         session._turn_other_tool_calls = 0
         session._turn_sender_id = sender_id
         # If the engagement gate fired the haiku classifier on this message,
-        # account for it in the cumulative load score (Phase 3 #1A).
+        # account for it in the cumulative load score (Phase 3 #1A). Also
+        # record per-turn for flow-class / fabrication-risk in log_bot_response.
+        session._turn_haiku_invoked = bool(haiku_invoked)
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
 

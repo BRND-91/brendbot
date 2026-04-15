@@ -114,9 +114,42 @@ def log_bot_response(
     domains: list[str] | None,
     address_level: str,
     branch_tag: str | None,
+    modules_queried: list[str] | None = None,
+    haiku_invoked: bool = False,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
-    after send_message returns the message ID."""
+    and _fire_on_text_streamed after send_message returns the message ID.
+
+    Observability fields added for flow-class / fabrication-risk diagnostics:
+
+      modules_queried: KB modules actually hit via kb-query this turn.
+        Non-empty means the answer was grounded in the knowledge base.
+        Empty with non-empty `domains` means the model answered from
+        training weights despite a domain keyword match — the
+        "weight-carried" failure mode.
+
+      flow_class (derived):
+        - "no_domain":       domain_hint was empty; no grounding expected
+        - "module_sourced":  domain matched AND KB was queried
+        - "weight_carried":  domain matched AND KB was NOT queried
+                             (the devourer-mimicking-source failure mode)
+
+      fabrication_risk (derived): True when haiku_invoked AND domains
+        non-empty AND modules_queried empty AND no branch_tag. That's
+        the shape of a turn where the bot engaged ambiguously, matched
+        a domain, skipped the KB, and produced untagged output — the
+        highest-risk profile for fabrication."""
+    domains = domains or []
+    modules_queried = modules_queried or []
+    if not domains:
+        flow_class = "no_domain"
+    elif modules_queried:
+        flow_class = "module_sourced"
+    else:
+        flow_class = "weight_carried"
+    fabrication_risk = bool(
+        haiku_invoked and domains and not modules_queried and not branch_tag
+    )
     _append_jsonl(BOT_RESPONSES_LOG, {
         "ts": _now_iso(),
         "channel_id": channel_id,
@@ -124,9 +157,13 @@ def log_bot_response(
         "user_message_id": user_message_id,
         "user_text": user_text[:500],
         "score": score,
-        "domains": domains or [],
+        "domains": domains,
         "address_level": address_level,
         "branch_tag": branch_tag,
+        "modules_queried": modules_queried,
+        "haiku_invoked": haiku_invoked,
+        "flow_class": flow_class,
+        "fabrication_risk": fabrication_risk,
     })
 
 

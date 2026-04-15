@@ -499,8 +499,16 @@ _LOAD_BUDGET_SHALLOW = 280.0
 # Max turns to retain in the rolling turn log.
 _MAX_TURN_LOG = 30
 
-# Hard cap on Bash calls within a single user-message turn.
+# Hard cap on total tool calls within a single user-message turn.
 _TOOL_CALL_BUDGET = 8
+
+# Separate hard cap on Bash calls per turn. Bash dumps full subprocess
+# stdout into context — each call can add thousands of tokens. The
+# overall _TOOL_CALL_BUDGET of 8 permits 8 Bash calls, but a cascade of
+# git/gcloud/cat commands can balloon context by 200-300k tokens in one
+# turn before the post-turn threshold check fires.
+# Capped lower than _TOOL_CALL_BUDGET so budget is shared with Read/Edit.
+_BASH_CALL_BUDGET = 5
 
 # Write a rolling checkpoint every N completed turns.
 _CHECKPOINT_INTERVAL = 5
@@ -1840,6 +1848,27 @@ class Session:
             if "CLAUDE.md" in path:
                 return PermissionResultDeny(
                     message="CLAUDE.md is managed by admin only"
+                )
+
+        # Bash-specific sub-budget — enforced before the overall tool count so
+        # a cascade of git/gcloud/cat calls is cut off independently of how
+        # many Read/Edit/Grep calls are in flight. _turn_bash_calls is already
+        # incremented in the ToolUseBlock handler; read it here pre-increment
+        # because the ToolUseBlock fires before _permission_check in the SDK
+        # event order — so by the time _permission_check sees this Bash call,
+        # _turn_bash_calls already reflects the current call.
+        if tool_name == "Bash":
+            if self._turn_bash_calls >= _BASH_CALL_BUDGET:
+                logger.warning(
+                    "[%s] Bash budget exceeded (%d/%d) — blocking",
+                    self.key, self._turn_bash_calls, _BASH_CALL_BUDGET,
+                )
+                return PermissionResultDeny(
+                    message=(
+                        f"Bash budget exceeded ({self._turn_bash_calls}/{_BASH_CALL_BUDGET} "
+                        "per turn). Consolidate remaining work into a single command "
+                        "or respond with what is known so far."
+                    )
                 )
 
         self._tool_call_count += 1

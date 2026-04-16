@@ -687,6 +687,16 @@ class Session:
         # message). Sessions that never touch a knowledge module never
         # incur the full-index cost.
         self._kb_index_expanded: bool = False
+        # Premise Check enforcement — tracks which knowledge modules have
+        # had their structured content (defs/facts/thms) pre-fetched and
+        # injected into this session. On every message whose domain_hint
+        # contains a module NOT in this set, the module's content is
+        # auto-injected as <grounded_facts> housekeeping before the user
+        # message is processed. This converts the documented Premise Check
+        # gate from honor-system ("the model will query kb-query") to
+        # enforced-by-construction ("the module content is already in the
+        # context window when the model generates the answer").
+        self._grounded_modules: set[str] = set()
 
     async def start(self) -> None:
         opts = self._build_options()
@@ -2188,6 +2198,97 @@ class SessionPool:
             logger.warning("FUSED-CORE system prompt index build failed: %s", exc)
             return ""
 
+    # Modules with structured defs/facts/thms content in knowledge.db.
+    # IMAGEGEN uses imagegen_config/prompt_styles/render_* schemas instead
+    # and is not fetched via this path — it's queried on-demand via
+    # kb-query imgstyle/imgfail/imglog when the model needs it.
+    _GROUNDABLE_MODULES = frozenset({"BUILDSCI"})
+
+    # Hard character cap on the injected grounded_facts block per module.
+    # BUILDSCI currently runs ~6-9KB across defs+facts+thms; the cap keeps
+    # unexpectedly large future modules from dominating the context window.
+    _GROUNDED_FACTS_MAX_CHARS = 12000
+
+    def _fetch_grounded_facts(self, module_id: str) -> str:
+        """Read a module's defs/facts/thms from knowledge.db and render a
+        compact grounded-facts block suitable for housekeeping injection.
+
+        Returns empty string for modules not in _GROUNDABLE_MODULES, for
+        any DB error, or when the module has no content. Hard-truncated at
+        _GROUNDED_FACTS_MAX_CHARS so a future content explosion can't
+        silently eat the context budget — the block is bounded and
+        observable in the log line written by the caller."""
+        if module_id not in self._GROUNDABLE_MODULES:
+            return ""
+        knowledge_db = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
+        if not knowledge_db.exists():
+            return ""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(knowledge_db))
+            defs = conn.execute(
+                "SELECT id, term, description, formal, source FROM definitions "
+                "WHERE module_id = ? ORDER BY id",
+                (module_id,),
+            ).fetchall()
+            facts = conn.execute(
+                "SELECT topic, name, description, source FROM facts "
+                "WHERE module_id = ? ORDER BY topic, name",
+                (module_id,),
+            ).fetchall()
+            thms = conn.execute(
+                "SELECT id, description, formal, source FROM theorems "
+                "WHERE module_id = ? AND extended = 0 ORDER BY id",
+                (module_id,),
+            ).fetchall()
+            conn.close()
+        except Exception as exc:
+            logger.debug("_fetch_grounded_facts(%s) DB error: %s", module_id, exc)
+            return ""
+        if not (defs or facts or thms):
+            return ""
+        parts: list[str] = [f"<grounded_facts module='{module_id}'>"]
+        if defs:
+            parts.append("  <definitions>")
+            for did, term, desc, formal, src in defs:
+                line = f"    {did}: {term}"
+                if desc:
+                    line += f" = {desc}"
+                if formal:
+                    line += f" | F: {formal}"
+                if src:
+                    line += f" | {src}"
+                parts.append(line)
+            parts.append("  </definitions>")
+        if facts:
+            parts.append("  <facts>")
+            for topic, name, desc, src in facts:
+                line = f"    {topic}.{name} = {desc}"
+                if src:
+                    line += f" | {src}"
+                parts.append(line)
+            parts.append("  </facts>")
+        if thms:
+            parts.append("  <theorems>")
+            for tid, desc, formal, src in thms:
+                line = f"    {tid}"
+                if desc:
+                    line += f" = {desc}"
+                if formal:
+                    line += f" | F: {formal}"
+                if src:
+                    line += f" | {src}"
+                parts.append(line)
+            parts.append("  </theorems>")
+        parts.append("</grounded_facts>")
+        block = "\n".join(parts)
+        if len(block) > self._GROUNDED_FACTS_MAX_CHARS:
+            block = (
+                block[: self._GROUNDED_FACTS_MAX_CHARS]
+                + "\n[truncated — full module via kb-query defs/facts/thms]"
+            )
+        return block
+
     def refresh_cache(self) -> None:
         """Re-read all cached prompt fragments and engagement config. Wire
         to SIGHUP in main.py so live edits to SOUL.md / FUSED-CORE.md /
@@ -2537,6 +2638,48 @@ class SessionPool:
                         "[%s] KB index expansion inject failed: %s",
                         session.key, exc,
                     )
+            # Premise Check enforcement — pre-fetch structured module
+            # content for any matched module not already grounded in this
+            # session. Converts the documented gate from "model chooses to
+            # call kb-query" to "module data is already in context". The
+            # [ctx] suffix (set by discord.py when the match came from
+            # recent-channel-context fallback rather than the current
+            # message) is stripped before lookup — the grounded_facts
+            # block should fire on context matches too, since the model
+            # still needs the data to reason correctly.
+            if domain_hint:
+                new_modules: list[str] = []
+                for token in domain_hint.split(","):
+                    mod = token.strip().replace("[ctx]", "")
+                    if mod and mod not in session._grounded_modules:
+                        new_modules.append(mod)
+                for mod in new_modules:
+                    block = self._fetch_grounded_facts(mod)
+                    if not block:
+                        # Mark as grounded anyway so we don't retry every
+                        # message for modules that have no structured data
+                        # (e.g. IMAGEGEN — queried on-demand via imgstyle).
+                        session._grounded_modules.add(mod)
+                        continue
+                    try:
+                        session._next_turn_is_housekeeping = True
+                        await session.inject(
+                            "[SYSTEM] Pre-fetched module content for Premise "
+                            f"Check. Use this to answer the next message "
+                            f"rather than answering from general knowledge.\n"
+                            + block,
+                            housekeeping=True,
+                        )
+                        session._grounded_modules.add(mod)
+                        logger.info(
+                            "[%s] grounded_facts injected: module=%s (%d chars)",
+                            session.key, mod, len(block),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] grounded_facts inject failed for %s: %s",
+                            session.key, mod, exc,
+                        )
             await session.inject(wrapped)
         # else 'handled' — gate dispatched directly, no inject needed
 

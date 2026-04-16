@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Query the FUSED-CORE knowledge base (SQLite).
 
+Modules present: BUILDSCI, IMAGEGEN.
+
 Usage:
     kb-query search <terms>          Full-text search across all modules
     kb-query defs <MODULE>           List all definitions in a module
@@ -8,7 +10,6 @@ Usage:
     kb-query thms <MODULE>           List core theorems in a module
     kb-query thms <MODULE> --extended List all theorems including extended (geometry, etc.)
     kb-query def <ID>                Look up a specific definition by ID
-    kb-query gates                   List all governance gates
     kb-query xlinks <MODULE>         List crosslinks for a module
     kb-query topics <MODULE>         List available fact topics in a module
     kb-query imagegen <section>      Get IMAGEGEN config section (use 'all' for all, 'sections' to list)
@@ -29,7 +30,6 @@ Examples:
     kb-query defs BUILDSCI
     kb-query facts BUILDSCI airflow
     kb-query def BSCI.ENCL.RVALUE
-    kb-query gates
     kb-query imgstyle junji_ito
     kb-query imgstyle list
     kb-query imgfail style_not_transferred
@@ -49,40 +49,6 @@ def get_conn():
         print(f"Error: {DB_PATH} not found. Run migrate_to_sqlite.py first.", file=sys.stderr)
         sys.exit(1)
     return sqlite3.connect(str(DB_PATH))
-
-
-_SRC_MAP_CACHE = None
-
-def _load_src_maps(conn):
-    """Load all src_map entries from modules table to identify unresolved sources."""
-    global _SRC_MAP_CACHE
-    if _SRC_MAP_CACHE is not None:
-        return _SRC_MAP_CACHE
-    _SRC_MAP_CACHE = {}
-    rows = conn.execute("SELECT id, source_map FROM modules").fetchall()
-    for mod_id, sm_json in rows:
-        if sm_json:
-            try:
-                import json
-                sm = json.loads(sm_json)
-                _SRC_MAP_CACHE.update(sm)
-            except (json.JSONDecodeError, TypeError):
-                pass
-    return _SRC_MAP_CACHE
-
-
-def _provenance_tag(source, conn=None):
-    if not source:
-        return "[T2]"
-    unresolved_markers = ("unresolved", "flagged T2", "TO_SET")
-    if any(m in source for m in unresolved_markers):
-        return "[T2]"
-    if conn is not None:
-        src_maps = _load_src_maps(conn)
-        desc = src_maps.get(source, "")
-        if any(m in desc for m in unresolved_markers):
-            return "[T2]"
-    return "[T1]"
 
 
 def _check_module_coverage(conn, terms):
@@ -119,15 +85,13 @@ def cmd_search(terms):
         matched_module = _check_module_coverage(conn, terms)
         if matched_module:
             print(f"[NO_MODULE_MATCH] Module {matched_module} covers this domain but returned no results.")
-            print(f"All outputs for this query are T2+ by default.")
         else:
             print("No results.")
         return
 
     for mod, etype, term, desc, src in results:
-        tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
-        print(f"{tier} {mod}.{etype}:{term}={desc}{src_tag}")
+        print(f"{mod}.{etype}:{term}={desc}{src_tag}")
 
 
 def cmd_defs(module):
@@ -140,8 +104,7 @@ def cmd_defs(module):
         print(f"No defs for {module}")
         return
     for did, term, desc, formal, src in rows:
-        tier = _provenance_tag(src, conn)
-        line = f"{tier} {did}:{term}={desc}" if desc else f"{tier} {did}:{term}"
+        line = f"{did}:{term}={desc}" if desc else f"{did}:{term}"
         if formal:
             line += f"|F:{formal}"
         if src:
@@ -165,9 +128,8 @@ def cmd_facts(module, topic=None):
         print(f"No facts for {module}" + (f"/{topic}" if topic else ""))
         return
     for t, name, desc, src in rows:
-        tier = _provenance_tag(src, conn)
         src_tag = f"|{src}" if src else ""
-        print(f"{tier} {t}.{name}={desc}{src_tag}")
+        print(f"{t}.{name}={desc}{src_tag}")
 
 
 def cmd_thms(module, include_extended=False):
@@ -193,8 +155,7 @@ def cmd_thms(module, include_extended=False):
             print(f"No thms for {module}")
         return
     for tid, desc, formal, src, ext in rows:
-        tier = _provenance_tag(src, conn)
-        line = f"{tier} {tid}={desc}" if desc else f"{tier} {tid}"
+        line = f"{tid}={desc}" if desc else f"{tid}"
         if formal:
             line += f"|F:{formal}"
         if src:
@@ -219,15 +180,6 @@ def cmd_def_lookup(def_id):
     if desc: print(f"Description: {desc}")
     if formal: print(f"Formal: {formal}")
     if src: print(f"Source: {src}")
-
-
-def cmd_gates():
-    conn = get_conn()
-    for gid, rule, fail, note in conn.execute("SELECT * FROM governance_gates ORDER BY id"):
-        line = f"{gid}:{rule}|fail={fail}"
-        if note:
-            line += f"|{note}"
-        print(line)
 
 
 def cmd_xlinks(module):
@@ -592,8 +544,6 @@ def main():
         cmd_thms(sys.argv[2], include_extended=extended)
     elif cmd == "def" and len(sys.argv) >= 3:
         cmd_def_lookup(sys.argv[2])
-    elif cmd == "gates":
-        cmd_gates()
     elif cmd == "xlinks" and len(sys.argv) >= 3:
         cmd_xlinks(sys.argv[2])
     elif cmd == "topics" and len(sys.argv) >= 3:

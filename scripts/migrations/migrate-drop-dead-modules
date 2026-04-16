@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Drop LOGIC/STATS/SYSTEMS/PERSONALITY/GOVERNANCE rows and dead tables
+from knowledge.db.
+
+Rationale in MANIFEST.json provenance_note: those modules' content was
+in the model's training weights (duplicative) and their gate specs had
+no runtime interpreter. The registry now carries only BUILDSCI and
+IMAGEGEN.
+
+Idempotent: safe to run multiple times. Deletes by module_id across
+every table that carries one, drops GOVERNANCE-only tables entirely."""
+
+import sqlite3
+import sys
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "brendbot" / "knowledge" / "knowledge.db"
+
+DEAD_MODULES = ("LOGIC", "STATS", "SYSTEMS", "PERSONALITY", "GOVERNANCE")
+MODULE_TABLES = (
+    "modules",
+    "definitions",
+    "facts",
+    "theorems",
+    "crosslinks",
+    "fts_knowledge",
+)
+DROP_TABLES = (
+    "governance_gates",
+    "governance_provenance",
+)
+
+if not DB_PATH.exists():
+    print(f"knowledge.db not found at {DB_PATH}", file=sys.stderr)
+    sys.exit(1)
+
+conn = sqlite3.connect(str(DB_PATH))
+
+# Delete rows keyed on module_id. The modules table uses `id` instead.
+placeholders = ",".join("?" * len(DEAD_MODULES))
+for table in MODULE_TABLES:
+    try:
+        if table == "modules":
+            col = "id"
+        else:
+            col = "module_id"
+        cursor = conn.execute(
+            f"DELETE FROM {table} WHERE {col} IN ({placeholders})",
+            DEAD_MODULES,
+        )
+        print(f"{table}: deleted {cursor.rowcount} row(s)")
+    except sqlite3.OperationalError as exc:
+        print(f"{table}: skipped ({exc})")
+
+# Drop tables that only served GOVERNANCE.json.
+for table in DROP_TABLES:
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+        print(f"{table}: dropped")
+    except sqlite3.OperationalError as exc:
+        print(f"{table}: skipped ({exc})")
+
+conn.commit()
+conn.close()
+# VACUUM must run outside a transaction; use a fresh connection with
+# isolation_level=None so we don't implicitly begin one.
+vac = sqlite3.connect(str(DB_PATH))
+vac.isolation_level = None
+vac.execute("VACUUM")
+vac.close()
+print("Done.")

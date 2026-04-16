@@ -271,7 +271,7 @@ tests/               conftest + 6 test files, 69 tests
 
 ### Knowledge
 
-**`brendbot/knowledge/`** — `knowledge.db` SQLite store + 8 source JSON files (BUILDSCI, STATS, SYSTEMS, LOGIC, PERSONALITY, GOVERNANCE, IMAGEGEN, MANIFEST). `MANIFEST.json` is the module index cached by SessionPool and injected into CLAUDE.md. `kb-query` reads with T1/T2 tier tags.
+**`brendbot/knowledge/`** — `knowledge.db` SQLite store + 3 source JSON files (BUILDSCI, IMAGEGEN, MANIFEST). `MANIFEST.json` is the module index cached by SessionPool and injected into CLAUDE.md. BUILDSCI carries building-science formulas with empirical coefficients; IMAGEGEN carries prompt style descriptors and documented failure modes. Other domains were removed in v3.0 — their content lived in the model's training weights and added no grounding value.
 
 ### Scripts
 

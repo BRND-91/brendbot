@@ -74,8 +74,10 @@ def validate_all():
             # IMAGEGEN has non-standard structure, skip ID collection
             pass
         else:
-            # Collect IDs from all known array types
-            all_ids[mod_id].update(get_array_ids(mod_data, ['defs', 'thms', 'ops', 'gates', 'protos']))
+            # Collect IDs from BUILDSCI-style arrays. ops/gates/protos
+            # were only used by the deleted PERSONALITY/GOVERNANCE modules
+            # and are no longer expected anywhere in MANIFEST.
+            all_ids[mod_id].update(get_array_ids(mod_data, ['defs', 'thms']))
 
     # Flatten all defined IDs across modules
     all_defined_ids = set()
@@ -132,27 +134,6 @@ def validate_all():
                                 ref_errors.append(
                                     f'{mod_id}: {item.get("id")}.{ref_field} -> {ref_id} (undefined)'
                                 )
-
-        # Check ops/protos triggers (PERSONALITY)
-        for arr_name in ['ops', 'protos']:
-            if arr_name in mod_data:
-                for item in mod_data[arr_name]:
-                    triggers = item.get('triggers', [])
-                    if isinstance(triggers, str):
-                        triggers = [triggers.split()[0]]  # "SYSTEMS.PAT.OVERSHOOT threshold exceeded" -> ID only
-                    for ref_id in triggers:
-                        ref_id_clean = ref_id.split()[0]  # strip prose suffixes
-                        if ref_id_clean not in all_defined_ids:
-                            ref_errors.append(
-                                f'{mod_id}: {item.get("id")}.triggers -> {ref_id_clean} (undefined)'
-                            )
-                    trigger = item.get('trigger', '')
-                    if trigger:
-                        trigger_id = trigger.split()[0]
-                        if trigger_id not in all_defined_ids:
-                            ref_errors.append(
-                                f'{mod_id}: {item.get("id")}.trigger -> {trigger_id} (undefined)'
-                            )
 
         # Check xlinks (from/fr and to — to is a list)
         if 'xlinks' in mod_data:

@@ -109,68 +109,13 @@ directive_starters:
   - generate
   - render
 
+# Domain keywords drive substring-matching for module routing. LOGIC,
+# STATS, SYSTEMS, PERSONALITY, GOVERNANCE blocks were removed — their
+# content lived in model training weights, not in out-of-distribution
+# module data. Keeping keyword blocks for those domains would match
+# messages to nonexistent modules. BUILDSCI and IMAGEGEN remain because
+# both carry genuinely OOD material the model cannot reproduce from weights.
 domains:
-  LOGIC:
-    - logic
-    - argument
-    - proof
-    - valid
-    - premise
-    - conclusion
-    - inference
-    - reasoning
-    - deduction
-    - induction
-    - theorem
-    - proposition
-    - syllogism
-    - formal language
-    - predicate
-  STATS:
-    - probability
-    - statistics
-    - distribution
-    - bayesian
-    - random variable
-    - variance
-    - likelihood
-    - confidence interval
-    - regression
-    - correlation
-    - bayes
-    - bernoulli
-    - normal distribution
-    - standard deviation
-  SYSTEMS:
-    - systems thinking
-    - feedback loop
-    - feedback
-    - tipping point
-    - oscillation
-    - overshoot
-    - stocks and flows
-    - emergence
-    - complexity
-    - pareto
-    - ashby
-    - goodhart
-    - diminishing returns
-    - delay
-    - leadership
-    - servant leadership
-    - situational leadership
-    - emotional intelligence
-    - forrester
-  PERSONALITY:
-    - empathy
-    - interpersonal
-    - mediation
-    - therapy
-    - group dynamics
-    - respect
-    - boundary
-    - calibrate
-    - risk gate
   BUILDSCI:
     - building science
     - insulation

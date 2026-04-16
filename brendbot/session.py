@@ -592,12 +592,7 @@ class Session:
         # the response text before extract_branch_tag strips and logs.
         self._turn_bypass_pending: bool = False
         self._MODULE_EMOTES: dict[str, str] = {
-            "LOGIC":       "🔣",
-            "STATS":       "📊",
-            "SYSTEMS":     "⚙️",
-            "PERSONALITY": "🫀",
             "BUILDSCI":    "🏗️",
-            "GOVERNANCE":  "⚖️",
             "IMAGEGEN":    "🎨",
         }
         self._NEUTRAL_EMOTE = "⬛"
@@ -2183,10 +2178,11 @@ class SessionPool:
                 "Use kb-query for all knowledge lookups (~200 bytes per result).\n"
                 "Do not answer from training weights when a module is available.\n\n"
                 "## MODULE PRIORITY\n"
-                "Core modules (query first): BUILDSCI, HVAC, ENERGY, SYSTEMS, ENVELOPE.\n"
-                "Extended theorems (geometry, spatial) are available via --extended flag\n"
-                "but cost more context. Only query extended when the question explicitly\n"
-                "involves spatial reasoning, geometry proofs, or dimensional analysis."
+                "BUILDSCI covers building-science facts (insulation, HVAC, moisture,\n"
+                "enclosure, combustion). IMAGEGEN covers image-generation style and\n"
+                "failure-mode data. Anything outside those two domains is answered\n"
+                "from general knowledge — no module lookup needed, and no T1/T2\n"
+                "provenance obligation applies."
             )
         except Exception as exc:
             logger.warning("FUSED-CORE system prompt index build failed: %s", exc)

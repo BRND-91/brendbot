@@ -4,7 +4,7 @@
   "created_utc": "2026-04-09T00:00:00Z",
   "author": "BREND+brendbot",
   "desc": "Residential building science: physics, enclosure, airflow, HVAC, health, loads, materials, standards. Compressed from v2.0: stripped pure training-data defs, abbreviated field keys, tabular facts, all numerical values preserved.",
-  "deps": ["LOGIC","SYSTEMS"],
+  "deps": [],
   "src_map": {
     "BPI1100": "ANSI/BPI-1100-T-2023 Home Energy Auditing Standard",
     "BPI1200": "ANSI/BPI-1200-S-2017 Basic Analysis of Buildings",
@@ -17,109 +17,416 @@
     "IFGC-IRC2021": "IFGC/IRC Energy Appendix"
   },
   "defs": [
-    {"id":"BSCI.PHYS.LATENT_VAP","t":"LatentHeatVap","f":"970 BTU/lb @ 212°F","s":"IFGC-IRC2021"},
-    {"id":"BSCI.PHYS.LATENT_FUS","t":"LatentHeatFus","f":"144 BTU/lb @ 32°F","s":"IFGC-IRC2021"},
-    {"id":"BSCI.PHYS.COMFORT","t":"ThermalComfort","d":"4 variables: air_temp + MRT + RH + air_speed","s":"ASHRAE55"},
-    {"id":"BSCI.ENCL.RVALUE","t":"R-value","f":"R_asm = ΣR_i","s":"IRC2021.N1102.1.3"},
-    {"id":"BSCI.ENCL.AIRBR","t":"AirBarrier","d":"continuous; tested at CFM50","s":"BPI1200"},
-    {"id":"BSCI.ENCL.VAPOR","t":"VaporControl","d":"material per climate zone + drying potential; prevents interstitial condensation","s":"IRC2021.R702.7"},
-    {"id":"BSCI.ENCL.CAPBREAK","t":"CapillaryBreak","d":"material or gap interrupting capillary wicking","s":"BPI1100"},
-    {"id":"BSCI.AIR.INFILTRATION","t":"Infiltration","d":"uncontrolled outdoor air ingress via unintentional openings","s":"BPI1100"},
-    {"id":"BSCI.AIR.EXFIL","t":"Exfiltration","d":"uncontrolled conditioned air egress","s":"BPI1100"},
-    {"id":"BSCI.AIR.HRV","t":"HRV","d":"balanced mech vent; heat exchange exhaust<>supply","s":"ASHRAE62.2"},
-    {"id":"BSCI.AIR.ERV","t":"ERV","d":"balanced mech vent; heat + moisture exchange","s":"ASHRAE62.2"},
-    {"id":"BSCI.AIR.COMBAIR","t":"CombustionAir","d":"required air supply for complete combustion; sizing per IRC2021.G2407","s":"IRC2021.G2407"},
-    {"id":"BSCI.LOAD.QLOSS","t":"TransmissionLoss","f":"Q = U*A*dT","s":"ASHRAE.Fund"},
-    {"id":"BSCI.LOAD.QINFIL","t":"InfiltrationLoss","f":"Q = 1.08*CFM*dT","s":"ASHRAE.Fund"},
-    {"id":"BSCI.LOAD.SHGC","t":"SHGC","d":"fraction of incident solar radiation admitted through window","s":"IRC2021.N1102"},
-    {"id":"BSCI.LOAD.DESIGNTEMP","t":"DesignTemp","d":"indoor/outdoor temp basis for load calcs by climate zone; see IRC2021.TableR301.2(1)","s":"IRC2021"},
-    {"id":"BSCI.MATL.VAPERM","t":"VaporPermeance","d":"grains/hr*ft2*inHg; governs assembly drying capacity","s":"IRC2021.R202"},
-    {"id":"BSCI.HVAC.AFUE","t":"AFUE","d":"annual heat output / annual fuel energy input","s":"BPI1100"},
-    {"id":"BSCI.HVAC.SEER","t":"SEER","d":"seasonal cooling BTU / electrical Wh","s":"BPI1100"},
-    {"id":"BSCI.HVAC.EF","t":"EF","d":"useful energy delivered / total energy consumed (water heater)","s":"BPI1100"},
-    {"id":"BSCI.HVAC.HSPF","t":"HSPF","d":"heat pump heating efficiency rating","s":"BPI1100"},
-    {"id":"BSCI.LEAK.CFM50","t":"CFM50","d":"airflow (CFM) to maintain 50Pa dP across envelope; blower door","s":"BPI1200"},
-    {"id":"BSCI.LEAK.ACH50","t":"ACH50","f":"ACH50 = (CFM50*60)/V_cond","s":"BPI1200"},
-    {"id":"BSCI.LEAK.ACHn","t":"ACHn","d":"natural ACH under normal pressure; derived from ACH50/N-factor","s":"BPI1200"},
-    {"id":"BSCI.ECON.SIR","t":"SIR","f":"SIR = PV(savings)/cost; cost-effective if >=1.0","s":"BPI2400"},
-    {"id":"BSCI.ECON.PAYBACK","t":"Payback","f":"Payback = cost/annual_savings (years)","s":"BPI2400"},
-    {"id":"BSCI.HLTH.CO","t":"CO","d":"colorless/odorless; toxic at low concentration; incomplete combustion byproduct","s":"BPI1100"},
-    {"id":"BSCI.HLTH.RADON","t":"Radon","d":"radioactive; uranium decay in soil; accumulates low areas; primary indoor carcinogen","s":"BPI1100"},
-    {"id":"BSCI.HLTH.BACKDRAFT","t":"Backdrafting","d":"flue gas flow reversal; combustion products enter living space","s":"BPI1200"}
+    {
+      "id": "BSCI.PHYS.LATENT_VAP",
+      "t": "LatentHeatVap",
+      "f": "970 BTU/lb @ 212\u00b0F",
+      "s": "IFGC-IRC2021"
+    },
+    {
+      "id": "BSCI.PHYS.LATENT_FUS",
+      "t": "LatentHeatFus",
+      "f": "144 BTU/lb @ 32\u00b0F",
+      "s": "IFGC-IRC2021"
+    },
+    {
+      "id": "BSCI.PHYS.COMFORT",
+      "t": "ThermalComfort",
+      "d": "4 variables: air_temp + MRT + RH + air_speed",
+      "s": "ASHRAE55"
+    },
+    {
+      "id": "BSCI.ENCL.RVALUE",
+      "t": "R-value",
+      "f": "R_asm = \u03a3R_i",
+      "s": "IRC2021.N1102.1.3"
+    },
+    {
+      "id": "BSCI.ENCL.AIRBR",
+      "t": "AirBarrier",
+      "d": "continuous; tested at CFM50",
+      "s": "BPI1200"
+    },
+    {
+      "id": "BSCI.ENCL.VAPOR",
+      "t": "VaporControl",
+      "d": "material per climate zone + drying potential; prevents interstitial condensation",
+      "s": "IRC2021.R702.7"
+    },
+    {
+      "id": "BSCI.ENCL.CAPBREAK",
+      "t": "CapillaryBreak",
+      "d": "material or gap interrupting capillary wicking",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.AIR.INFILTRATION",
+      "t": "Infiltration",
+      "d": "uncontrolled outdoor air ingress via unintentional openings",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.AIR.EXFIL",
+      "t": "Exfiltration",
+      "d": "uncontrolled conditioned air egress",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.AIR.HRV",
+      "t": "HRV",
+      "d": "balanced mech vent; heat exchange exhaust<>supply",
+      "s": "ASHRAE62.2"
+    },
+    {
+      "id": "BSCI.AIR.ERV",
+      "t": "ERV",
+      "d": "balanced mech vent; heat + moisture exchange",
+      "s": "ASHRAE62.2"
+    },
+    {
+      "id": "BSCI.AIR.COMBAIR",
+      "t": "CombustionAir",
+      "d": "required air supply for complete combustion; sizing per IRC2021.G2407",
+      "s": "IRC2021.G2407"
+    },
+    {
+      "id": "BSCI.LOAD.QLOSS",
+      "t": "TransmissionLoss",
+      "f": "Q = U*A*dT",
+      "s": "ASHRAE.Fund"
+    },
+    {
+      "id": "BSCI.LOAD.QINFIL",
+      "t": "InfiltrationLoss",
+      "f": "Q = 1.08*CFM*dT",
+      "s": "ASHRAE.Fund"
+    },
+    {
+      "id": "BSCI.LOAD.SHGC",
+      "t": "SHGC",
+      "d": "fraction of incident solar radiation admitted through window",
+      "s": "IRC2021.N1102"
+    },
+    {
+      "id": "BSCI.LOAD.DESIGNTEMP",
+      "t": "DesignTemp",
+      "d": "indoor/outdoor temp basis for load calcs by climate zone; see IRC2021.TableR301.2(1)",
+      "s": "IRC2021"
+    },
+    {
+      "id": "BSCI.MATL.VAPERM",
+      "t": "VaporPermeance",
+      "d": "grains/hr*ft2*inHg; governs assembly drying capacity",
+      "s": "IRC2021.R202"
+    },
+    {
+      "id": "BSCI.HVAC.AFUE",
+      "t": "AFUE",
+      "d": "annual heat output / annual fuel energy input",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.HVAC.SEER",
+      "t": "SEER",
+      "d": "seasonal cooling BTU / electrical Wh",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.HVAC.EF",
+      "t": "EF",
+      "d": "useful energy delivered / total energy consumed (water heater)",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.HVAC.HSPF",
+      "t": "HSPF",
+      "d": "heat pump heating efficiency rating",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.LEAK.CFM50",
+      "t": "CFM50",
+      "d": "airflow (CFM) to maintain 50Pa dP across envelope; blower door",
+      "s": "BPI1200"
+    },
+    {
+      "id": "BSCI.LEAK.ACH50",
+      "t": "ACH50",
+      "f": "ACH50 = (CFM50*60)/V_cond",
+      "s": "BPI1200"
+    },
+    {
+      "id": "BSCI.LEAK.ACHn",
+      "t": "ACHn",
+      "d": "natural ACH under normal pressure; derived from ACH50/N-factor",
+      "s": "BPI1200"
+    },
+    {
+      "id": "BSCI.ECON.SIR",
+      "t": "SIR",
+      "f": "SIR = PV(savings)/cost; cost-effective if >=1.0",
+      "s": "BPI2400"
+    },
+    {
+      "id": "BSCI.ECON.PAYBACK",
+      "t": "Payback",
+      "f": "Payback = cost/annual_savings (years)",
+      "s": "BPI2400"
+    },
+    {
+      "id": "BSCI.HLTH.CO",
+      "t": "CO",
+      "d": "colorless/odorless; toxic at low concentration; incomplete combustion byproduct",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.HLTH.RADON",
+      "t": "Radon",
+      "d": "radioactive; uranium decay in soil; accumulates low areas; primary indoor carcinogen",
+      "s": "BPI1100"
+    },
+    {
+      "id": "BSCI.HLTH.BACKDRAFT",
+      "t": "Backdrafting",
+      "d": "flue gas flow reversal; combustion products enter living space",
+      "s": "BPI1200"
+    }
   ],
   "facts": {
     "enclosure": [
-      {"n":"control_layers","d":"bulk water > air > vapor > thermal; order fixed","s":"BPI1100"},
-      {"n":"ci_vs_cavity","d":"CI outperforms equal-R cavity; eliminates thermal bridging through framing","s":"IRC2021.N1102"},
-      {"n":"vapor_class","d":"class I/II/III per climate zone and drying direction (in/out/both)","s":"IRC2021.R702.7"},
-      {"n":"drainage_plane","d":"required behind cladding for bulk water management","s":"IRC2021.R703"},
-      {"n":"insul_types","d":"batts(FG/MW), rigid(XPS/EPS/polyiso), loose-fill(cellulose/FG), spray foam(open/closed), natural fiber","s":"IRC2021"},
-      {"n":"thermal_bridging","d":"framing conducts faster than adjacent insul; CI reduces; advanced framing reduces framing fraction","s":"IRC2021.N1102"}
+      {
+        "n": "control_layers",
+        "d": "bulk water > air > vapor > thermal; order fixed",
+        "s": "BPI1100"
+      },
+      {
+        "n": "ci_vs_cavity",
+        "d": "CI outperforms equal-R cavity; eliminates thermal bridging through framing",
+        "s": "IRC2021.N1102"
+      },
+      {
+        "n": "vapor_class",
+        "d": "class I/II/III per climate zone and drying direction (in/out/both)",
+        "s": "IRC2021.R702.7"
+      },
+      {
+        "n": "drainage_plane",
+        "d": "required behind cladding for bulk water management",
+        "s": "IRC2021.R703"
+      },
+      {
+        "n": "insul_types",
+        "d": "batts(FG/MW), rigid(XPS/EPS/polyiso), loose-fill(cellulose/FG), spray foam(open/closed), natural fiber",
+        "s": "IRC2021"
+      },
+      {
+        "n": "thermal_bridging",
+        "d": "framing conducts faster than adjacent insul; CI reduces; advanced framing reduces framing fraction",
+        "s": "IRC2021.N1102"
+      }
     ],
     "airflow": [
-      {"n":"stack_effect","d":"buoyancy-driven; warm exits high, cool enters low; magnitude proportional to height*dT","s":"BPI1100"},
-      {"n":"wind_pressure","d":"positive windward, negative leeward; drives infiltration/exfiltration","s":"BPI1100"},
-      {"n":"mech_balance","d":"HRV/ERV: neutral pressure + max IAQ control + heat recovery","s":"ASHRAE62.2"},
-      {"n":"duct_leakage","d":"outside conditioned space: wastes conditioned air, depressurizes, backdraft risk","s":"BPI1200"},
-      {"n":"combair_methods","d":"unconfined space / confined with openings / direct duct exterior; size per IRC2021.G2407","s":"IRC2021.G2407"}
+      {
+        "n": "stack_effect",
+        "d": "buoyancy-driven; warm exits high, cool enters low; magnitude proportional to height*dT",
+        "s": "BPI1100"
+      },
+      {
+        "n": "wind_pressure",
+        "d": "positive windward, negative leeward; drives infiltration/exfiltration",
+        "s": "BPI1100"
+      },
+      {
+        "n": "mech_balance",
+        "d": "HRV/ERV: neutral pressure + max IAQ control + heat recovery",
+        "s": "ASHRAE62.2"
+      },
+      {
+        "n": "duct_leakage",
+        "d": "outside conditioned space: wastes conditioned air, depressurizes, backdraft risk",
+        "s": "BPI1200"
+      },
+      {
+        "n": "combair_methods",
+        "d": "unconfined space / confined with openings / direct duct exterior; size per IRC2021.G2407",
+        "s": "IRC2021.G2407"
+      }
     ],
     "hvac_heat": [
-      {"n":"combustion_types","d":"atmospheric ~60% AFUE -> induced draft -> condensing >95% AFUE","s":"BPI1100"},
-      {"n":"hp_advantage","d":"COP 2-4; 200-400% vs resistance heat","s":"BPI1100"},
-      {"n":"distribution_losses","d":"duct/pipe/steam trap losses reduce delivered eff below equipment eff","s":"BPI1100"},
-      {"n":"co_risk","d":"CO increases: restricted combair, cracked HX, blocked flue, improper burner","s":"BPI1200"}
+      {
+        "n": "combustion_types",
+        "d": "atmospheric ~60% AFUE -> induced draft -> condensing >95% AFUE",
+        "s": "BPI1100"
+      },
+      {
+        "n": "hp_advantage",
+        "d": "COP 2-4; 200-400% vs resistance heat",
+        "s": "BPI1100"
+      },
+      {
+        "n": "distribution_losses",
+        "d": "duct/pipe/steam trap losses reduce delivered eff below equipment eff",
+        "s": "BPI1100"
+      },
+      {
+        "n": "co_risk",
+        "d": "CO increases: restricted combair, cracked HX, blocked flue, improper burner",
+        "s": "BPI1200"
+      }
     ],
     "hvac_cool": [
-      {"n":"cooling_sizing","d":"oversized -> short-cycle -> inadequate dehumidification; Manual J required","s":"BPI1100"},
-      {"n":"seer_vs_eer","d":"SEER=seasonal avg; EER=single-point 95F outdoor; both matter","s":"BPI1100"},
-      {"n":"minisplit","d":"ductless eliminates duct losses; inverter-driven modulates to match load","s":"BPI1100"},
-      {"n":"passive_cool","d":"natural vent, ceiling fans, radiant barrier, exterior shading, high-albedo roof","s":"BPI1100"}
+      {
+        "n": "cooling_sizing",
+        "d": "oversized -> short-cycle -> inadequate dehumidification; Manual J required",
+        "s": "BPI1100"
+      },
+      {
+        "n": "seer_vs_eer",
+        "d": "SEER=seasonal avg; EER=single-point 95F outdoor; both matter",
+        "s": "BPI1100"
+      },
+      {
+        "n": "minisplit",
+        "d": "ductless eliminates duct losses; inverter-driven modulates to match load",
+        "s": "BPI1100"
+      },
+      {
+        "n": "passive_cool",
+        "d": "natural vent, ceiling fans, radiant barrier, exterior shading, high-albedo roof",
+        "s": "BPI1100"
+      }
     ],
     "hvac_dhw": [
-      {"n":"standby_loss","d":"storage tank: continuous loss proportional to dT(stored water, surrounding air)","s":"BPI1100"},
-      {"n":"hpwh","d":"60-75% less energy than electric resistance; best option all-electric","s":"BPI1100"},
-      {"n":"tankless","d":"eliminates standby loss; requires high gas/elec capacity; sizing critical","s":"BPI1100"}
+      {
+        "n": "standby_loss",
+        "d": "storage tank: continuous loss proportional to dT(stored water, surrounding air)",
+        "s": "BPI1100"
+      },
+      {
+        "n": "hpwh",
+        "d": "60-75% less energy than electric resistance; best option all-electric",
+        "s": "BPI1100"
+      },
+      {
+        "n": "tankless",
+        "d": "eliminates standby loss; requires high gas/elec capacity; sizing critical",
+        "s": "BPI1100"
+      }
     ],
     "health_iaq": [
-      {"n":"co_detect","d":"IRC2021.R315; near sleeping areas; action at 70ppm sustained","s":"IRC2021.R315"},
-      {"n":"radon_mit","d":"SSD primary method; target <4 pCi/L; test before+after","s":"BPI1100"},
-      {"n":"mold","d":"requires >70% RH sustained at surface; control: air seal + vent + vapor mgmt","s":"BPI1100"},
-      {"n":"ashrae_622","d":"min vent: 0.01 CFM/ft2 + 7.5 CFM/person","s":"ASHRAE62.2"},
-      {"n":"voc","d":"sources: adhesives, paints, flooring, furnishings, cleaners; mitigation: source reduction + dilution vent","s":"BPI1100"}
+      {
+        "n": "co_detect",
+        "d": "IRC2021.R315; near sleeping areas; action at 70ppm sustained",
+        "s": "IRC2021.R315"
+      },
+      {
+        "n": "radon_mit",
+        "d": "SSD primary method; target <4 pCi/L; test before+after",
+        "s": "BPI1100"
+      },
+      {
+        "n": "mold",
+        "d": "requires >70% RH sustained at surface; control: air seal + vent + vapor mgmt",
+        "s": "BPI1100"
+      },
+      {
+        "n": "ashrae_622",
+        "d": "min vent: 0.01 CFM/ft2 + 7.5 CFM/person",
+        "s": "ASHRAE62.2"
+      },
+      {
+        "n": "voc",
+        "d": "sources: adhesives, paints, flooring, furnishings, cleaners; mitigation: source reduction + dilution vent",
+        "s": "BPI1100"
+      }
     ],
     "fenestration": [
-      {"n":"ufactor","d":"overall heat transfer coeff; BTU/hr*ft2*F or W/m2K; lower=better","s":"IRC2021.N1102"},
-      {"n":"shgc_climate","d":"high SHGC: heating climate (passive solar gains); low SHGC: cooling climate","s":"IRC2021.N1102"},
-      {"n":"vt","d":"fraction visible light transmitted; higher=more daylight","s":"IRC2021.N1102"},
-      {"n":"window_air_leakage","d":"CFM/ft frame perimeter @ 0.3in WG; max 0.3 CFM/ft per IRC2021","s":"IRC2021.N1102"}
+      {
+        "n": "ufactor",
+        "d": "overall heat transfer coeff; BTU/hr*ft2*F or W/m2K; lower=better",
+        "s": "IRC2021.N1102"
+      },
+      {
+        "n": "shgc_climate",
+        "d": "high SHGC: heating climate (passive solar gains); low SHGC: cooling climate",
+        "s": "IRC2021.N1102"
+      },
+      {
+        "n": "vt",
+        "d": "fraction visible light transmitted; higher=more daylight",
+        "s": "IRC2021.N1102"
+      },
+      {
+        "n": "window_air_leakage",
+        "d": "CFM/ft frame perimeter @ 0.3in WG; max 0.3 CFM/ft per IRC2021",
+        "s": "IRC2021.N1102"
+      }
     ],
     "standards": [
-      {"n":"IRC2021","d":"base residential code; energy in Chapter N"},
-      {"n":"BPI1100","d":"ANSI/BPI-1100-T-2023: Home Energy Auditing Standard"},
-      {"n":"BPI1200","d":"ANSI/BPI-1200-S-2017: Basic Analysis of Buildings"},
-      {"n":"BPI2400","d":"ANSI/BPI-2400-S-2015: Savings Predictions; SIR/NPV/uncertainty"},
-      {"n":"ASHRAE62.2","d":"Ventilation and IAQ in Residential Buildings"},
-      {"n":"IECC2021","d":"min energy efficiency requirements by climate zone"}
+      {
+        "n": "IRC2021",
+        "d": "base residential code; energy in Chapter N"
+      },
+      {
+        "n": "BPI1100",
+        "d": "ANSI/BPI-1100-T-2023: Home Energy Auditing Standard"
+      },
+      {
+        "n": "BPI1200",
+        "d": "ANSI/BPI-1200-S-2017: Basic Analysis of Buildings"
+      },
+      {
+        "n": "BPI2400",
+        "d": "ANSI/BPI-2400-S-2015: Savings Predictions; SIR/NPV/uncertainty"
+      },
+      {
+        "n": "ASHRAE62.2",
+        "d": "Ventilation and IAQ in Residential Buildings"
+      },
+      {
+        "n": "IECC2021",
+        "d": "min energy efficiency requirements by climate zone"
+      }
     ]
   },
   "thms": [
-    {"id":"th.ua_delta_t","f":"Q = U*A*dT","s":"ASHRAE.Fund"},
-    {"id":"th.infiltration_load","f":"Q = 1.08*CFM*dT; 1.08 = 0.018 BTU/ft3*F * 60 min/hr","s":"ASHRAE.Fund"},
-    {"id":"th.ach50_to_achn","f":"ACHn ~= ACH50/N; N=17-20 residential","s":"BPI1200"},
-    {"id":"th.sir_criterion","f":"SIR = PV(savings)/cost >= 1.0 -> cost-effective","s":"BPI2400"},
-    {"id":"th.overshoot_hvac","d":"oversized cooling: capacity>load -> short-cycle -> runtime too brief for dehumidification -> latent overshoot","s":"BPI1100"},
-    {"id":"th.stack_magnitude","f":"dP_stack(Pa) ~= 0.0342*h*(1/T_out - 1/T_in); h=height(m), T=Kelvin","s":"ASHRAE.Fund"},
-    {"id":"th.co_backdraft","d":"indoor pressure < appliance spillage point -> flue gas reversal -> CO in living space","s":"BPI1200"}
+    {
+      "id": "th.ua_delta_t",
+      "f": "Q = U*A*dT",
+      "s": "ASHRAE.Fund"
+    },
+    {
+      "id": "th.infiltration_load",
+      "f": "Q = 1.08*CFM*dT; 1.08 = 0.018 BTU/ft3*F * 60 min/hr",
+      "s": "ASHRAE.Fund"
+    },
+    {
+      "id": "th.ach50_to_achn",
+      "f": "ACHn ~= ACH50/N; N=17-20 residential",
+      "s": "BPI1200"
+    },
+    {
+      "id": "th.sir_criterion",
+      "f": "SIR = PV(savings)/cost >= 1.0 -> cost-effective",
+      "s": "BPI2400"
+    },
+    {
+      "id": "th.overshoot_hvac",
+      "d": "oversized cooling: capacity>load -> short-cycle -> runtime too brief for dehumidification -> latent overshoot",
+      "s": "BPI1100"
+    },
+    {
+      "id": "th.stack_magnitude",
+      "f": "dP_stack(Pa) ~= 0.0342*h*(1/T_out - 1/T_in); h=height(m), T=Kelvin",
+      "s": "ASHRAE.Fund"
+    },
+    {
+      "id": "th.co_backdraft",
+      "d": "indoor pressure < appliance spillage point -> flue gas reversal -> CO in living space",
+      "s": "BPI1200"
+    }
   ],
-  "xlinks": [
-    {"fr":"BSCI.ENCL.AIRBR","to":["SYSTEMS.FOUND.BOUNDARY"],"ty":"analogous","nt":"air barrier = physical system boundary"},
-    {"fr":"BSCI.HVAC.SEER","to":["SYSTEMS.RULE.DIMRET"],"ty":"instantiates","nt":"efficiency ratings: diminishing returns with investment"},
-    {"fr":"BSCI.LEAK.ACH50","to":["LOGIC.SYN.FNSYMB"],"ty":"uses","nt":"fn(CFM50,V)"},
-    {"fr":"BSCI.ECON.SIR","to":["STATS.DIST.BAYES"],"ty":"supports","nt":"SIR under uncertainty benefits from Bayesian updating"},
-    {"fr":"BSCI.LOAD.QLOSS","to":["LOGIC.SYN.FNSYMB"],"ty":"uses","nt":"Q=U*A*dT = 3-arg fn"},
-    {"fr":"BSCI.AIR.INFILTRATION","to":["SYSTEMS.FOUND.STOCKS"],"ty":"instantiates","nt":"IAQ as stock depleted by infiltration, replenished by vent"},
-    {"fr":"BSCI.HLTH.BACKDRAFT","to":["SYSTEMS.PAT.OVERSHOOT"],"ty":"instantiates","nt":"depressurization exceeds appliance tolerance -> irreversible spillage"}
-  ],
+  "xlinks": [],
   "prov": {
     "v": "v3.0",
     "basis": "Compressed from v2.0. Stripped: pure training-data physics defs (1LAW, 2LAW, ENERGY, COND, CONV, RAD, HYGRO, EMITT, THERMASS). Abbreviated field keys (t/d/s/f/n). Tabular facts. All numerical values preserved. hash: recompute required."

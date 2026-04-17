@@ -497,7 +497,11 @@ def _score_message(
 
     last_spoke = _channel_last_spoke.get(channel_id, 0.0)
     recency_active = time.time() - last_spoke < RECENCY_WINDOW_SECONDS
-    if recency_active and word_count >= 3:
+    if recency_active:
+        # word_count gate removed 2026-04-16: short follow-ups in an active
+        # thread ("yeah?", "how?") should still clear the floor because the
+        # bot is already expected to be present. Bare noise tokens are still
+        # filtered by the noise_tokens early-return above.
         result.score += _SCORE_RECENCY
 
     # Follow-up after bot tool use: same user, within window, gets a boost.
@@ -540,7 +544,10 @@ def _score_message(
                     result.score += _SCORE_DOMAIN_CTX
                     domain_scored = True
 
-    if recency_active and word_count >= 3:
+    if recency_active:
+        # word_count gate removed 2026-04-16: a short conversational follow-up
+        # ("how?", "why not?") in an active thread is exactly the case where
+        # the bot should engage, not the case to filter.
         is_conversational = (
             text_lower.endswith("?")
             or any(text_lower.startswith(s) for s in _QUESTION_STARTERS)

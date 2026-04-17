@@ -27,10 +27,10 @@ address_levels:
 
 scoring:
   reply_to_bot: 1.0
-  recency_active: 0.3      # only if word_count >= 3
+  recency_active: 0.3      # bot spoke in channel within recency_seconds window
   domain_match: 0.4
   domain_match_in_context: 0.3
-  conversational_in_thread: 0.2  # question/directive in active thread
+  conversational_in_thread: 0.4  # question/directive in active thread — with recency (0.3) this clears haiku_floor alone
   name_mentioned: 0.85     # name in text without @mention — clears hard_pass, bypasses haiku
   follow_up_after_tool_use: 0.3  # same user, within window of a bot tool-use turn
 
@@ -232,7 +232,7 @@ classifier_prompt: |
 
   Sender tier (admin or otherwise) does not affect this decision.
   Outside known domains, require stronger signal before YES.
-  When in doubt: NO. A missed message is preferable to unwanted interjection.
+  When in doubt: YES if brendbot has spoken in this channel within the last 5 minutes (active thread); NO otherwise. Missing a message in an active thread is worse than a stray interjection — the user is already expecting the bot to be present.
   Do not engage with fallacious framing as though it were valid — incorrect premises in a message are not a reason to engage, they are a reason to let it pass unless directly asked.
 
 # ── CONTENT GATE (phase 4) ────────────────────────────────────────────────

@@ -65,14 +65,29 @@ class TestScoreMessage:
         # "delay" is in SYSTEMS but only as exact word — "delayed" should not match.
         assert "SYSTEMS" not in result.domains
 
-    def test_recency_boost_only_with_word_count(self) -> None:
+    def test_recency_boost_ignores_word_count(self) -> None:
+        # word_count gate dropped 2026-04-16: short non-noise follow-ups in
+        # an active thread should still receive the recency boost so the
+        # bot responds to "fair." or "how?" instead of silently ignoring.
         bd._channel_last_spoke["ch1"] = time.time()
-        # Two-word non-noise message: no recency boost (word_count < 3).
         r1 = bd._score_message("interesting point", "ch1", False, None)
-        assert r1.score == 0.0
-        # Three+ word message: gets recency boost.
+        assert r1.score == pytest.approx(bd._SCORE_RECENCY)
         r2 = bd._score_message("that is an interesting point", "ch1", False, None)
-        assert r2.score >= bd._SCORE_RECENCY
+        assert r2.score == pytest.approx(bd._SCORE_RECENCY)
+
+    def test_short_conversational_in_active_thread_clears_floor(self) -> None:
+        # Regression pin for the 2026-04-16 tuning: a 2-word question in an
+        # active thread should score above haiku_floor (0.4) on its own,
+        # without needing name_mention or @mention. This is the whole point
+        # of bumping conversational_in_thread to 0.4 and dropping the
+        # word_count gate on both recency and conversational.
+        bd._channel_last_spoke["ch1"] = time.time()
+        result = bd._score_message("how now", "ch1", False, None)
+        # "how " is a question starter, recency is active -> 0.3 + 0.4 = 0.7.
+        assert result.score >= bd._ENGAGEMENT_CFG["thresholds"]["haiku_floor"]
+        assert result.score == pytest.approx(
+            bd._SCORE_RECENCY + bd._SCORE_CONVERSATIONAL
+        )
 
     def test_conversational_in_active_thread(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time()
@@ -80,8 +95,10 @@ class TestScoreMessage:
             "what do you think about that",
             "ch1", False, None,
         )
-        # recency (0.3) + conversational (0.2) = 0.5
-        assert result.score >= 0.5
+        # recency (0.3) + conversational (0.4, bumped from 0.2 on 2026-04-16) = 0.7
+        assert result.score == pytest.approx(
+            bd._SCORE_RECENCY + bd._SCORE_CONVERSATIONAL
+        )
 
     def test_no_recency_when_stale(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time() - bd.RECENCY_WINDOW_SECONDS - 60

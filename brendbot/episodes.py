@@ -33,6 +33,23 @@ DB_PATH = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 
 _RETENTION_PER_CHANNEL = 50
 
+
+def _open(db: Path) -> sqlite3.Connection:
+    """Open a connection against `db` with the concurrency pragmas applied.
+
+    WAL mode allows concurrent readers alongside a single writer, busy_timeout
+    tells SQLite to wait (rather than raise OperationalError) when another
+    connection holds the write lock, and synchronous=NORMAL is the correct
+    durability tier under WAL. Pragma application is idempotent — WAL is a
+    database-level mode, busy_timeout and synchronous are per-connection and
+    re-applied every open.
+    """
+    conn = sqlite3.connect(db, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
 # Entity extraction: pull capitalized words and quoted strings from turn
 # log text. Cheap, no LLM. Tuned for Discord chat — common nouns slip
 # through but the retrieval scorer is forgiving.
@@ -97,7 +114,7 @@ def write_episode(
     turn_count = len(turn_log)
 
     try:
-        conn = sqlite3.connect(db)
+        conn = _open(db)
         cur = conn.cursor()
         cur.execute(
             """
@@ -155,7 +172,7 @@ def query_episodes(
         return []
 
     try:
-        conn = sqlite3.connect(db)
+        conn = _open(db)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 

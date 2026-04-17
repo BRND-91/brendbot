@@ -77,8 +77,17 @@ _MIGRATE_SQL = "ALTER TABLE user_registry ADD COLUMN guild_ids TEXT DEFAULT ''"
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout=5.0 mirrors the busy_timeout PRAGMA below at the DBAPI layer,
+    # so a contended lock waits rather than raising OperationalError
+    # immediately. WAL + synchronous=NORMAL lets readers proceed alongside a
+    # single writer and trims fsync cost; all three pragmas are safe to
+    # re-apply on every open (WAL is a DB-level mode, the others are
+    # per-connection).
+    conn = sqlite3.connect(str(DB_PATH), timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(_CREATE_SQL)
     try:
         conn.execute(_MIGRATE_SQL)

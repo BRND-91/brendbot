@@ -20,6 +20,11 @@ brendbot/google-cloud-sdk/
 # SQLite knowledge DB (rebuilt from JSON via migrate_to_sqlite.py)
 brendbot/knowledge/knowledge.db
 brendbot/knowledge/knowledge.db-journal
+# WAL-mode sidecar files (created when journal_mode=WAL)
+brendbot/knowledge/knowledge.db-wal
+brendbot/knowledge/knowledge.db-shm
+*.db-wal
+*.db-shm
 
 # Energy Modeling working files (future project, not bot source)
 brendbot/knowledge/Energy*.xlsx

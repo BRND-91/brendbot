@@ -280,7 +280,11 @@ content_gate:
     flag_threshold: 1.5
     refuse_threshold: 2.0   # > flag_threshold; opens (1.5, 2.0] band for FLAG reroute
   flagged_path:
-    model: claude-sonnet-4-20250514
+    # Review quarterly — a date-stamped model string silently degrades as
+    # the Anthropic roster rolls forward. Pinned to the rolling alias
+    # (claude-sonnet-4-6) rather than a dated snapshot so capability tracks
+    # current production sonnet without a manual bump.
+    model: claude-sonnet-4-6
     max_per_session: 2
     audit_stream: flag_audit.jsonl
     branch_tag: "[flagged]"

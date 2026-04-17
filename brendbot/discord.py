@@ -363,6 +363,7 @@ _SCORE_DOMAIN_CTX: float = 0.0
 _SCORE_CONVERSATIONAL: float = 0.0
 _SCORE_FOLLOW_UP: float = 0.0
 SCORE_NAME_MENTIONED: float = 0.0
+SCORE_AT_MENTION: float = 0.0
 _NOISE_TOKENS: frozenset = frozenset()
 _QUESTION_STARTERS: tuple = ()
 _DIRECTIVE_STARTERS: tuple = ()
@@ -389,7 +390,7 @@ def _apply_engagement_constants(cfg: dict) -> None:
     global FOLLOW_UP_WINDOW_SECONDS, _ADDRESS_HIGH, _ADDRESS_MODERATE
     global _SCORE_REPLY_TO_BOT, _SCORE_RECENCY, _SCORE_DOMAIN
     global _SCORE_DOMAIN_CTX, _SCORE_CONVERSATIONAL, _SCORE_FOLLOW_UP
-    global SCORE_NAME_MENTIONED, _NOISE_TOKENS
+    global SCORE_NAME_MENTIONED, SCORE_AT_MENTION, _NOISE_TOKENS
     global _QUESTION_STARTERS, _DIRECTIVE_STARTERS
     global DOMAIN_PATTERN, KEYWORD_TO_MODULE
 
@@ -406,6 +407,10 @@ def _apply_engagement_constants(cfg: dict) -> None:
     _SCORE_CONVERSATIONAL = float(cfg["scoring"]["conversational_in_thread"])
     _SCORE_FOLLOW_UP = float(cfg["scoring"].get("follow_up_after_tool_use", 0.3))
     SCORE_NAME_MENTIONED = float(cfg["scoring"]["name_mentioned"])
+    # Default to 0.5 if yaml predates 2026-04-16 @mention downgrade; the
+    # bypass was 1.0-equivalent ("address high, skip haiku"), 0.5 reroutes
+    # @mention into the haiku moderate band without being a hard-pass.
+    SCORE_AT_MENTION = float(cfg["scoring"].get("at_mention", 0.5))
     _NOISE_TOKENS = frozenset(cfg["noise_tokens"])
     _QUESTION_STARTERS = tuple(cfg["question_starters"])
     _DIRECTIVE_STARTERS = tuple(cfg["directive_starters"])
@@ -450,15 +455,29 @@ def _classify_address(
 ) -> str:
     """Map score → address level.
 
-    @mention or name-mention is always high regardless of score.
-    Name-mentions (brend/brendan/brendbot matched by _NAME_PATTERN)
-    carry the same address-level weight as a direct @mention because
-    a user typing the bot's name is explicitly directing conversation
-    at it and deserves full tool-budget engagement.
+    Name-mention is always high regardless of score — typing the bot's
+    name is an explicit commit to a response-worthy turn.
+
+    @mention is NOT an unconditional high (changed 2026-04-16). feedback_events
+    data shows P(good|@mention) = 3/17 = 0.18: @mention alone is a weak-to-
+    negative signal, dominated by adversarial calibration prompts from the
+    admin. The score itself determines the level now, with @mention acting
+    only as a moderate-floor safeguard so an @mention can't drop to "low".
+
+    Score-derived bands (no mention boost):
+      score >= _ADDRESS_HIGH      → high
+      score >= _ADDRESS_MODERATE  → moderate
+      otherwise                    → low, unless is_at_mention (→ moderate)
     """
-    if is_at_mention or is_name_mention or score >= _ADDRESS_HIGH:
+    if is_name_mention or score >= _ADDRESS_HIGH:
         return "high"
     if score >= _ADDRESS_MODERATE:
+        return "moderate"
+    if is_at_mention:
+        # @mention alone with no other scoring signal still deserves at
+        # least moderate — the user pointed at the bot, even if the
+        # message content is weak. This prevents hard-drop on bare
+        # "@brendbot?" while routing it through haiku as the data wants.
         return "moderate"
     return "low"
 
@@ -815,59 +834,63 @@ class DiscordListener:
             final_score: float | None = None  # set in guild path; None in DMs
 
             if message.guild:
-                # ── Name-triggered path ───────────────────────────────────────
-                # Direct @mention: hard pass — the bot was explicitly addressed.
-                # Name mention (brend/brendbot in text): routes through scoring +
-                # haiku gating same as ambient. Name is a hint, not a guarantee.
+                # ── Scored engagement path ────────────────────────────────
+                # All guild messages go through the same scoring pipeline.
+                #
+                # 2026-04-16 downgrade: @mention is NO LONGER a hard-pass
+                # bypass. feedback_events analysis (P(good|@mention)=3/17=0.18)
+                # showed the old hard-pass was routing adversarial calibration
+                # prompts straight to generation. @mention is now a scored
+                # boost (SCORE_AT_MENTION, default 0.5) that combines with
+                # other signals: legitimate @mention + reply / domain match
+                # / active-thread conversation still clears hard_pass;
+                # bare @mention alone lands in the haiku moderate band
+                # where ambiguity classification filters the noise.
+                #
+                # Name mention (brend/brendbot in text without @) stays
+                # at SCORE_NAME_MENTIONED=0.85 → hard_pass, because it
+                # correlates with directed conversation historically.
+                reply_to_bot = (
+                    reply_ref is not None
+                    and str(reply_ref.author.id) == self.bot_id
+                )
+
+                engage_result = _score_message(
+                    text,
+                    channel_id,
+                    reply_to_bot,
+                    recent_context=context_snapshot,
+                    sender_id=str(message.author.id),
+                )
+                if name_mentioned:
+                    engage_result.score += SCORE_NAME_MENTIONED
                 if mentioned:
+                    engage_result.score += SCORE_AT_MENTION
+
+                matched_domains = engage_result.domains
+                matched_context_domains = engage_result.context_domains
+                address_level = _classify_address(
+                    engage_result.score,
+                    is_at_mention=mentioned,
+                    is_name_mention=name_mentioned,
+                )
+                final_score = engage_result.score
+
+                if engage_result.score >= ENGAGE_HARD_PASS:
                     heuristic_pass = True
                     use_haiku = False
-                    # @mention is unconditionally high address regardless of score.
-                    address_level = "high"
-                    matched_domains = set()
-                    # Score not computed on @mention path; use sentinel so the
-                    # feedback log can distinguish "mention bypass" from
-                    # "scored 0" at audit time.
-                    final_score = None
+                elif engage_result.score >= ENGAGE_THRESHOLD:
+                    heuristic_pass = False
+                    use_haiku = True  # ambiguous middle — haiku classifier decides
+                elif mentioned:
+                    # Floor for bare @mention with no other signal: always
+                    # route to haiku rather than hard-drop. The user did
+                    # point at the bot, even if nothing else scored.
+                    heuristic_pass = False
+                    use_haiku = True
                 else:
-                    # ── Ambient path — reply-chain + heuristic scoring ────────
-                    # Name-mentioned messages enter here and are scored normally.
-                    reply_to_bot = (
-                        reply_ref is not None
-                        and str(reply_ref.author.id) == self.bot_id
-                    )
-
-                    engage_result = _score_message(
-                        text,
-                        channel_id,
-                        reply_to_bot,
-                        recent_context=context_snapshot,
-                        sender_id=str(message.author.id),
-                    )
-                    # Name mention boosts score — sufficient signal that the message
-                    # is directed at the bot, but not a bypass. Boost magnitude
-                    # comes from engagement.yaml (SCORE_NAME_MENTIONED).
-                    if name_mentioned:
-                        engage_result.score += SCORE_NAME_MENTIONED
-
-                    matched_domains = engage_result.domains
-                    matched_context_domains = engage_result.context_domains
-                    address_level = _classify_address(
-                        engage_result.score,
-                        is_at_mention=False,
-                        is_name_mention=name_mentioned,
-                    )
-                    final_score = engage_result.score
-
-                    if engage_result.score >= ENGAGE_HARD_PASS:
-                        heuristic_pass = True
-                        use_haiku = False
-                    elif engage_result.score >= ENGAGE_THRESHOLD:
-                        heuristic_pass = False
-                        use_haiku = True  # ambiguous middle — haiku classifier decides
-                    else:
-                        heuristic_pass = False
-                        use_haiku = False  # hard drop
+                    heuristic_pass = False
+                    use_haiku = False  # hard drop
 
                 # Admin messages follow the same engagement gates as all others.
                 # Admin tier governs trust and permissions only, not engagement bypass.

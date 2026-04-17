@@ -114,9 +114,30 @@ class TestScoreMessage:
 # ── _classify_address ────────────────────────────────────────────────────
 
 class TestClassifyAddress:
-    def test_at_mention_always_high(self) -> None:
-        assert bd._classify_address(0.0, is_at_mention=True) == "high"
-        assert bd._classify_address(0.1, is_at_mention=True) == "high"
+    """2026-04-16: @mention downgraded from unconditional "high" to a
+    moderate-floor. feedback_events showed P(good|@mention) = 0.18 —
+    @mention alone is a weak/negative signal, mostly adversarial
+    calibration. Score now drives the band; @mention is a safeguard
+    that prevents hard-drop, not a hard-pass."""
+
+    def test_at_mention_low_score_is_moderate(self) -> None:
+        # @mention with no other signal: moderate floor, NOT high.
+        # This routes bare "@brendbot?" through haiku instead of bypass.
+        assert bd._classify_address(0.0, is_at_mention=True) == "moderate"
+        assert bd._classify_address(0.1, is_at_mention=True) == "moderate"
+        assert bd._classify_address(0.39, is_at_mention=True) == "moderate"
+
+    def test_at_mention_high_score_is_high(self) -> None:
+        # @mention WITH other signals clearing hard_pass stays high —
+        # score drives the level, @mention only bumps the floor.
+        assert bd._classify_address(0.85, is_at_mention=True) == "high"
+        assert bd._classify_address(1.2, is_at_mention=True) == "high"
+
+    def test_name_mention_always_high(self) -> None:
+        # Name mention in text ("hey brend") stays unconditionally high.
+        # Historically correlates with directed conversation, unchanged.
+        assert bd._classify_address(0.0, is_at_mention=False, is_name_mention=True) == "high"
+        assert bd._classify_address(0.1, is_at_mention=False, is_name_mention=True) == "high"
 
     def test_score_at_hard_pass_is_high(self) -> None:
         assert bd._classify_address(0.85, is_at_mention=False) == "high"
@@ -131,6 +152,36 @@ class TestClassifyAddress:
     def test_low_band(self) -> None:
         assert bd._classify_address(0.0, is_at_mention=False) == "low"
         assert bd._classify_address(0.39, is_at_mention=False) == "low"
+
+
+# ── At-mention scoring constant ──────────────────────────────────────────
+
+class TestAtMentionScoring:
+    """Pin the @mention downgrade from 2026-04-16. The constant lives in
+    engagement.yaml.scoring.at_mention and should be between haiku_floor
+    and hard_pass — high enough that @mention + any other signal clears
+    hard_pass, low enough that bare @mention routes to haiku."""
+
+    def test_at_mention_score_configured(self) -> None:
+        assert bd.SCORE_AT_MENTION > 0, "@mention boost must be positive"
+        assert bd.SCORE_AT_MENTION < bd.ENGAGE_HARD_PASS, (
+            "@mention alone must NOT hit hard_pass — that was the old bypass"
+        )
+
+    def test_at_mention_lands_in_haiku_band(self) -> None:
+        # @mention alone with no other signal should route to haiku,
+        # not hard-drop and not hard-pass.
+        assert bd.SCORE_AT_MENTION >= bd.ENGAGE_THRESHOLD
+
+    def test_at_mention_plus_reply_clears_hard_pass(self) -> None:
+        # Legitimate case: @brendbot in reply to a bot message should
+        # still hard-pass. reply_to_bot=1.0 + at_mention=0.5 = 1.5 ≥ 0.85.
+        assert bd.SCORE_AT_MENTION + bd._SCORE_REPLY_TO_BOT >= bd.ENGAGE_HARD_PASS
+
+    def test_at_mention_plus_domain_clears_hard_pass(self) -> None:
+        # @brendbot with a domain keyword should hard-pass.
+        # at_mention=0.5 + domain=0.4 = 0.9 ≥ 0.85.
+        assert bd.SCORE_AT_MENTION + bd._SCORE_DOMAIN >= bd.ENGAGE_HARD_PASS
 
 
 # ── Domain pattern integrity ─────────────────────────────────────────────

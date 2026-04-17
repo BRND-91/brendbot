@@ -32,6 +32,7 @@ scoring:
   domain_match_in_context: 0.3
   conversational_in_thread: 0.4  # question/directive in active thread — with recency (0.3) this clears haiku_floor alone
   name_mentioned: 0.85     # name in text without @mention — clears hard_pass, bypasses haiku
+  at_mention: 0.5          # @mention — boost only, NOT a bypass. 2026-04-16: feedback_events shows P(good|@mention)=0.18 (3/17); @mention alone is a negative signal, mostly used for calibration/adversarial prompts. Combined with reply_to_bot / domain_match / conversational-in-thread it still clears hard_pass for legitimate questions.
   follow_up_after_tool_use: 0.3  # same user, within window of a bot tool-use turn
 
 follow_up_window_seconds: 120
@@ -308,13 +309,29 @@ content_classifier_prompt: |
   response — you tag which content-safety criteria the request trips so
   the gate can route it to PASS / FLAG / REFUSE.
 
-  Return your response in this exact format, one line per tripped
-  criterion, then REASONING on a final line:
+  ## STRICT OUTPUT FORMAT
+
+  Return EXACTLY two lines. No preamble. No postamble. No code fences.
+  No markdown bold/italic. No headers. Nothing before the first line,
+  nothing after the second line.
 
     TRIGGERED: criterion_name=weight, criterion_name=weight
     REASONING: one-sentence explanation
 
-  If no criteria trip, return:
+  Examples of the ONLY acceptable first-line forms:
+
+    TRIGGERED: none
+    TRIGGERED: tragedy_new=0.9, frame_ambiguous=0.8
+    TRIGGERED: hard_floor=malware
+
+  Do NOT write things like:
+    - "Here is my classification:" (preamble)
+    - "```" (code fences)
+    - "**TRIGGERED:**" (markdown bold)
+    - "Let me know if you need anything else." (postamble)
+    - "## Analysis" (headers)
+
+  If no criteria trip, return exactly:
 
     TRIGGERED: none
     REASONING: benign request

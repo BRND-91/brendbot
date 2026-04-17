@@ -330,22 +330,60 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
         logger.debug("content_gate_classify cache hit")
         return cached
 
-    pool = get_classifier_pool()
-    classifier_client: ClaudeSDKClient | None = None
+    async def _one_shot(query: str) -> str:
+        """Single classifier round-trip. Returns raw text. Callers handle
+        parse. Pool acquire/dispose handled per call so the retry path
+        can get a fresh client if the first one drifted off-format."""
+        classifier_client: ClaudeSDKClient | None = None
+        try:
+            classifier_client = await get_classifier_pool().acquire()
+            await classifier_client.query(query)
+            raw = ""
+            async for msg in classifier_client.receive_messages():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text.strip():
+                            raw += block.text
+                if isinstance(msg, ResultMessage):
+                    break
+            return raw
+        finally:
+            if classifier_client is not None:
+                await get_classifier_pool().dispose(classifier_client)
+
     try:
-        classifier_client = await pool.acquire()
-        await classifier_client.query(prompt)
-
-        raw_text = ""
-        async for msg in classifier_client.receive_messages():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        raw_text += block.text
-            if isinstance(msg, ResultMessage):
-                break
-
+        raw_text = await _one_shot(prompt)
         result = parse_classifier_response(raw_text)
+
+        # 2026-04-16: one retry with explicit format-reminder on parse
+        # errors. flag_audit showed the classifier is mostly right on
+        # content but drifts on formatting (preamble, code fences,
+        # markdown headers). A single reminder typically recovers — this
+        # is much cheaper than failing-conservative to REFUSE every time.
+        if result.parse_error:
+            logger.warning(
+                "content_gate_classify parse_error on first attempt; retrying. raw=%r",
+                raw_text[:200],
+            )
+            retry_prompt = (
+                f"{classifier_rules}\n\n"
+                f"Request to classify:\n{user_text[:2000]}\n\n"
+                f"REMINDER: your previous response was unparseable. "
+                f"Return EXACTLY two lines with no preamble, no code "
+                f"fences, no markdown. First line starts with "
+                f"'TRIGGERED:', second line starts with 'REASONING:'."
+            )
+            retry_raw = await _one_shot(retry_prompt)
+            retry_result = parse_classifier_response(retry_raw)
+            if not retry_result.parse_error:
+                logger.info("content_gate_classify retry succeeded")
+                result = retry_result
+            else:
+                logger.warning(
+                    "content_gate_classify retry still parse_error; failing conservative. raw=%r",
+                    retry_raw[:200],
+                )
+
         content_cache.put(prompt, result)
         return result
     except Exception as e:
@@ -355,9 +393,6 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
             reasoning=f"classifier SDK error: {type(e).__name__}",
             parse_error=True,
         )
-    finally:
-        if classifier_client is not None:
-            await pool.dispose(classifier_client)
 
 
 async def flagged_generate(

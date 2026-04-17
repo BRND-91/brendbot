@@ -174,6 +174,101 @@ class TestParseClassifierResponse:
         assert len(d["reasoning"]) <= 200
 
 
+class TestParserDriftHardening:
+    """Regression tests for the 2026-04-16 parser hardening. flag_audit
+    analysis showed a ~40% parse-error rate in production caused by
+    classifier formatting drift. Each of these patterns was observed in
+    the raw_classifier_output field. The parser must now tolerate all
+    of them without tripping the fail-conservative REFUSE path.
+    """
+
+    def test_markdown_bold_keyword(self) -> None:
+        """**TRIGGERED:** none — bolded keyword was the most common drift."""
+        raw = "**TRIGGERED:** none\n**REASONING:** benign"
+        r = parse_classifier_response(raw)
+        assert r.is_benign
+        assert r.parse_error is False
+
+    def test_markdown_bold_with_criteria(self) -> None:
+        raw = "**TRIGGERED:** tragedy_new=0.9\n**REASONING:** recent event"
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"tragedy_new": 0.9}
+        assert r.parse_error is False
+
+    def test_code_fence_wrapped(self) -> None:
+        """```\nTRIGGERED: none\nREASONING: benign\n```"""
+        raw = "```\nTRIGGERED: none\nREASONING: benign\n```"
+        r = parse_classifier_response(raw)
+        assert r.is_benign
+        assert r.parse_error is False
+
+    def test_code_fence_with_language_tag(self) -> None:
+        """```text\nTRIGGERED: tragedy_old=0.2\n```"""
+        raw = "```text\nTRIGGERED: tragedy_old=0.2\nREASONING: historical\n```"
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"tragedy_old": 0.2}
+        assert r.parse_error is False
+
+    def test_leading_preamble_tolerated(self) -> None:
+        """Here is my classification:\n\nTRIGGERED: ... — preamble prose."""
+        raw = (
+            "Here is my classification of the request:\n\n"
+            "TRIGGERED: frame_fictional=0.3\n"
+            "REASONING: fictional villain dialogue"
+        )
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"frame_fictional": 0.3}
+        assert r.parse_error is False
+
+    def test_trailing_postamble_tolerated(self) -> None:
+        """TRIGGERED: ... REASONING: ...\n\nLet me know if you need anything else."""
+        raw = (
+            "TRIGGERED: tragedy_mid=0.5\n"
+            "REASONING: 1970s political event\n\n"
+            "Let me know if you'd like me to reconsider."
+        )
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"tragedy_mid": 0.5}
+        assert r.parse_error is False
+
+    def test_italic_keyword_single_asterisk(self) -> None:
+        raw = "*TRIGGERED:* none\n*REASONING:* benign"
+        r = parse_classifier_response(raw)
+        assert r.is_benign
+        assert r.parse_error is False
+
+    def test_markdown_hard_floor(self) -> None:
+        raw = "**TRIGGERED:** hard_floor=malware\n**REASONING:** ransomware request"
+        r = parse_classifier_response(raw)
+        assert r.hard_floor == "malware"
+        assert r.parse_error is False
+
+    def test_combined_drift_fence_and_bold(self) -> None:
+        """Worst-case observed drift: code fence + bold keyword + preamble."""
+        raw = (
+            "Sure, here's my analysis:\n\n"
+            "```\n"
+            "**TRIGGERED:** person_neutral=0.5, frame_ambiguous=0.8\n"
+            "**REASONING:** depicts named real person in unclear framing\n"
+            "```\n"
+        )
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"person_neutral": 0.5, "frame_ambiguous": 0.8}
+        assert r.parse_error is False
+
+    def test_multiline_reasoning_captured(self) -> None:
+        raw = (
+            "TRIGGERED: tragedy_new=0.9\n"
+            "REASONING: this is a long reasoning\n"
+            "that spans multiple lines"
+        )
+        r = parse_classifier_response(raw)
+        assert r.criteria == {"tragedy_new": 0.9}
+        assert r.parse_error is False
+        # Reasoning capture should pull at least the first line.
+        assert "long reasoning" in r.reasoning
+
+
 class TestDecideOutcome:
     """Outcome routing logic. Covers every band boundary and hard-floor
     precedence."""

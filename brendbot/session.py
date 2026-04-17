@@ -2529,7 +2529,13 @@ class SessionPool:
             return ""
         import sqlite3
         try:
-            conn = sqlite3.connect(str(knowledge_db))
+            # timeout waits for a contending writer rather than raising; the
+            # pragmas match user_registry._conn / episodes._open so the DB
+            # runs uniformly in WAL mode across all call sites.
+            conn = sqlite3.connect(str(knowledge_db), timeout=5.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             defs = conn.execute(
                 "SELECT id, term, description, formal, source FROM definitions "
                 "WHERE module_id = ? ORDER BY id",

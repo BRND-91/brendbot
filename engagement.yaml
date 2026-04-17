@@ -282,10 +282,13 @@ content_gate:
   flagged_path:
     # Model used when a request lands in the FLAG band and is rerouted
     # to the looser-safety Anthropic model per the documented escape hatch.
-    # Dated model strings rot — prefer the CLAUDE_FLAGGED_MODEL env var
-    # for deployment overrides. This yaml value is the fallback used when
-    # the env var is unset. Keep it a currently-reachable revision.
-    model: claude-sonnet-4-20250514
+    # Review quarterly — a date-stamped model string silently degrades as
+    # the Anthropic roster rolls forward. Pinned to the rolling alias
+    # (claude-sonnet-4-6) rather than a dated snapshot so capability tracks
+    # current production sonnet without a manual bump. Prefer the
+    # CLAUDE_FLAGGED_MODEL env var for deployment overrides; this yaml
+    # value is the fallback used when the env var is unset.
+    model: claude-sonnet-4-6
     max_per_session: 2
     audit_stream: flag_audit.jsonl
     branch_tag: "[flagged]"

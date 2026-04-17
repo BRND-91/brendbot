@@ -56,6 +56,23 @@ _COSINE_MIN = 0.35
 _migrated_paths: set[str] = set()
 
 
+def _open(db: Path) -> sqlite3.Connection:
+    """Open a connection against `db` with the concurrency pragmas applied.
+
+    WAL mode allows concurrent readers alongside a single writer, busy_timeout
+    tells SQLite to wait (rather than raise OperationalError) when another
+    connection holds the write lock, and synchronous=NORMAL is the correct
+    durability tier under WAL. Pragma application is idempotent — WAL is a
+    database-level mode, busy_timeout and synchronous are per-connection and
+    re-applied every open.
+    """
+    conn = sqlite3.connect(db, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
 def _ensure_migrated(conn: sqlite3.Connection, db_key: str) -> None:
     """Add the `embedding` BLOB column if missing. Idempotent per
     `db_key`. Never raises — failed migration just means embedding
@@ -140,7 +157,7 @@ def write_episode(
     turn_count = len(turn_log)
 
     try:
-        conn = sqlite3.connect(db)
+        conn = _open(db)
         _ensure_migrated(conn, str(db))
         cur = conn.cursor()
         # Best-effort embedding — None when sentence-transformers is
@@ -218,7 +235,7 @@ def query_episodes(
     prefetch_limit = limit * _RERANK_PREFETCH
 
     try:
-        conn = sqlite3.connect(db)
+        conn = _open(db)
         _ensure_migrated(conn, str(db))
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()

@@ -116,6 +116,7 @@ def log_bot_response(
     branch_tag: str | None,
     modules_queried: list[str] | None = None,
     haiku_invoked: bool = False,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
     and _fire_on_text_streamed after send_message returns the message ID.
@@ -138,7 +139,17 @@ def log_bot_response(
         non-empty AND modules_queried empty AND no branch_tag. That's
         the shape of a turn where the bot engaged ambiguously, matched
         a domain, skipped the KB, and produced untagged output — the
-        highest-risk profile for fabrication."""
+        highest-risk profile for fabrication.
+
+      stage_timings_ms (Phase 2a instrumentation): per-stage wall-time
+        deltas in milliseconds. None or missing keys are fine — callers
+        emit what they have. Recognised keys:
+          - t_receive_to_engage_gate:     on_message entry → engage decision
+          - t_engage_gate_to_content_gate: engage decision → content gate done
+          - t_content_gate_to_first_token: content gate done → first TextBlock
+          - t_first_token_to_complete:    first TextBlock → response posted
+        Downstream consumers should use .get(key, None) — field set may
+        evolve across phases."""
     domains = domains or []
     modules_queried = modules_queried or []
     if not domains:
@@ -150,7 +161,7 @@ def log_bot_response(
     fabrication_risk = bool(
         haiku_invoked and domains and not modules_queried and not branch_tag
     )
-    _append_jsonl(BOT_RESPONSES_LOG, {
+    record = {
         "ts": _now_iso(),
         "channel_id": channel_id,
         "bot_message_id": bot_message_id,
@@ -164,7 +175,19 @@ def log_bot_response(
         "haiku_invoked": haiku_invoked,
         "flow_class": flow_class,
         "fabrication_risk": fabrication_risk,
-    })
+    }
+    if stage_timings_ms:
+        # Emit only keys with numeric values; drop None entries so the
+        # row stays compact for sessions that missed a stamp (e.g.
+        # pre-stream turn that jumped straight to _fire_on_text).
+        filtered = {
+            k: round(v, 2)
+            for k, v in stage_timings_ms.items()
+            if isinstance(v, (int, float))
+        }
+        if filtered:
+            record["stage_timings_ms"] = filtered
+    _append_jsonl(BOT_RESPONSES_LOG, record)
 
 
 def log_branch_audit(

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -667,6 +668,15 @@ class Session:
         # discord.py. Read by _fire_on_text / _fire_on_text_streamed for
         # flow-class and fabrication-risk diagnostics in log_bot_response.
         self._turn_haiku_invoked: bool = False
+        # Phase 2a — stage-timing instrumentation. time.monotonic() stamps
+        # at four points in the turn lifecycle; _fire_on_text computes
+        # deltas in ms for log_bot_response. None means the stage didn't
+        # execute this turn (e.g. DMs skip the engagement gate, housekeeping
+        # turns skip first-token). Reset in route_message at turn start.
+        self._turn_t_received: float | None = None           # on_message entry in discord.py
+        self._turn_t_engage_gate_done: float | None = None   # engagement decision complete
+        self._turn_t_content_gate_done: float | None = None  # content gate classifier returned
+        self._turn_t_first_token: float | None = None        # first AssistantMessage TextBlock
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -1057,6 +1067,42 @@ class Session:
                 pass
         self._stream_reset()
 
+    def _compute_stage_timings_ms(self) -> dict[str, float] | None:
+        """Phase 2a — compute per-stage wall-time deltas in milliseconds
+        from the four _turn_t_* stamps. Returns None if no stamps were
+        collected (e.g. legacy caller that didn't pass recv_ts). Missing
+        stamps produce None for the affected delta, which log_bot_response
+        filters out before writing. t_first_token_to_complete is stamped
+        here (at log time) rather than earlier so it captures the full
+        stream-finalize + Discord-send latency."""
+        now = time.monotonic()
+        t_recv = self._turn_t_received
+        t_engage = self._turn_t_engage_gate_done
+        t_gate = self._turn_t_content_gate_done
+        t_first = self._turn_t_first_token
+        timings: dict[str, float | None] = {
+            "t_receive_to_engage_gate": (
+                (t_engage - t_recv) * 1000.0
+                if (t_recv is not None and t_engage is not None) else None
+            ),
+            "t_engage_gate_to_content_gate": (
+                (t_gate - t_engage) * 1000.0
+                if (t_engage is not None and t_gate is not None) else None
+            ),
+            "t_content_gate_to_first_token": (
+                (t_first - t_gate) * 1000.0
+                if (t_gate is not None and t_first is not None) else None
+            ),
+            "t_first_token_to_complete": (
+                (now - t_first) * 1000.0
+                if t_first is not None else None
+            ),
+        }
+        # Drop None entries; if every entry is None return None so callers
+        # can skip the field entirely.
+        result = {k: v for k, v in timings.items() if v is not None}
+        return result or None
+
     async def _fire_on_text_streamed(self, text: str) -> None:
         """Finalize a streamed response: do the last edit, then audit-log.
 
@@ -1134,6 +1180,7 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                stage_timings_ms=self._compute_stage_timings_ms(),
             )
             if branch_tag:
                 log_branch_audit(
@@ -1203,6 +1250,7 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                stage_timings_ms=self._compute_stage_timings_ms(),
             )
             if branch_tag:
                 log_branch_audit(
@@ -1338,6 +1386,12 @@ class Session:
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
                     if block.text.strip():
+                        # Phase 2a — stamp first-token time on the first
+                        # non-empty TextBlock this turn. Subsequent blocks
+                        # don't re-stamp. Non-empty guard prevents empty
+                        # SDK-drift blocks from registering as first token.
+                        if self._turn_t_first_token is None:
+                            self._turn_t_first_token = time.monotonic()
                         self._turn_text_buffer.append(block.text)
                         # Stream text to Discord as it arrives (text-only
                         # turns only). Once a tool fires, streaming stops
@@ -2406,6 +2460,8 @@ class SessionPool:
         score: float | None = None,
         haiku_invoked: bool = False,
         guild_id: str = "",
+        recv_ts: float | None = None,
+        engage_done_ts: float | None = None,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -2589,6 +2645,15 @@ class SessionPool:
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
 
+        # Phase 2a — carry discord.py-side timing stamps onto the session.
+        # These are time.monotonic() values; deltas are computed in
+        # _fire_on_text / _fire_on_text_streamed. None is tolerated at every
+        # stage (callers that don't instrument still work).
+        session._turn_t_received = recv_ts
+        session._turn_t_engage_gate_done = engage_done_ts
+        session._turn_t_content_gate_done = None
+        session._turn_t_first_token = None
+
         # Content gate (phase 4) runs here, between turn state setup and
         # inject. Decides PASS / FLAG / REFUSE / FLOOR_HIT / BYPASS via
         # a one-shot haiku classifier spawn. Returns 'inject' if the caller
@@ -2609,6 +2674,11 @@ class SessionPool:
                 session.key, exc,
             )
             gate_action = "inject"
+        # Phase 2a — stamp content-gate-done after the classifier returns.
+        # Stamped regardless of gate_action so FLAG/REFUSE/BYPASS turns still
+        # emit a timing for the gate stage (useful when tuning gate latency
+        # relative to generation latency).
+        session._turn_t_content_gate_done = time.monotonic()
 
         if gate_action == "inject":
             # Stage 4 — expand the KB index on first domain match. The

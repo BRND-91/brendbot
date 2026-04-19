@@ -50,20 +50,25 @@ class TestScoreMessage:
         assert "BUILDSCI" in result.domains
         assert result.score >= bd._SCORE_DOMAIN
 
-    def test_systems_multi_word_phrase(self) -> None:
+    def test_buildsci_multi_word_phrase(self) -> None:
+        # BUILDSCI has multi-word phrases ("air barrier", "blower door",
+        # "mechanical ventilation"). Confirms the scorer tokenises phrase
+        # matches, not just single words. Replaced the SYSTEMS equivalent
+        # after the SYSTEMS domain was removed from engagement.yaml.
         result = bd._score_message(
-            "explain feedback loops in complex systems",
+            "what's the role of an air barrier in the enclosure?",
             "ch1", False, None,
         )
-        assert "SYSTEMS" in result.domains
+        assert "BUILDSCI" in result.domains
+        assert result.score >= bd._SCORE_DOMAIN
 
     def test_word_boundary_no_false_positive(self) -> None:
-        # "stats" should not match the word "statistical" if it's not in the
-        # domain list — and "delay" should not match "delayed". The compiled
-        # regex uses \b boundaries so substring matches don't fire.
-        result = bd._score_message("delayed reaction time", "ch1", False, None)
-        # "delay" is in SYSTEMS but only as exact word — "delayed" should not match.
-        assert "SYSTEMS" not in result.domains
+        # "art" is in IMAGEGEN but only as an exact word — "partition"
+        # should not match. The compiled regex uses \b boundaries so
+        # substring matches don't fire. Replaces the SYSTEMS/"delay" case
+        # after the SYSTEMS domain was removed from engagement.yaml.
+        result = bd._score_message("partition the dataset", "ch1", False, None)
+        assert "IMAGEGEN" not in result.domains
 
     def test_recency_boost_only_with_word_count(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time()

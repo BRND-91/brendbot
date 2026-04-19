@@ -2866,6 +2866,50 @@ class SessionPool:
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
 
+        # Patch 1b — agent_core.complexity pre-flight. Before the content
+        # gate spends a haiku call and the session spends a full
+        # generation pass, classify the inbound request by Chapter-5
+        # complexity tier. Hard-reject requests that classify as RE
+        # (halting-problem-adjacent) or NON_RE (beyond semi-decidable)
+        # with a local refusal — the model would either loop or
+        # fabricate a "proof" that isn't one, and neither is cheap.
+        # PSPACE hints (long-horizon planning, game-tree search) are
+        # not rejected but are logged; callers may still get a useful
+        # approximation.
+        try:
+            from brendbot.agent_core.complexity import (
+                classify as _complexity_classify,
+                Route as _ComplexityRoute,
+                Tier as _ComplexityTier,
+            )
+            classification = _complexity_classify(text)
+            if classification.route == _ComplexityRoute.REJECT:
+                logger.info(
+                    "[%s] complexity preflight REJECT tier=%s rationale=%s",
+                    session.key, classification.tier.name, classification.rationale,
+                )
+                refusal = (
+                    f"can't take that one — the request is tier "
+                    f"{classification.tier.name} "
+                    f"({classification.rationale}). "
+                    "beyond what can be decided in finite time; "
+                    "reframe with a concrete bound and I can try."
+                )
+                asyncio.create_task(session._fire_on_text(refusal))
+                return
+            if classification.tier == _ComplexityTier.PSPACE:
+                logger.info(
+                    "[%s] complexity preflight PSPACE tier (bounded_search path) — %s",
+                    session.key, classification.rationale,
+                )
+        except Exception as exc:
+            # Preflight is advisory; fall through on any error to keep
+            # the response path live.
+            logger.debug(
+                "[%s] complexity preflight error (advisory, ignoring): %s",
+                session.key, exc,
+            )
+
         # Content gate (phase 4) runs here, between turn state setup and
         # inject. Decides PASS / FLAG / REFUSE / FLOOR_HIT / BYPASS via
         # a one-shot haiku classifier spawn. Returns 'inject' if the caller

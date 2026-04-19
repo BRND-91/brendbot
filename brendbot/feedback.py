@@ -57,6 +57,13 @@ BYPASS_AUDIT_LOG = LOGS_DIR / "bypass_audit.jsonl"
 # corpus for replacing the haiku ambiguity classifier with a local model.
 # Written from discord.py's on_message drop paths via log_skip_decision.
 SKIP_DECISIONS_LOG = LOGS_DIR / "skip_decisions.jsonl"
+# Cross-check audit stream — one row per hard-floor classification where
+# the second-pass cross-check disputed the floor verdict. Populated by
+# session.apply_content_gate when content_gate_cross_check_floor returns
+# confirmed=False. The refusal still fires (fail-conservative), but the
+# dispute is surfaced for admin review so false-positive floor hits can
+# be tuned out of the primary classifier prompt.
+DISPUTED_FLOOR_AUDIT_LOG = LOGS_DIR / "disputed_floor_audit.jsonl"
 
 # Branch tag regex — matches a leading tag token. The tag is stripped from
 # the chat-bound text and written to branch_audit.jsonl.
@@ -268,6 +275,43 @@ def log_bypass_event(
         "would_have_summed": would_have_summed,
         "would_have_outcome": would_have_outcome,
         "hard_floor_hit": hard_floor_hit,
+        "bot_message_id": bot_message_id,
+    })
+
+
+def log_disputed_floor_event(
+    channel_id: str,
+    user_message_id: str,
+    user_text: str,
+    sender_id: str,
+    tier: str,
+    suspected_floor: str,
+    cross_check_response: str,
+    bot_message_id: str | None,
+) -> None:
+    """One line per disputed hard-floor classification. Fires when the
+    primary content-gate classifier tagged the request with a hard floor,
+    the session called content_gate_cross_check_floor as a second pass,
+    and the cross-check returned DISPUTED rather than CONFIRMED.
+
+    The refusal itself is NOT blocked by dispute — floor hits are the
+    strongest gate in the system and the documented policy is fail-
+    conservative. This log captures dispute signal so the primary
+    classifier prompt can be tuned (false positives on e.g. technical-
+    vocabulary matches like "trigger" in a bug report will appear here
+    as a class).
+
+    bot_message_id is the ID of the refusal message if dispatch succeeded,
+    otherwise None."""
+    _append_jsonl(DISPUTED_FLOOR_AUDIT_LOG, {
+        "ts": _now_iso(),
+        "channel_id": channel_id,
+        "user_message_id": user_message_id,
+        "user_text": user_text[:500],
+        "sender_id": sender_id,
+        "tier": tier,
+        "suspected_floor": suspected_floor,
+        "cross_check_response": cross_check_response,
         "bot_message_id": bot_message_id,
     })
 

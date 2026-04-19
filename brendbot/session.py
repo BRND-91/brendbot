@@ -407,6 +407,95 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
             await pool.dispose(classifier_client)
 
 
+async def content_gate_cross_check_floor(
+    user_text: str,
+    suspected_floor: str,
+) -> tuple[bool, str]:
+    """Second-pass verification for a hard-floor classification.
+
+    When the primary content-gate classifier returns TRIGGERED:
+    hard_floor=<name>, a single haiku call is making an irreversible
+    refusal decision. Haiku can free-associate on coincidences (e.g.
+    marking technical-vocabulary "trigger" as directed incitement, or
+    flagging medication dosages as wmd_synth). A dedicated cross-check
+    pass — same model, different prompt framing — catches obvious
+    false positives without a second model tier.
+
+    Returns (confirmed, raw_response):
+      confirmed=True  → the cross-check agrees the text trips the floor.
+                        Caller should refuse as planned.
+      confirmed=False → the cross-check disputes the floor. Caller should
+                        still refuse conservative (floor hits are the
+                        strongest gate; erring on the side of refusal is
+                        correct), but log the dispute for admin review.
+
+    Bypasses the content-cache deliberately — the whole point is an
+    independent check, and the cache would return the same verdict the
+    primary call produced.
+    """
+    # Plain-language floor definitions mirror the classifier prompt so
+    # the cross-check evaluates against the same rubric.
+    floor_defs = {
+        "minor_sexual": "sexual content involving anyone under 18",
+        "wmd_synth": "synthesis instructions for nuclear/biological/chemical weapons",
+        "malware": "functional malware, exploit code, or ransomware",
+        "infra_attack": "attack procedures for critical infrastructure",
+        "extremist_recruit": "extremist recruitment or incitement materials",
+        "directed_incite": "direct incitement of violence against a real named target",
+    }
+    definition = floor_defs.get(
+        suspected_floor,
+        suspected_floor.replace("_", " "),
+    )
+
+    prompt = (
+        f"A prior content-safety classifier flagged the following text "
+        f"as a hard-floor violation of type '{suspected_floor}' "
+        f"({definition}).\n\n"
+        f"You are the verification pass. Does the text ACTUALLY match "
+        f"that floor definition, or was the prior classifier wrong? "
+        f"Technical vocabulary (e.g. 'trigger' in software context, "
+        f"'payload' in networking, 'exploit' in gaming), historical "
+        f"references, fiction framing, and bug reports about the bot "
+        f"itself are NOT violations. Only match when the text would "
+        f"materially enable or direct the harm the floor is designed "
+        f"to prevent.\n\n"
+        f"Reply CONFIRMED on one line if the text matches the floor. "
+        f"Reply DISPUTED on one line if it does not. No other output.\n\n"
+        f"Text to verify:\n{user_text[:2000]}"
+    )
+
+    pool = get_classifier_pool()
+    classifier_client: ClaudeSDKClient | None = None
+    try:
+        classifier_client = await pool.acquire()
+        await classifier_client.query(prompt)
+
+        raw_text = ""
+        async for msg in classifier_client.receive_messages():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        raw_text += block.text
+            if isinstance(msg, ResultMessage):
+                break
+
+        normalized = raw_text.strip().upper()
+        # First token is the verdict. Unparseable → fail-conservative:
+        # treat as CONFIRMED so the refusal stands. The dispute log
+        # will still capture the unexpected verdict for audit.
+        first_token = normalized.split()[0] if normalized else ""
+        confirmed = not first_token.startswith("DISPUTED")
+        return confirmed, raw_text.strip()[:400]
+    except Exception as exc:
+        logger.warning("content_gate_cross_check_floor SDK error: %s", exc)
+        # Fail-conservative: keep the refusal on classifier error.
+        return True, f"cross_check_error:{type(exc).__name__}"
+    finally:
+        if classifier_client is not None:
+            await pool.dispose(classifier_client)
+
+
 async def flagged_generate(
     wrapped_message: str,
     model: str,
@@ -820,7 +909,11 @@ class Session:
             format_refusal_explanation,
             Outcome,
         )
-        from brendbot.feedback import log_flag_event, log_bypass_event
+        from brendbot.feedback import (
+            log_flag_event,
+            log_bypass_event,
+            log_disputed_floor_event,
+        )
 
         try:
             from brendbot.discord import _ENGAGEMENT_CFG
@@ -1013,7 +1106,34 @@ class Session:
             asyncio.create_task(_flagged_task())
             return "handled"
 
-        # REFUSE or FLOOR_HIT
+        # REFUSE or FLOOR_HIT. FLOOR_HIT in particular is a single-model
+        # irreversible refusal based on a list-match classification — the
+        # class of error most worth catching with a second pass. Run the
+        # cross-check; the refusal still fires regardless, but dispute
+        # gets logged for admin review so false-positive floor matches
+        # (technical-vocabulary "trigger", "payload", "exploit" etc.)
+        # can be tuned out of the primary classifier.
+        suspected_floor = classifier_result.hard_floor
+        if shadow_outcome == Outcome.FLOOR_HIT and suspected_floor:
+            confirmed, cross_text = await content_gate_cross_check_floor(
+                raw_user_text, suspected_floor,
+            )
+            if not confirmed:
+                logger.info(
+                    "[%s] floor-hit cross-check DISPUTED (floor=%s)",
+                    self.key, suspected_floor,
+                )
+                log_disputed_floor_event(
+                    channel_id=self._chat_id,
+                    user_message_id=message_id,
+                    user_text=raw_user_text,
+                    sender_id=sender_id,
+                    tier=tier,
+                    suspected_floor=suspected_floor,
+                    cross_check_response=cross_text,
+                    bot_message_id=None,
+                )
+
         refusal = format_refusal_explanation(classifier_result)
         logger.info(
             "[%s] content gate %s (sum=%.2f, floor=%s)",

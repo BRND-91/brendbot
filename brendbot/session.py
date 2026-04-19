@@ -652,6 +652,14 @@ _TOOL_CALL_BUDGET = 8
 # Capped lower than _TOOL_CALL_BUDGET so budget is shared with Read/Edit.
 _BASH_CALL_BUDGET = 5
 
+# Wall-clock cap per turn (Patch 1a — agent_core.budgets halting-problem
+# defence). Catches cases where the model stays under the step budget
+# but loops on slow external I/O. Bash has its own per-call OS timeout
+# (~2 min) so this is the aggregate whole-turn cap covering cascades of
+# network calls, tool retries, and sub-agent spawns. Tripping this is
+# logged as a BudgetExceeded with dimension='time_s'.
+_TURN_TIME_CAP_S = 120.0
+
 # Write a rolling checkpoint every N completed turns.
 _CHECKPOINT_INTERVAL = 5
 
@@ -757,6 +765,13 @@ class Session:
         # Per-turn counters reset before each inject in route_message.
         self._turn_bash_calls: int = 0
         self._turn_other_tool_calls: int = 0
+        # Patch 1a — agent_core.budgets halting-problem defence. A typed
+        # per-turn BudgetState enforced in _permission_check on every
+        # tool call. step_cap duplicates _tool_call_count enforcement
+        # (kept separately for back-compat) and time_cap_s is the new
+        # wall-clock cap with no prior enforcement in the response path.
+        # Reset at turn boundary in SessionPool.route_message.
+        self._turn_budget: Optional[Any] = None
         # Shallow rest tracking (Phase 3 #1B). Set True after a shallow rest
         # cycle fires. Cleared when cumulative load grows by at least
         # SHALLOW_RECOVERY_DELTA past the previous trigger point — prevents
@@ -2123,6 +2138,29 @@ class Session:
 
         self._tool_call_count += 1
 
+        # Patch 1a — agent_core.BudgetState enforcement. step_cap is
+        # parallel to the legacy _tool_call_count check below (kept for
+        # back-compat with operators reading existing log lines), but
+        # time_cap_s is a new halting-problem defence: a turn that stays
+        # under the step budget can still run wall-clock unbounded on
+        # slow I/O (flaky network retries, gcloud timeouts). The cap
+        # here bounds the entire turn.
+        if self._turn_budget is not None:
+            from brendbot.agent_core.budgets import BudgetExceeded
+            # Sync step count from the in-house counter so both views agree.
+            self._turn_budget.steps = self._tool_call_count
+            tcap = self._turn_budget.budget.time_cap_s
+            if tcap is not None and self._turn_budget.elapsed_s > tcap:
+                exc = BudgetExceeded("time_s", self._turn_budget.elapsed_s, tcap)
+                logger.warning("[%s] turn budget %s", self.key, exc)
+                return PermissionResultDeny(
+                    message=(
+                        f"Turn budget exceeded on {exc.dimension}: "
+                        f"used={exc.used:.1f}s, cap={exc.cap:.0f}s. "
+                        "Stop tool use and respond with what is known."
+                    )
+                )
+
         # Address-level budget cap (FUSED-CORE Budget Throttle enforcement).
         # Maps to the levels defined in engagement.yaml address_levels:
         #   high     → full budget (_TOOL_CALL_BUDGET)
@@ -2810,6 +2848,16 @@ class SessionPool:
         # Reset per-turn load counters; cumulative counters persist until restart.
         session._turn_bash_calls = 0
         session._turn_other_tool_calls = 0
+        # Patch 1a — fresh BudgetState for this turn. BudgetState carries
+        # typed caps from agent_core.budgets.Budget (step_cap, time_cap_s)
+        # and a monotonic start timestamp; _permission_check reads from
+        # it to enforce the wall-clock cap on every tool-call request.
+        from brendbot.agent_core.budgets import Budget, BudgetState
+        session._turn_budget = BudgetState(budget=Budget(
+            step_cap=_TOOL_CALL_BUDGET,
+            time_cap_s=_TURN_TIME_CAP_S,
+            token_cap=None,
+        ))
         session._turn_sender_id = sender_id
         # If the engagement gate fired the haiku classifier on this message,
         # account for it in the cumulative load score (Phase 3 #1A). Also

@@ -88,12 +88,26 @@ class ClassifierPool:
             await pool.dispose(client)  # tear down used client, replenish
     """
 
+    # Consecutive-failure threshold for a one-time admin alert. Below this,
+    # the pool silently falls back to cold-spawn (adding ~18s to every
+    # ambiguous message) which was previously invisible to the operator
+    # until manual inspection of logs. Above it, we post once to the
+    # admin alert channel so the breakage is not silent. Counter resets
+    # on any successful spawn.
+    _LIVENESS_FAILURE_THRESHOLD = 5
+
     def __init__(self, pool_size: int = _CLASSIFIER_POOL_SIZE) -> None:
         self._target_size = pool_size
         self._ready: asyncio.Queue[ClaudeSDKClient] = asyncio.Queue()
         self._spawning = 0  # number of in-flight background spawns
         self._closed = False
         self._replenish_tasks: list[asyncio.Task] = []
+        # Liveness tracking — consecutive spawn failures since the last
+        # successful spawn. Reset to 0 by _spawn_one on success. The alert
+        # fires exactly once per crossing of _LIVENESS_FAILURE_THRESHOLD;
+        # _liveness_alerted prevents re-firing every subsequent failure.
+        self._consecutive_spawn_failures: int = 0
+        self._liveness_alerted: bool = False
 
     async def warm_up(self) -> None:
         """Pre-spawn pool_size clients concurrently. Call at startup."""
@@ -123,9 +137,42 @@ class ClassifierPool:
                 await self._teardown(client)
                 return False
             self._ready.put_nowait(client)
+            # Success — reset liveness counter so a spurious earlier failure
+            # does not carry forward forever.
+            self._consecutive_spawn_failures = 0
+            self._liveness_alerted = False
             return True
         except Exception as exc:
             logger.warning("ClassifierPool spawn failed: %s", exc)
+            self._consecutive_spawn_failures += 1
+            # Fire a one-time admin alert after N consecutive failures.
+            # _liveness_alerted guard prevents re-firing on every subsequent
+            # failure while the outage persists; the flag clears on any
+            # success. The alert itself is rate-limited independently inside
+            # discord._admin_alert (1/hr per category) so even without the
+            # guard the user-visible noise would be bounded, but the guard
+            # keeps the log-level intent explicit.
+            if (
+                self._consecutive_spawn_failures >= self._LIVENESS_FAILURE_THRESHOLD
+                and not self._liveness_alerted
+            ):
+                self._liveness_alerted = True
+                try:
+                    # Lazy import to avoid circular import at module load —
+                    # discord.py imports session.py via haiku_classify.
+                    from brendbot.discord import _admin_alert
+                    _admin_alert(
+                        "classifier_pool_outage",
+                        f"ClassifierPool: {self._consecutive_spawn_failures} "
+                        f"consecutive spawn failures. Falling back to "
+                        f"cold-spawn per call (+~18s latency each). "
+                        f"Last error: {type(exc).__name__}: {exc}"[:500],
+                    )
+                except Exception as alert_exc:
+                    logger.debug(
+                        "ClassifierPool liveness alert dispatch failed: %s",
+                        alert_exc,
+                    )
             return False
         finally:
             self._spawning -= 1
@@ -252,10 +299,14 @@ async def haiku_classify(payload: dict) -> dict:
         "Example: YES funny  or  NO neutral. Nothing else."
     )
 
-    # Check engagement cache before hitting the classifier pool.
+    # Check engagement cache before hitting the classifier pool. The
+    # user's inbound `text` is the semantic key — the rules block and
+    # context block vary much less, so embedding the whole prompt
+    # would over-match on shared boilerplate. Passing `text` alone
+    # restricts semantic hits to genuinely similar user messages.
     from brendbot.classifier_cache import get_engage_cache
     engage_cache = get_engage_cache()
-    cached = engage_cache.get(prompt)
+    cached = engage_cache.get(prompt, semantic_key=text)
     if cached is not None:
         logger.debug("haiku_classify cache hit")
         return cached
@@ -285,7 +336,7 @@ async def haiku_classify(payload: dict) -> dict:
         _valid_tones = {"funny", "hype", "sad", "weird", "dumb", "wholesome", "neutral"}
         tone = tokens[1].lower() if len(tokens) > 1 and tokens[1].lower() in _valid_tones else "neutral"
         result = {"engage": engage, "reason": f"sdk:{answer_text[:8]}", "tone": tone}
-        engage_cache.put(prompt, result)
+        engage_cache.put(prompt, result, semantic_key=text)
         return result
     except Exception as e:
         logger.warning("haiku_classify SDK error: %s", e)
@@ -323,9 +374,11 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
     )
 
     # Check content-gate cache before hitting the classifier pool.
+    # `user_text` is the semantic key — the rules block is constant
+    # across calls and would dominate a full-prompt embedding.
     from brendbot.classifier_cache import get_content_cache
     content_cache = get_content_cache()
-    cached = content_cache.get(prompt)
+    cached = content_cache.get(prompt, semantic_key=user_text)
     if cached is not None:
         logger.debug("content_gate_classify cache hit")
         return cached
@@ -346,7 +399,7 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
                 break
 
         result = parse_classifier_response(raw_text)
-        content_cache.put(prompt, result)
+        content_cache.put(prompt, result, semantic_key=user_text)
         return result
     except Exception as e:
         logger.warning("content_gate_classify SDK error: %s", e)
@@ -358,6 +411,140 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
     finally:
         if classifier_client is not None:
             await pool.dispose(classifier_client)
+
+
+async def content_gate_cross_check_floor(
+    user_text: str,
+    suspected_floor: str,
+) -> tuple[bool, str]:
+    """Second-pass verification for a hard-floor classification.
+
+    When the primary content-gate classifier returns TRIGGERED:
+    hard_floor=<name>, a single haiku call is making an irreversible
+    refusal decision. Haiku can free-associate on coincidences (e.g.
+    marking technical-vocabulary "trigger" as directed incitement, or
+    flagging medication dosages as wmd_synth). A dedicated cross-check
+    pass — same model, different prompt framing — catches obvious
+    false positives without a second model tier.
+
+    Returns (confirmed, raw_response):
+      confirmed=True  → the cross-check agrees the text trips the floor.
+                        Caller should refuse as planned.
+      confirmed=False → the cross-check disputes the floor. Caller should
+                        still refuse conservative (floor hits are the
+                        strongest gate; erring on the side of refusal is
+                        correct), but log the dispute for admin review.
+
+    Bypasses the content-cache deliberately — the whole point is an
+    independent check, and the cache would return the same verdict the
+    primary call produced.
+    """
+    # Plain-language floor definitions mirror the classifier prompt so
+    # the cross-check evaluates against the same rubric.
+    floor_defs = {
+        "minor_sexual": "sexual content involving anyone under 18",
+        "wmd_synth": "synthesis instructions for nuclear/biological/chemical weapons",
+        "malware": "functional malware, exploit code, or ransomware",
+        "infra_attack": "attack procedures for critical infrastructure",
+        "extremist_recruit": "extremist recruitment or incitement materials",
+        "directed_incite": "direct incitement of violence against a real named target",
+    }
+    definition = floor_defs.get(
+        suspected_floor,
+        suspected_floor.replace("_", " "),
+    )
+
+    prompt = (
+        f"A prior content-safety classifier flagged the following text "
+        f"as a hard-floor violation of type '{suspected_floor}' "
+        f"({definition}).\n\n"
+        f"You are the verification pass. Does the text ACTUALLY match "
+        f"that floor definition, or was the prior classifier wrong? "
+        f"Technical vocabulary (e.g. 'trigger' in software context, "
+        f"'payload' in networking, 'exploit' in gaming), historical "
+        f"references, fiction framing, and bug reports about the bot "
+        f"itself are NOT violations. Only match when the text would "
+        f"materially enable or direct the harm the floor is designed "
+        f"to prevent.\n\n"
+        f"Reply CONFIRMED on one line if the text matches the floor. "
+        f"Reply DISPUTED on one line if it does not. No other output.\n\n"
+        f"Text to verify:\n{user_text[:2000]}"
+    )
+
+    # Patch 1c — agent_core.verifier: wrap the cross-check as a
+    # generate/verify pair. The generator runs the SDK call; the
+    # verifier checks the response is shaped correctly (first token is
+    # CONFIRMED or DISPUTED). Unshaped responses (model repeated the
+    # prompt, returned commentary, empty string) are retried up to
+    # _MAX_ATTEMPTS times. The NP/Co-NP asymmetry is literal here:
+    # generating a classification is expensive; checking it's
+    # well-formed is a two-line predicate.
+    from brendbot.agent_core.verifier import Check, Verifier
+
+    _MAX_ATTEMPTS = 2
+
+    def _is_shaped(candidate: str) -> "tuple[bool, str]":
+        """Verifier predicate: response must lead with a recognised verdict."""
+        if not candidate:
+            return False, "empty response"
+        first = candidate.strip().upper().split()[0] if candidate.strip() else ""
+        if first.startswith("CONFIRMED") or first.startswith("DISPUTED"):
+            return True, ""
+        return False, f"unrecognised verdict token: {first[:20]!r}"
+
+    verifier = Verifier[str]([
+        Check(name="verdict_shape", predicate=_is_shaped),
+    ])
+
+    pool = get_classifier_pool()
+
+    async def _one_call() -> str:
+        classifier_client: ClaudeSDKClient | None = None
+        try:
+            classifier_client = await pool.acquire()
+            await classifier_client.query(prompt)
+            raw_text = ""
+            async for msg in classifier_client.receive_messages():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text.strip():
+                            raw_text += block.text
+                if isinstance(msg, ResultMessage):
+                    break
+            return raw_text.strip()[:400]
+        finally:
+            if classifier_client is not None:
+                await pool.dispose(classifier_client)
+
+    last_candidate = ""
+    try:
+        for attempt in range(_MAX_ATTEMPTS):
+            candidate = await _one_call()
+            last_candidate = candidate
+            result = verifier.verify(candidate)
+            if result.ok:
+                first_token = candidate.upper().split()[0] if candidate else ""
+                confirmed = not first_token.startswith("DISPUTED")
+                return confirmed, candidate
+            logger.debug(
+                "content_gate_cross_check_floor attempt %d failed verifier: %s",
+                attempt + 1,
+                ", ".join(f.reason for f in result.failures),
+            )
+    except Exception as exc:
+        logger.warning("content_gate_cross_check_floor SDK error: %s", exc)
+        # Fail-conservative: keep the refusal on classifier error.
+        return True, f"cross_check_error:{type(exc).__name__}"
+
+    # All attempts produced unshaped responses. Fail-conservative:
+    # treat as CONFIRMED so the refusal stands. Dispute log captures
+    # the unparseable last candidate for audit.
+    logger.warning(
+        "content_gate_cross_check_floor exhausted %d attempts without a "
+        "shaped verdict; defaulting to CONFIRMED",
+        _MAX_ATTEMPTS,
+    )
+    return True, f"unshaped_after_{_MAX_ATTEMPTS}_attempts:{last_candidate[:80]}"
 
 
 async def flagged_generate(
@@ -510,6 +697,14 @@ _TOOL_CALL_BUDGET = 8
 # Capped lower than _TOOL_CALL_BUDGET so budget is shared with Read/Edit.
 _BASH_CALL_BUDGET = 5
 
+# Wall-clock cap per turn (Patch 1a — agent_core.budgets halting-problem
+# defence). Catches cases where the model stays under the step budget
+# but loops on slow external I/O. Bash has its own per-call OS timeout
+# (~2 min) so this is the aggregate whole-turn cap covering cascades of
+# network calls, tool retries, and sub-agent spawns. Tripping this is
+# logged as a BudgetExceeded with dimension='time_s'.
+_TURN_TIME_CAP_S = 120.0
+
 # Write a rolling checkpoint every N completed turns.
 _CHECKPOINT_INTERVAL = 5
 
@@ -615,6 +810,13 @@ class Session:
         # Per-turn counters reset before each inject in route_message.
         self._turn_bash_calls: int = 0
         self._turn_other_tool_calls: int = 0
+        # Patch 1a — agent_core.budgets halting-problem defence. A typed
+        # per-turn BudgetState enforced in _permission_check on every
+        # tool call. step_cap duplicates _tool_call_count enforcement
+        # (kept separately for back-compat) and time_cap_s is the new
+        # wall-clock cap with no prior enforcement in the response path.
+        # Reset at turn boundary in SessionPool.route_message.
+        self._turn_budget: Optional[Any] = None
         # Shallow rest tracking (Phase 3 #1B). Set True after a shallow rest
         # cycle fires. Cleared when cumulative load grows by at least
         # SHALLOW_RECOVERY_DELTA past the previous trigger point — prevents
@@ -773,7 +975,11 @@ class Session:
             format_refusal_explanation,
             Outcome,
         )
-        from brendbot.feedback import log_flag_event, log_bypass_event
+        from brendbot.feedback import (
+            log_flag_event,
+            log_bypass_event,
+            log_disputed_floor_event,
+        )
 
         try:
             from brendbot.discord import _ENGAGEMENT_CFG
@@ -789,7 +995,17 @@ class Session:
         refuse_thr = float(outcomes_cfg.get("refuse_threshold", 1.5))
 
         flagged_cfg = gate_cfg.get("flagged_path", {}) or {}
-        flagged_model = flagged_cfg.get("model", "claude-sonnet-4-20250514")
+        # Resolution order: env var (via Config.claude_flagged_model) > yaml >
+        # hardcoded fallback. The env var lets operators pin a fresh model
+        # without editing yaml and prevents silently-unreachable dated model
+        # strings from pinning FLAG-band traffic to a 410 Gone revision.
+        from brendbot.config import get_config as _get_cfg
+        _cfg = _get_cfg()
+        flagged_model = (
+            _cfg.claude_flagged_model
+            or flagged_cfg.get("model")
+            or "claude-sonnet-4-20250514"
+        )
         flagged_cap = int(flagged_cfg.get("max_per_session", 2))
 
         bypass_cfg = gate_cfg.get("admin_bypass", {}) or {}
@@ -956,7 +1172,34 @@ class Session:
             asyncio.create_task(_flagged_task())
             return "handled"
 
-        # REFUSE or FLOOR_HIT
+        # REFUSE or FLOOR_HIT. FLOOR_HIT in particular is a single-model
+        # irreversible refusal based on a list-match classification — the
+        # class of error most worth catching with a second pass. Run the
+        # cross-check; the refusal still fires regardless, but dispute
+        # gets logged for admin review so false-positive floor matches
+        # (technical-vocabulary "trigger", "payload", "exploit" etc.)
+        # can be tuned out of the primary classifier.
+        suspected_floor = classifier_result.hard_floor
+        if shadow_outcome == Outcome.FLOOR_HIT and suspected_floor:
+            confirmed, cross_text = await content_gate_cross_check_floor(
+                raw_user_text, suspected_floor,
+            )
+            if not confirmed:
+                logger.info(
+                    "[%s] floor-hit cross-check DISPUTED (floor=%s)",
+                    self.key, suspected_floor,
+                )
+                log_disputed_floor_event(
+                    channel_id=self._chat_id,
+                    user_message_id=message_id,
+                    user_text=raw_user_text,
+                    sender_id=sender_id,
+                    tier=tier,
+                    suspected_floor=suspected_floor,
+                    cross_check_response=cross_text,
+                    bot_message_id=None,
+                )
+
         refusal = format_refusal_explanation(classifier_result)
         logger.info(
             "[%s] content gate %s (sum=%.2f, floor=%s)",
@@ -1089,6 +1332,9 @@ class Session:
 
         if self._turn_bypass_pending and not text.lstrip().startswith("["):
             text = f"[bypass] {text}"
+        # Pre-send fabrication-risk injection — same policy as the
+        # non-streaming path in _fire_on_text.
+        text = self._maybe_prepend_uncertain(text)
 
         async with self._turn_lock:
             branch_tag, stripped = extract_branch_tag(text)
@@ -1143,6 +1389,37 @@ class Session:
                     response_text=stripped,
                 )
 
+    def _maybe_prepend_uncertain(self, text: str) -> str:
+        """Pre-send fabrication-risk check. If the triadic pattern fires
+        (haiku_invoked + domain match + no kb-query + no branch tag), the
+        response sits on the highest-risk profile for fabrication documented
+        in feedback.log_bot_response. Prepend [uncertain] so the response
+        reaches Discord with the audit tag applied rather than relying on
+        retrospective log review.
+
+        The retrospective audit record in bot_responses.jsonl is still
+        written downstream by log_bot_response — the derived
+        fabrication_risk flag there preserves the training signal on the
+        un-intervened pattern. The chat-bound text just gets the
+        [uncertain] prefix that the model would have self-applied if it
+        were reliably applying the three-branch classifier.
+
+        Called from both _fire_on_text and _fire_on_text_streamed after
+        the bypass-tag check and before extract_branch_tag, so if the
+        injected tag makes it to extract_branch_tag it gets stripped
+        from the visible text and routed to branch_audit.jsonl normally.
+        """
+        if text.lstrip().startswith("["):
+            return text
+        triadic = (
+            self._turn_haiku_invoked
+            and bool(self._turn_domains)
+            and not self._turn_modules_queried
+        )
+        if triadic:
+            return f"[uncertain] {text}"
+        return text
+
     async def _fire_on_text(self, text: str) -> None:
         """Send a turn's response to Discord with feedback-log side effects.
 
@@ -1172,6 +1449,10 @@ class Session:
         # other per-turn flags.
         if self._turn_bypass_pending and not text.lstrip().startswith("["):
             text = f"[bypass] {text}"
+        # Pre-send fabrication-risk injection (see _maybe_prepend_uncertain
+        # docstring). Runs after the bypass tag so [bypass] wins when both
+        # conditions are true.
+        text = self._maybe_prepend_uncertain(text)
         async with self._turn_lock:
             branch_tag, stripped = extract_branch_tag(text)
             try:
@@ -1902,6 +2183,29 @@ class Session:
 
         self._tool_call_count += 1
 
+        # Patch 1a — agent_core.BudgetState enforcement. step_cap is
+        # parallel to the legacy _tool_call_count check below (kept for
+        # back-compat with operators reading existing log lines), but
+        # time_cap_s is a new halting-problem defence: a turn that stays
+        # under the step budget can still run wall-clock unbounded on
+        # slow I/O (flaky network retries, gcloud timeouts). The cap
+        # here bounds the entire turn.
+        if self._turn_budget is not None:
+            from brendbot.agent_core.budgets import BudgetExceeded
+            # Sync step count from the in-house counter so both views agree.
+            self._turn_budget.steps = self._tool_call_count
+            tcap = self._turn_budget.budget.time_cap_s
+            if tcap is not None and self._turn_budget.elapsed_s > tcap:
+                exc = BudgetExceeded("time_s", self._turn_budget.elapsed_s, tcap)
+                logger.warning("[%s] turn budget %s", self.key, exc)
+                return PermissionResultDeny(
+                    message=(
+                        f"Turn budget exceeded on {exc.dimension}: "
+                        f"used={exc.used:.1f}s, cap={exc.cap:.0f}s. "
+                        "Stop tool use and respond with what is known."
+                    )
+                )
+
         # Address-level budget cap (FUSED-CORE Budget Throttle enforcement).
         # Maps to the levels defined in engagement.yaml address_levels:
         #   high     → full budget (_TOOL_CALL_BUDGET)
@@ -2502,6 +2806,14 @@ class SessionPool:
                 channel=chat_id,
                 domains=current_domains,
                 limit=3,
+                # Patch 3: semantic re-rank. The raw inbound text is
+                # the recall cue — passing it lets query_episodes
+                # cosine-score stored episode summaries against the
+                # current question instead of relying purely on the
+                # lexical domain-LIKE prefilter + recency order.
+                # Degrades gracefully when sentence-transformers is
+                # unavailable.
+                query_text=text,
             )
             if episodes:
                 # Patch A: filter out episodes already injected this session.
@@ -2581,6 +2893,16 @@ class SessionPool:
         # Reset per-turn load counters; cumulative counters persist until restart.
         session._turn_bash_calls = 0
         session._turn_other_tool_calls = 0
+        # Patch 1a — fresh BudgetState for this turn. BudgetState carries
+        # typed caps from agent_core.budgets.Budget (step_cap, time_cap_s)
+        # and a monotonic start timestamp; _permission_check reads from
+        # it to enforce the wall-clock cap on every tool-call request.
+        from brendbot.agent_core.budgets import Budget, BudgetState
+        session._turn_budget = BudgetState(budget=Budget(
+            step_cap=_TOOL_CALL_BUDGET,
+            time_cap_s=_TURN_TIME_CAP_S,
+            token_cap=None,
+        ))
         session._turn_sender_id = sender_id
         # If the engagement gate fired the haiku classifier on this message,
         # account for it in the cumulative load score (Phase 3 #1A). Also
@@ -2588,6 +2910,50 @@ class SessionPool:
         session._turn_haiku_invoked = bool(haiku_invoked)
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
+
+        # Patch 1b — agent_core.complexity pre-flight. Before the content
+        # gate spends a haiku call and the session spends a full
+        # generation pass, classify the inbound request by Chapter-5
+        # complexity tier. Hard-reject requests that classify as RE
+        # (halting-problem-adjacent) or NON_RE (beyond semi-decidable)
+        # with a local refusal — the model would either loop or
+        # fabricate a "proof" that isn't one, and neither is cheap.
+        # PSPACE hints (long-horizon planning, game-tree search) are
+        # not rejected but are logged; callers may still get a useful
+        # approximation.
+        try:
+            from brendbot.agent_core.complexity import (
+                classify as _complexity_classify,
+                Route as _ComplexityRoute,
+                Tier as _ComplexityTier,
+            )
+            classification = _complexity_classify(text)
+            if classification.route == _ComplexityRoute.REJECT:
+                logger.info(
+                    "[%s] complexity preflight REJECT tier=%s rationale=%s",
+                    session.key, classification.tier.name, classification.rationale,
+                )
+                refusal = (
+                    f"can't take that one — the request is tier "
+                    f"{classification.tier.name} "
+                    f"({classification.rationale}). "
+                    "beyond what can be decided in finite time; "
+                    "reframe with a concrete bound and I can try."
+                )
+                asyncio.create_task(session._fire_on_text(refusal))
+                return
+            if classification.tier == _ComplexityTier.PSPACE:
+                logger.info(
+                    "[%s] complexity preflight PSPACE tier (bounded_search path) — %s",
+                    session.key, classification.rationale,
+                )
+        except Exception as exc:
+            # Preflight is advisory; fall through on any error to keep
+            # the response path live.
+            logger.debug(
+                "[%s] complexity preflight error (advisory, ignoring): %s",
+                session.key, exc,
+            )
 
         # Content gate (phase 4) runs here, between turn state setup and
         # inject. Decides PASS / FLAG / REFUSE / FLOOR_HIT / BYPASS via

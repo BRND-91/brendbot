@@ -26,12 +26,55 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from brendbot import embedding_model
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "brendbot" / "knowledge" / "knowledge.db"
 
 _RETENTION_PER_CHANNEL = 50
+
+# Prefilter multiplier: fetch N*this from the lexical domain-LIKE tier
+# then cosine-rerank to the caller's requested limit. 4x keeps the
+# SQLite query cheap while giving the reranker enough candidates to
+# promote semantically-close episodes over merely-recent-and-tagged
+# ones.
+_RERANK_PREFETCH = 4
+
+# Cosine threshold for "semantically related" — below this we don't
+# override lexical order. MiniLM on short summaries clusters closely
+# for true matches (>0.6 common) so 0.35 is a generous floor that
+# still excludes unrelated same-channel episodes.
+_COSINE_MIN = 0.35
+
+# Track migrated DB paths so we migrate each distinct database exactly
+# once per process. A plain bool would stick on the first-seen DB and
+# starve tests (or sidecar tools) that open fresh databases in the same
+# process. Dropping down to resolve() handles symlinks / relative paths
+# producing the same canonical key.
+_migrated_paths: set[str] = set()
+
+
+def _ensure_migrated(conn: sqlite3.Connection, db_key: str) -> None:
+    """Add the `embedding` BLOB column if missing. Idempotent per
+    `db_key`. Never raises — failed migration just means embedding
+    columns won't be populated and the cosine re-rank will degrade to
+    lexical order."""
+    if db_key in _migrated_paths:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(episodes)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "embedding" not in cols:
+            cur.execute("ALTER TABLE episodes ADD COLUMN embedding BLOB")
+            conn.commit()
+            logger.info("episodes: added embedding BLOB column (%s)", db_key)
+        _migrated_paths.add(db_key)
+    except Exception as exc:
+        logger.warning("episodes: migration check failed for %s: %s", db_key, exc)
+        # Do not add to _migrated_paths — retry next call.
 
 # Entity extraction: pull capitalized words and quoted strings from turn
 # log text. Cheap, no LLM. Tuned for Discord chat — common nouns slip
@@ -98,14 +141,18 @@ def write_episode(
 
     try:
         conn = sqlite3.connect(db)
+        _ensure_migrated(conn, str(db))
         cur = conn.cursor()
+        # Best-effort embedding — None when sentence-transformers is
+        # unavailable. Retrieval-side re-rank handles missing blobs.
+        embedding_blob = embedding_model.embed(summary) if summary else None
         cur.execute(
             """
             INSERT INTO episodes
-            (channel, ts_start, ts_end, turn_count, domains, entities, summary, outcome)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (channel, ts_start, ts_end, turn_count, domains, entities, summary, outcome, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (channel, ts_start, ts_end, turn_count, domains_str, entities_str, summary, outcome),
+            (channel, ts_start, ts_end, turn_count, domains_str, entities_str, summary, outcome, embedding_blob),
         )
 
         # Retention: keep only the most recent N per channel.
@@ -140,13 +187,27 @@ def query_episodes(
     domains: list[str],
     limit: int = 3,
     db_path: Optional[Path] = None,
+    query_text: str = "",
 ) -> list[dict]:
     """Phase 3 #2B — fetch matching prior episodes for retrieval cue scoring.
 
-    Returns up to `limit` most-recent episodes for `channel` whose stored
-    domains overlap with the provided `domains` list. If `domains` is
-    empty, returns the most recent N episodes for the channel regardless
-    of domain match (channel context alone).
+    Returns up to `limit` episodes for `channel` whose stored domains
+    overlap with the provided `domains` list. If `domains` is empty,
+    the candidate pool is simply the most recent N episodes for the
+    channel (channel context alone).
+
+    Ranking:
+      1. Lexical prefilter (domain LIKE / channel) fetches `limit *
+         _RERANK_PREFETCH` most-recent candidates.
+      2. If `query_text` is provided AND the embedding model is
+         available, candidates are re-ranked by cosine similarity of
+         their stored embedding to the embedded query, filtered to
+         score >= _COSINE_MIN, and truncated to `limit`.
+      3. Otherwise the prefilter order (recency) is used.
+
+    Callers that pre-date the embedding tier can omit `query_text`; the
+    function then behaves exactly like the original lexical-only
+    implementation so the upgrade is backward compatible.
 
     Returns empty list on any failure — never raises.
     """
@@ -154,8 +215,11 @@ def query_episodes(
     if not db.exists():
         return []
 
+    prefetch_limit = limit * _RERANK_PREFETCH
+
     try:
         conn = sqlite3.connect(db)
+        _ensure_migrated(conn, str(db))
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -165,18 +229,18 @@ def query_episodes(
             like_clauses = " OR ".join(["domains LIKE ?" for _ in domains])
             params: list = [channel]
             params.extend([f"%{d}%" for d in domains])
-            params.append(limit)
+            params.append(prefetch_limit)
             query = f"""
-                SELECT id, ts_end, turn_count, domains, entities, summary, outcome
+                SELECT id, ts_end, turn_count, domains, entities, summary, outcome, embedding
                 FROM episodes
                 WHERE channel = ? AND ({like_clauses})
                 ORDER BY ts_end DESC
                 LIMIT ?
             """
         else:
-            params = [channel, limit]
+            params = [channel, prefetch_limit]
             query = """
-                SELECT id, ts_end, turn_count, domains, entities, summary, outcome
+                SELECT id, ts_end, turn_count, domains, entities, summary, outcome, embedding
                 FROM episodes
                 WHERE channel = ?
                 ORDER BY ts_end DESC
@@ -186,7 +250,32 @@ def query_episodes(
         cur.execute(query, params)
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()
-        return rows
     except Exception as exc:
         logger.warning("episode query failed for channel %s: %s", channel, exc)
         return []
+
+    # Semantic re-rank. Skipped when there's nothing to embed, when the
+    # model isn't available, or when no rows carry an embedding blob.
+    if query_text and rows and embedding_model.is_available():
+        query_vec = embedding_model.embed_vector(query_text)
+        if query_vec is not None:
+            scored: list[tuple[float, dict]] = []
+            for r in rows:
+                score = embedding_model.cosine_similarity(
+                    r.get("embedding"), query_vec,
+                )
+                if score >= _COSINE_MIN:
+                    scored.append((score, r))
+            if scored:
+                scored.sort(key=lambda t: t[0], reverse=True)
+                ranked = [r for _, r in scored[:limit]]
+                # Strip embedding blob from the returned dicts — callers
+                # want display data, not ~1.5KB of float32 per episode.
+                for r in ranked:
+                    r.pop("embedding", None)
+                return ranked
+
+    # Fallback: lexical/recency order, truncated to requested limit.
+    for r in rows:
+        r.pop("embedding", None)
+    return rows[:limit]

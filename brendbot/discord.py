@@ -800,6 +800,14 @@ class DiscordListener:
             # layer (bot_responses.jsonl gate_outcome field) or to
             # log_skip_decision on drop paths. See feedback.GATE_OUTCOMES.
             gate_outcome: str = ""
+            # Phase 4 — middle-band content-gate fold plumbing. Only the
+            # middle-band defer path (classify_combined) writes these;
+            # every other path leaves them at None/False so the session
+            # layer and feedback writer see "no fold" semantics. Set
+            # here rather than inside the guild branch so DM dispatch
+            # doesn't trip an UnboundLocalError at the forwarding call.
+            _precomputed_content: object | None = None
+            _content_fold_fallback: bool = False
 
             if message.guild:
                 # ── Name-triggered path ───────────────────────────────────────
@@ -917,10 +925,33 @@ class DiscordListener:
                             gate_outcome = "pregate_yes"
                         else:
                             # Defer: fall through to haiku as before.
+                            # Phase 4 — invoke the combined classifier
+                            # (engagement + content in one roundtrip) when
+                            # we're about to spawn haiku anyway. The engagement
+                            # half gives us the same decision classify() would
+                            # have returned; the content half is threaded into
+                            # the downstream content_gate as precomputed so
+                            # apply_content_gate can skip its own haiku spawn.
                             haiku_invoked = True  # tracked for cognitive load (Phase 3 #1A)
-                            from brendbot.classifier import classify
-                            classifier_result = await classify(
+                            from brendbot.classifier import classify_combined
+                            _combined = await classify_combined(
                                 text, context_snapshot
+                            )
+                            classifier_result = _combined.engagement
+                            # Fold plumbing:
+                            #  _precomputed_content is the parsed content
+                            #    half if it came back clean, else None (SDK
+                            #    error OR content half parse error).
+                            #  _content_fold_fallback records "we got an
+                            #    engagement decision, but the content half
+                            #    was unparseable" — the session layer will
+                            #    run a standalone content_gate_classify
+                            #    call downstream; the flag is pure
+                            #    observability so we can tell fallback
+                            #    turns apart from clean fold turns.
+                            _precomputed_content = _combined.content
+                            _content_fold_fallback = bool(
+                                _combined.content_parse_error
                             )
                             engage = classifier_result.engage
                             if classifier_result.reason == "error":
@@ -1101,6 +1132,8 @@ class DiscordListener:
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
                 gate_outcome=gate_outcome,
+                precomputed_content=_precomputed_content,
+                content_fold_fallback=_content_fold_fallback,
             )
 
         @client.event

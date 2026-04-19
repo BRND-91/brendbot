@@ -71,6 +71,8 @@ async def run() -> None:
         haiku_invoked: bool = False,
         guild_id: str = "",
         gate_outcome: str = "",
+        precomputed_content: object | None = None,
+        content_fold_fallback: bool = False,
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
@@ -96,6 +98,8 @@ async def run() -> None:
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
                 gate_outcome=gate_outcome,
+                precomputed_content=precomputed_content,
+                content_fold_fallback=content_fold_fallback,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

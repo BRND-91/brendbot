@@ -271,3 +271,124 @@ class TestGateOutcome:
         )
         record = json.loads(log_path.read_text().strip())
         assert record["gate_outcome"] == "some_future_outcome"
+
+
+# ── content_fold_used / content_fold_fallback (Phase 4) ──────────────────
+
+class TestContentFoldObservability:
+    """Phase 4 — two optional bool fields record whether the middle-band
+    content-gate fold was exercised for this turn:
+
+      * content_fold_used: True when classify_combined produced a usable
+        content-gate result that was threaded through to apply_content_gate
+        (one-spawn path).
+      * content_fold_fallback: True when classify_combined's engagement
+        half parsed but the content half didn't — a standalone
+        content_gate_classify was called as fallback.
+
+    Both default to False and are omitted from the record when False,
+    so pre-Phase-4 consumers see no shape change on unrelated turns.
+    """
+
+    def test_fold_used_written_when_true(self, tmp_path, monkeypatch) -> None:
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.7,
+            domains=[],
+            address_level="high",
+            branch_tag=None,
+            content_fold_used=True,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["content_fold_used"] is True
+        # Fallback not supplied → absent (not False).
+        assert "content_fold_fallback" not in record
+
+    def test_fold_fallback_written_when_true(self, tmp_path, monkeypatch) -> None:
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.7,
+            domains=[],
+            address_level="high",
+            branch_tag=None,
+            content_fold_fallback=True,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["content_fold_fallback"] is True
+        assert "content_fold_used" not in record
+
+    def test_both_fields_written_when_both_true(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Rare but legal combo — fold succeeded partially (engagement
+        parsed, content parse-errored, standalone fallback ran and
+        succeeded). Both flags should surface for audit."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.7,
+            domains=[],
+            address_level="high",
+            branch_tag=None,
+            content_fold_used=True,
+            content_fold_fallback=True,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["content_fold_used"] is True
+        assert record["content_fold_fallback"] is True
+
+    def test_both_absent_when_false(self, tmp_path, monkeypatch) -> None:
+        """The default-False path (every non-fold turn) must not write
+        the field. Pre-Phase-4 record shape must be preserved for
+        consumers that never saw these keys before."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.5,
+            domains=[],
+            address_level="moderate",
+            branch_tag=None,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "content_fold_used" not in record
+        assert "content_fold_fallback" not in record
+
+    def test_explicit_false_also_omitted(self, tmp_path, monkeypatch) -> None:
+        """Passing False explicitly (e.g. from route_message's wiring)
+        should be indistinguishable from omitting — downstream consumers
+        must not see a noisy False for every turn."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.5,
+            domains=[],
+            address_level="moderate",
+            branch_tag=None,
+            content_fold_used=False,
+            content_fold_fallback=False,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "content_fold_used" not in record
+        assert "content_fold_fallback" not in record

@@ -106,6 +106,7 @@ class ClassifierCache:
 # Module-level singletons — one per classifier type.
 _engage_cache: ClassifierCache | None = None
 _content_cache: ClassifierCache | None = None
+_combined_cache: ClassifierCache | None = None
 
 
 def get_engage_cache() -> ClassifierCache:
@@ -120,3 +121,19 @@ def get_content_cache() -> ClassifierCache:
     if _content_cache is None:
         _content_cache = ClassifierCache()
     return _content_cache
+
+
+def get_combined_cache() -> ClassifierCache:
+    """Cache for Phase 4 combined engagement+content classifier results.
+
+    Keyed on the combined prompt (same cache shape as the other two
+    singletons). Separate from get_engage_cache / get_content_cache
+    because the combined prompt is distinct and cross-pollination would
+    pollute the other caches with results that mix decision types.
+    If repeat-text rates across fold and non-fold paths later justify
+    cross-population, it's a single-line change — not this phase.
+    """
+    global _combined_cache
+    if _combined_cache is None:
+        _combined_cache = ClassifierCache()
+    return _combined_cache

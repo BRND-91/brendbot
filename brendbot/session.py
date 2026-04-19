@@ -88,12 +88,26 @@ class ClassifierPool:
             await pool.dispose(client)  # tear down used client, replenish
     """
 
+    # Consecutive-failure threshold for a one-time admin alert. Below this,
+    # the pool silently falls back to cold-spawn (adding ~18s to every
+    # ambiguous message) which was previously invisible to the operator
+    # until manual inspection of logs. Above it, we post once to the
+    # admin alert channel so the breakage is not silent. Counter resets
+    # on any successful spawn.
+    _LIVENESS_FAILURE_THRESHOLD = 5
+
     def __init__(self, pool_size: int = _CLASSIFIER_POOL_SIZE) -> None:
         self._target_size = pool_size
         self._ready: asyncio.Queue[ClaudeSDKClient] = asyncio.Queue()
         self._spawning = 0  # number of in-flight background spawns
         self._closed = False
         self._replenish_tasks: list[asyncio.Task] = []
+        # Liveness tracking — consecutive spawn failures since the last
+        # successful spawn. Reset to 0 by _spawn_one on success. The alert
+        # fires exactly once per crossing of _LIVENESS_FAILURE_THRESHOLD;
+        # _liveness_alerted prevents re-firing every subsequent failure.
+        self._consecutive_spawn_failures: int = 0
+        self._liveness_alerted: bool = False
 
     async def warm_up(self) -> None:
         """Pre-spawn pool_size clients concurrently. Call at startup."""
@@ -123,9 +137,42 @@ class ClassifierPool:
                 await self._teardown(client)
                 return False
             self._ready.put_nowait(client)
+            # Success — reset liveness counter so a spurious earlier failure
+            # does not carry forward forever.
+            self._consecutive_spawn_failures = 0
+            self._liveness_alerted = False
             return True
         except Exception as exc:
             logger.warning("ClassifierPool spawn failed: %s", exc)
+            self._consecutive_spawn_failures += 1
+            # Fire a one-time admin alert after N consecutive failures.
+            # _liveness_alerted guard prevents re-firing on every subsequent
+            # failure while the outage persists; the flag clears on any
+            # success. The alert itself is rate-limited independently inside
+            # discord._admin_alert (1/hr per category) so even without the
+            # guard the user-visible noise would be bounded, but the guard
+            # keeps the log-level intent explicit.
+            if (
+                self._consecutive_spawn_failures >= self._LIVENESS_FAILURE_THRESHOLD
+                and not self._liveness_alerted
+            ):
+                self._liveness_alerted = True
+                try:
+                    # Lazy import to avoid circular import at module load —
+                    # discord.py imports session.py via haiku_classify.
+                    from brendbot.discord import _admin_alert
+                    _admin_alert(
+                        "classifier_pool_outage",
+                        f"ClassifierPool: {self._consecutive_spawn_failures} "
+                        f"consecutive spawn failures. Falling back to "
+                        f"cold-spawn per call (+~18s latency each). "
+                        f"Last error: {type(exc).__name__}: {exc}"[:500],
+                    )
+                except Exception as alert_exc:
+                    logger.debug(
+                        "ClassifierPool liveness alert dispatch failed: %s",
+                        alert_exc,
+                    )
             return False
         finally:
             self._spawning -= 1

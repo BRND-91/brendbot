@@ -134,3 +134,135 @@ class TestFeedbackReactions:
             "🚫": "bad_answer",
             "🎯": "good_answer",
         }
+
+
+# ── Cache metrics (Phase 1 observability) ────────────────────────────────
+
+class TestCacheMetrics:
+    """Phase 1 — prompt-cache observability on bot_responses.jsonl.
+
+    These tests pin the shape of the cache block: present when any of the
+    three input fields are passed, omitted entirely when all three are
+    None so downstream consumers of the pre-Phase-1 schema never see
+    partial rows.
+    """
+
+    def _base_kwargs(self, **overrides):
+        """Minimal valid kwargs for log_bot_response. Tests override only
+        the fields they care about."""
+        defaults = dict(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hello",
+            score=None,
+            domains=[],
+            address_level="high",
+            branch_tag=None,
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_cache_block_omitted_when_all_none(self, tmp_path, monkeypatch) -> None:
+        """Back-compat: calls that don't pass the new cache args produce
+        the exact same JSON shape as before Phase 1."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs())
+        record = json.loads(log_path.read_text().strip())
+        assert "input_tokens" not in record
+        assert "cache_read_input_tokens" not in record
+        assert "cache_creation_input_tokens" not in record
+        assert "cache_hit_ratio" not in record
+
+    def test_full_cache_block_with_hit_ratio(self, tmp_path, monkeypatch) -> None:
+        """Steady-state cache hit: most input came from cache_read.
+        Ratio should be cache_read / (input + cache_read + cache_creation)
+        rounded to 4 decimal places."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs(
+            input_tokens=100,
+            cache_read_input_tokens=900,
+            cache_creation_input_tokens=0,
+        ))
+        record = json.loads(log_path.read_text().strip())
+        assert record["input_tokens"] == 100
+        assert record["cache_read_input_tokens"] == 900
+        assert record["cache_creation_input_tokens"] == 0
+        assert record["cache_hit_ratio"] == 0.9  # 900 / 1000
+
+    def test_cache_miss_first_turn(self, tmp_path, monkeypatch) -> None:
+        """Turn 1 of a fresh session — cache was written, not read.
+        Ratio is 0.0 (no reads) despite the cache block being active."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs(
+            input_tokens=500,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=2500,
+        ))
+        record = json.loads(log_path.read_text().strip())
+        assert record["input_tokens"] == 500
+        assert record["cache_read_input_tokens"] == 0
+        assert record["cache_creation_input_tokens"] == 2500
+        assert record["cache_hit_ratio"] == 0.0
+
+    def test_cache_block_written_when_only_one_field_set(self, tmp_path, monkeypatch) -> None:
+        """If the CLI partially populates usage (unlikely but possible),
+        still write the cache block with zeros for the missing fields."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs(input_tokens=42))
+        record = json.loads(log_path.read_text().strip())
+        assert record["input_tokens"] == 42
+        # The other two fields were None → coerced to 0 in the record.
+        assert record["cache_read_input_tokens"] == 0
+        assert record["cache_creation_input_tokens"] == 0
+        assert record["cache_hit_ratio"] == 0.0
+
+    def test_cache_ratio_none_when_all_tokens_zero(self, tmp_path, monkeypatch) -> None:
+        """All-zeros (phantom usage dict) → ratio is None, not NaN or 0.
+        Using None signals 'undefined' cleanly to downstream consumers."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs(
+            input_tokens=0,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ))
+        record = json.loads(log_path.read_text().strip())
+        assert record["input_tokens"] == 0
+        assert record["cache_hit_ratio"] is None
+
+    def test_cache_ratio_rounded_to_4_places(self, tmp_path, monkeypatch) -> None:
+        """Repeating-decimal ratio should be capped at 4 decimal places
+        so the JSONL stays compact and comparable across runs."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        # 1/3 = 0.333333... → rounds to 0.3333
+        fb.log_bot_response(**self._base_kwargs(
+            input_tokens=1,
+            cache_read_input_tokens=1,
+            cache_creation_input_tokens=1,
+        ))
+        record = json.loads(log_path.read_text().strip())
+        assert record["cache_hit_ratio"] == 0.3333
+
+    def test_cache_block_coexists_with_existing_fields(self, tmp_path, monkeypatch) -> None:
+        """Sanity check: adding the cache block doesn't break the
+        flow_class / fabrication_risk derived fields."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(**self._base_kwargs(
+            domains=["BUILDSCI"],
+            modules_queried=["BUILDSCI"],
+            haiku_invoked=True,
+            input_tokens=100,
+            cache_read_input_tokens=500,
+            cache_creation_input_tokens=0,
+        ))
+        record = json.loads(log_path.read_text().strip())
+        assert record["flow_class"] == "module_sourced"
+        assert record["fabrication_risk"] is False
+        assert record["cache_hit_ratio"] == round(500 / 600, 4)

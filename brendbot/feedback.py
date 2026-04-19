@@ -116,6 +116,9 @@ def log_bot_response(
     branch_tag: str | None,
     modules_queried: list[str] | None = None,
     haiku_invoked: bool = False,
+    input_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
     and _fire_on_text_streamed after send_message returns the message ID.
@@ -138,7 +141,19 @@ def log_bot_response(
         non-empty AND modules_queried empty AND no branch_tag. That's
         the shape of a turn where the bot engaged ambiguously, matched
         a domain, skipped the KB, and produced untagged output — the
-        highest-risk profile for fabrication."""
+        highest-risk profile for fabrication.
+
+    Phase 1 — prompt-cache observability. input_tokens,
+    cache_read_input_tokens, cache_creation_input_tokens come from
+    ResultMessage.usage (already populated by the CLI). When any are
+    present a derived `cache_hit_ratio` is written too:
+        cache_hit_ratio = cache_read / (input + cache_read + cache_creation)
+    A session in steady state with an unchanged CLAUDE.md should hold
+    the ratio near 1.0 after the first turn. A ratio of 0 on turn N>1
+    means the cache got invalidated — either the system prompt changed,
+    the TTL expired, or the CLI/API isn't caching for this request.
+    All three cache fields are omitted from the JSON when every one is
+    None so old log consumers aren't broken."""
     domains = domains or []
     modules_queried = modules_queried or []
     if not domains:
@@ -150,7 +165,7 @@ def log_bot_response(
     fabrication_risk = bool(
         haiku_invoked and domains and not modules_queried and not branch_tag
     )
-    _append_jsonl(BOT_RESPONSES_LOG, {
+    record = {
         "ts": _now_iso(),
         "channel_id": channel_id,
         "bot_message_id": bot_message_id,
@@ -164,7 +179,23 @@ def log_bot_response(
         "haiku_invoked": haiku_invoked,
         "flow_class": flow_class,
         "fabrication_risk": fabrication_risk,
-    })
+    }
+    cache_present = (
+        input_tokens is not None
+        or cache_read_input_tokens is not None
+        or cache_creation_input_tokens is not None
+    )
+    if cache_present:
+        _in = int(input_tokens) if isinstance(input_tokens, (int, float)) else 0
+        _cr = int(cache_read_input_tokens) if isinstance(cache_read_input_tokens, (int, float)) else 0
+        _cc = int(cache_creation_input_tokens) if isinstance(cache_creation_input_tokens, (int, float)) else 0
+        total = _in + _cr + _cc
+        ratio = round(_cr / total, 4) if total > 0 else None
+        record["input_tokens"] = _in
+        record["cache_read_input_tokens"] = _cr
+        record["cache_creation_input_tokens"] = _cc
+        record["cache_hit_ratio"] = ratio
+    _append_jsonl(BOT_RESPONSES_LOG, record)
 
 
 def log_branch_audit(

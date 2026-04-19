@@ -70,6 +70,8 @@ async def run() -> None:
         score: float | None = None,
         haiku_invoked: bool = False,
         guild_id: str = "",
+        recv_ts: float | None = None,
+        engage_done_ts: float | None = None,
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
@@ -94,6 +96,8 @@ async def run() -> None:
                 score=score,
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
+                recv_ts=recv_ts,
+                engage_done_ts=engage_done_ts,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

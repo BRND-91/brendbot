@@ -124,6 +124,97 @@ class TestLogWriters:
         assert len(record["user_text"]) == 500
 
 
+# ── stage_timings_ms (Phase 2a instrumentation) ──────────────────────────
+
+class TestStageTimings:
+    def test_stage_timings_omitted_when_none(self, tmp_path, monkeypatch) -> None:
+        # Absent param → key must not appear in record.
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1", bot_message_id="m1",
+            user_message_id="u1", user_text="hi",
+            score=None, domains=[], address_level="high",
+            branch_tag=None,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "stage_timings_ms" not in record
+
+    def test_stage_timings_omitted_when_empty(self, tmp_path, monkeypatch) -> None:
+        # Empty dict → key must not appear (avoid emitting noise).
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1", bot_message_id="m1",
+            user_message_id="u1", user_text="hi",
+            score=None, domains=[], address_level="high",
+            branch_tag=None,
+            stage_timings_ms={},
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "stage_timings_ms" not in record
+
+    def test_stage_timings_emitted_and_rounded(self, tmp_path, monkeypatch) -> None:
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1", bot_message_id="m1",
+            user_message_id="u1", user_text="hi",
+            score=None, domains=[], address_level="high",
+            branch_tag=None,
+            stage_timings_ms={
+                "t_receive_to_engage_gate": 12.34567,
+                "t_engage_gate_to_content_gate": 500.1,
+                "t_content_gate_to_first_token": 7200.123,
+                "t_first_token_to_complete": 1800.5,
+            },
+        )
+        record = json.loads(log_path.read_text().strip())
+        timings = record["stage_timings_ms"]
+        # Rounded to 2 decimal places — avoids spurious precision in JSONL.
+        assert timings["t_receive_to_engage_gate"] == 12.35
+        assert timings["t_engage_gate_to_content_gate"] == 500.1
+        assert timings["t_content_gate_to_first_token"] == 7200.12
+        assert timings["t_first_token_to_complete"] == 1800.5
+
+    def test_stage_timings_drops_non_numeric(self, tmp_path, monkeypatch) -> None:
+        # Callers that pass None for a missing stage should have that
+        # stage silently dropped. Non-numeric (str, bool-ish) likewise.
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1", bot_message_id="m1",
+            user_message_id="u1", user_text="hi",
+            score=None, domains=[], address_level="high",
+            branch_tag=None,
+            stage_timings_ms={
+                "t_receive_to_engage_gate": 5.0,
+                "t_engage_gate_to_content_gate": None,
+                "t_content_gate_to_first_token": "oops",
+                "t_first_token_to_complete": 100.0,
+            },
+        )
+        record = json.loads(log_path.read_text().strip())
+        timings = record["stage_timings_ms"]
+        assert set(timings.keys()) == {
+            "t_receive_to_engage_gate", "t_first_token_to_complete",
+        }
+
+    def test_stage_timings_all_none_omits_field(self, tmp_path, monkeypatch) -> None:
+        # Every stage None → filtered dict is empty → field omitted.
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1", bot_message_id="m1",
+            user_message_id="u1", user_text="hi",
+            score=None, domains=[], address_level="high",
+            branch_tag=None,
+            stage_timings_ms={"t_receive_to_engage_gate": None},
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "stage_timings_ms" not in record
+
+
 # ── FEEDBACK_REACTIONS map ───────────────────────────────────────────────
 
 class TestFeedbackReactions:

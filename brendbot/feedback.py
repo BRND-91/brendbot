@@ -126,6 +126,7 @@ def log_bot_response(
     input_tokens: int | None = None,
     cache_read_input_tokens: int | None = None,
     cache_creation_input_tokens: int | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
     and _fire_on_text_streamed after send_message returns the message ID.
@@ -160,7 +161,17 @@ def log_bot_response(
     means the cache got invalidated — either the system prompt changed,
     the TTL expired, or the CLI/API isn't caching for this request.
     All three cache fields are omitted from the JSON when every one is
-    None so old log consumers aren't broken."""
+    None so old log consumers aren't broken.
+
+      stage_timings_ms (Phase 2a instrumentation): per-stage wall-time
+        deltas in milliseconds. None or missing keys are fine — callers
+        emit what they have. Recognised keys:
+          - t_receive_to_engage_gate:     on_message entry → engage decision
+          - t_engage_gate_to_content_gate: engage decision → content gate done
+          - t_content_gate_to_first_token: content gate done → first TextBlock
+          - t_first_token_to_complete:    first TextBlock → response posted
+        Downstream consumers should use .get(key, None) — field set may
+        evolve across phases."""
     domains = domains or []
     modules_queried = modules_queried or []
     if not domains:
@@ -202,6 +213,17 @@ def log_bot_response(
         record["cache_read_input_tokens"] = _cr
         record["cache_creation_input_tokens"] = _cc
         record["cache_hit_ratio"] = ratio
+    if stage_timings_ms:
+        # Emit only keys with numeric values; drop None entries so the
+        # row stays compact for sessions that missed a stamp (e.g.
+        # pre-stream turn that jumped straight to _fire_on_text).
+        filtered = {
+            k: round(v, 2)
+            for k, v in stage_timings_ms.items()
+            if isinstance(v, (int, float))
+        }
+        if filtered:
+            record["stage_timings_ms"] = filtered
     _append_jsonl(BOT_RESPONSES_LOG, record)
 
 

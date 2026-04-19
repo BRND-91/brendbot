@@ -678,6 +678,11 @@ class DiscordListener:
             if message.author == client.user:
                 return
 
+            # Phase 2a — stamp receive time at the earliest point. Drops
+            # (bot echo, wrong-mention, hard-drop, haiku-no) return before
+            # the callback, so recv_ts is only observed on engaged turns.
+            recv_ts = time.monotonic()
+
             text = message.content or ""
             channel_id = str(message.channel.id)
             sender_id = str(message.author.id)
@@ -1023,6 +1028,12 @@ class DiscordListener:
             else:
                 _domain_hint_str = ""
 
+            # Phase 2a — stamp engage-gate-done right before the callback,
+            # so t_receive_to_engage_gate captures everything the listener
+            # did on this turn (scoring, seeding, mentions, haiku, context
+            # assembly). If haiku_invoked, that call dominates the delta.
+            engage_done_ts = time.monotonic()
+
             await self._on_message(
                 platform,
                 sender_id,
@@ -1039,6 +1050,8 @@ class DiscordListener:
                 score=final_score,
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
+                recv_ts=recv_ts,
+                engage_done_ts=engage_done_ts,
             )
 
         @client.event

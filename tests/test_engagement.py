@@ -51,24 +51,23 @@ class TestScoreMessage:
         assert result.score >= bd._SCORE_DOMAIN
 
     def test_buildsci_multi_word_phrase(self) -> None:
-        # Multi-word phrase "air barrier" must match the BUILDSCI domain
-        # even though neither "air" nor "barrier" alone is a keyword.
+        # BUILDSCI has multi-word phrases ("air barrier", "blower door",
+        # "mechanical ventilation"). Confirms the scorer tokenises phrase
+        # matches, not just single words. Replaced the SYSTEMS equivalent
+        # after the SYSTEMS domain was removed from engagement.yaml.
         result = bd._score_message(
-            "how do I detail an air barrier at the rim joist",
+            "what's the role of an air barrier in the enclosure?",
             "ch1", False, None,
         )
         assert "BUILDSCI" in result.domains
+        assert result.score >= bd._SCORE_DOMAIN
 
     def test_word_boundary_no_false_positive(self) -> None:
-        # Word boundaries \b in the compiled regex mean substring matches
-        # don't fire. "paint" contains "ain" but IMAGEGEN's "paint" keyword
-        # only matches the exact word. Sanity-check: no domain matches for
-        # a message that only contains substring-look-alikes.
-        result = bd._score_message(
-            "the partition between rooms was painted last week",
-            "ch1", False, None,
-        )
-        # "painted" should NOT match "paint" — boundary enforcement.
+        # "art" is in IMAGEGEN but only as an exact word — "partition"
+        # should not match. The compiled regex uses \b boundaries so
+        # substring matches don't fire. Replaces the SYSTEMS/"delay" case
+        # after the SYSTEMS domain was removed from engagement.yaml.
+        result = bd._score_message("partition the dataset", "ch1", False, None)
         assert "IMAGEGEN" not in result.domains
 
     def test_recency_boost_only_with_word_count(self) -> None:

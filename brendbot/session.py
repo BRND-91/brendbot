@@ -471,35 +471,80 @@ async def content_gate_cross_check_floor(
         f"Text to verify:\n{user_text[:2000]}"
     )
 
+    # Patch 1c — agent_core.verifier: wrap the cross-check as a
+    # generate/verify pair. The generator runs the SDK call; the
+    # verifier checks the response is shaped correctly (first token is
+    # CONFIRMED or DISPUTED). Unshaped responses (model repeated the
+    # prompt, returned commentary, empty string) are retried up to
+    # _MAX_ATTEMPTS times. The NP/Co-NP asymmetry is literal here:
+    # generating a classification is expensive; checking it's
+    # well-formed is a two-line predicate.
+    from brendbot.agent_core.verifier import Check, Verifier
+
+    _MAX_ATTEMPTS = 2
+
+    def _is_shaped(candidate: str) -> "tuple[bool, str]":
+        """Verifier predicate: response must lead with a recognised verdict."""
+        if not candidate:
+            return False, "empty response"
+        first = candidate.strip().upper().split()[0] if candidate.strip() else ""
+        if first.startswith("CONFIRMED") or first.startswith("DISPUTED"):
+            return True, ""
+        return False, f"unrecognised verdict token: {first[:20]!r}"
+
+    verifier = Verifier[str]([
+        Check(name="verdict_shape", predicate=_is_shaped),
+    ])
+
     pool = get_classifier_pool()
-    classifier_client: ClaudeSDKClient | None = None
+
+    async def _one_call() -> str:
+        classifier_client: ClaudeSDKClient | None = None
+        try:
+            classifier_client = await pool.acquire()
+            await classifier_client.query(prompt)
+            raw_text = ""
+            async for msg in classifier_client.receive_messages():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text.strip():
+                            raw_text += block.text
+                if isinstance(msg, ResultMessage):
+                    break
+            return raw_text.strip()[:400]
+        finally:
+            if classifier_client is not None:
+                await pool.dispose(classifier_client)
+
+    last_candidate = ""
     try:
-        classifier_client = await pool.acquire()
-        await classifier_client.query(prompt)
-
-        raw_text = ""
-        async for msg in classifier_client.receive_messages():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        raw_text += block.text
-            if isinstance(msg, ResultMessage):
-                break
-
-        normalized = raw_text.strip().upper()
-        # First token is the verdict. Unparseable → fail-conservative:
-        # treat as CONFIRMED so the refusal stands. The dispute log
-        # will still capture the unexpected verdict for audit.
-        first_token = normalized.split()[0] if normalized else ""
-        confirmed = not first_token.startswith("DISPUTED")
-        return confirmed, raw_text.strip()[:400]
+        for attempt in range(_MAX_ATTEMPTS):
+            candidate = await _one_call()
+            last_candidate = candidate
+            result = verifier.verify(candidate)
+            if result.ok:
+                first_token = candidate.upper().split()[0] if candidate else ""
+                confirmed = not first_token.startswith("DISPUTED")
+                return confirmed, candidate
+            logger.debug(
+                "content_gate_cross_check_floor attempt %d failed verifier: %s",
+                attempt + 1,
+                ", ".join(f.reason for f in result.failures),
+            )
     except Exception as exc:
         logger.warning("content_gate_cross_check_floor SDK error: %s", exc)
         # Fail-conservative: keep the refusal on classifier error.
         return True, f"cross_check_error:{type(exc).__name__}"
-    finally:
-        if classifier_client is not None:
-            await pool.dispose(classifier_client)
+
+    # All attempts produced unshaped responses. Fail-conservative:
+    # treat as CONFIRMED so the refusal stands. Dispute log captures
+    # the unparseable last candidate for audit.
+    logger.warning(
+        "content_gate_cross_check_floor exhausted %d attempts without a "
+        "shaped verdict; defaulting to CONFIRMED",
+        _MAX_ATTEMPTS,
+    )
+    return True, f"unshaped_after_{_MAX_ATTEMPTS}_attempts:{last_candidate[:80]}"
 
 
 async def flagged_generate(

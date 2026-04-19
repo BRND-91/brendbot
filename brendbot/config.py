@@ -47,6 +47,15 @@ class Config:
     imagen_model_default: str = field(
         default_factory=lambda: os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001")
     )
+    # Content-gate FLAG reroute model. When set, overrides engagement.yaml's
+    # flagged_path.model. The yaml used to hardcode a dated sonnet revision
+    # (claude-sonnet-4-20250514) which ages badly — six months after deploy
+    # the revision may be silently unreachable. This env var lets operators
+    # pin a fresh model without editing yaml, and the yaml entry becomes
+    # the fallback when the var is unset.
+    claude_flagged_model: str = field(
+        default_factory=lambda: os.getenv("CLAUDE_FLAGGED_MODEL", "")
+    )
     # Session pool cap with LRU eviction (Stage 3). 0 disables the cap.
     max_sessions: int = field(
         default_factory=lambda: int(os.getenv("MAX_SESSIONS", "20"))

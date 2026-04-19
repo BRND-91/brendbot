@@ -789,7 +789,17 @@ class Session:
         refuse_thr = float(outcomes_cfg.get("refuse_threshold", 1.5))
 
         flagged_cfg = gate_cfg.get("flagged_path", {}) or {}
-        flagged_model = flagged_cfg.get("model", "claude-sonnet-4-20250514")
+        # Resolution order: env var (via Config.claude_flagged_model) > yaml >
+        # hardcoded fallback. The env var lets operators pin a fresh model
+        # without editing yaml and prevents silently-unreachable dated model
+        # strings from pinning FLAG-band traffic to a 410 Gone revision.
+        from brendbot.config import get_config as _get_cfg
+        _cfg = _get_cfg()
+        flagged_model = (
+            _cfg.claude_flagged_model
+            or flagged_cfg.get("model")
+            or "claude-sonnet-4-20250514"
+        )
         flagged_cap = int(flagged_cfg.get("max_per_session", 2))
 
         bypass_cfg = gate_cfg.get("admin_bypass", {}) or {}

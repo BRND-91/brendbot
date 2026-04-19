@@ -280,6 +280,11 @@ content_gate:
     flag_threshold: 1.5
     refuse_threshold: 2.0   # > flag_threshold; opens (1.5, 2.0] band for FLAG reroute
   flagged_path:
+    # Model used when a request lands in the FLAG band and is rerouted
+    # to the looser-safety Anthropic model per the documented escape hatch.
+    # Dated model strings rot — prefer the CLAUDE_FLAGGED_MODEL env var
+    # for deployment overrides. This yaml value is the fallback used when
+    # the env var is unset. Keep it a currently-reachable revision.
     model: claude-sonnet-4-20250514
     max_per_session: 2
     audit_stream: flag_audit.jsonl

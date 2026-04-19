@@ -299,10 +299,14 @@ async def haiku_classify(payload: dict) -> dict:
         "Example: YES funny  or  NO neutral. Nothing else."
     )
 
-    # Check engagement cache before hitting the classifier pool.
+    # Check engagement cache before hitting the classifier pool. The
+    # user's inbound `text` is the semantic key — the rules block and
+    # context block vary much less, so embedding the whole prompt
+    # would over-match on shared boilerplate. Passing `text` alone
+    # restricts semantic hits to genuinely similar user messages.
     from brendbot.classifier_cache import get_engage_cache
     engage_cache = get_engage_cache()
-    cached = engage_cache.get(prompt)
+    cached = engage_cache.get(prompt, semantic_key=text)
     if cached is not None:
         logger.debug("haiku_classify cache hit")
         return cached
@@ -332,7 +336,7 @@ async def haiku_classify(payload: dict) -> dict:
         _valid_tones = {"funny", "hype", "sad", "weird", "dumb", "wholesome", "neutral"}
         tone = tokens[1].lower() if len(tokens) > 1 and tokens[1].lower() in _valid_tones else "neutral"
         result = {"engage": engage, "reason": f"sdk:{answer_text[:8]}", "tone": tone}
-        engage_cache.put(prompt, result)
+        engage_cache.put(prompt, result, semantic_key=text)
         return result
     except Exception as e:
         logger.warning("haiku_classify SDK error: %s", e)
@@ -370,9 +374,11 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
     )
 
     # Check content-gate cache before hitting the classifier pool.
+    # `user_text` is the semantic key — the rules block is constant
+    # across calls and would dominate a full-prompt embedding.
     from brendbot.classifier_cache import get_content_cache
     content_cache = get_content_cache()
-    cached = content_cache.get(prompt)
+    cached = content_cache.get(prompt, semantic_key=user_text)
     if cached is not None:
         logger.debug("content_gate_classify cache hit")
         return cached
@@ -393,7 +399,7 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
                 break
 
         result = parse_classifier_response(raw_text)
-        content_cache.put(prompt, result)
+        content_cache.put(prompt, result, semantic_key=user_text)
         return result
     except Exception as e:
         logger.warning("content_gate_classify SDK error: %s", e)

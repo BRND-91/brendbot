@@ -675,6 +675,18 @@ class Session:
         # normal flow — the engagement gate in discord.py always assigns
         # one of the canonical outcomes before dispatch).
         self._turn_gate_outcome: str = ""
+        # Phase 4 — content-gate fold observability. Set by route_message
+        # from the precomputed_content + combined_parse_error hints
+        # threaded through from discord.py. Read by _fire_on_text /
+        # _fire_on_text_streamed when writing bot_responses.jsonl.
+        # Semantics:
+        #   _turn_content_fold_used: True if apply_content_gate used the
+        #     precomputed content result this turn (one-spawn fold path).
+        #   _turn_content_fold_fallback: True if the combined classifier
+        #     returned but the content half was unparseable and a standalone
+        #     content_gate_classify call was issued as fallback.
+        self._turn_content_fold_used: bool = False
+        self._turn_content_fold_fallback: bool = False
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -752,6 +764,7 @@ class Session:
         tier: str,
         sender_id: str,
         message_id: str,
+        precomputed_content: "ContentGateResult | None" = None,
     ) -> str:
         """Run the content gate on an incoming user message and return
         one of: 'inject' (caller should call session.inject(wrapped)),
@@ -774,6 +787,13 @@ class Session:
 
         Gate failures (classifier spawn errors etc) fail conservative to
         REFUSE with an explanation noting the classifier error.
+
+        Phase 4 (content-gate fold): ``precomputed_content`` — when
+        supplied, the content-half classifier has ALREADY been parsed
+        by the upstream engagement+content combined call. We skip the
+        content_gate_classify subprocess entirely and route off the
+        precomputed result, saving one haiku roundtrip. Passing None
+        keeps the original behavior (standalone spawn).
         """
         from brendbot.content_gate import (
             detect_admin_bypass,
@@ -811,22 +831,33 @@ class Session:
             and detect_admin_bypass(raw_user_text, tier)
         )
 
-        # Run the classifier. For bypass path, this is shadow-mode
-        # (recording would-have-been decisions for audit). For normal
-        # path, this is the primary gate decision.
-        try:
-            classifier_result = await content_gate_classify(raw_user_text)
-        except Exception as exc:
-            logger.warning(
-                "[%s] content_gate_classify unexpected error: %s",
-                self.key, exc,
+        # Phase 4: if the upstream combined classifier already produced a
+        # parsed content result, use it directly — skip the second haiku
+        # roundtrip entirely. Otherwise run the standalone classifier.
+        # Bypass path still runs in shadow-mode regardless of source.
+        if precomputed_content is not None:
+            classifier_result = precomputed_content
+            logger.debug(
+                "[%s] content gate: using precomputed content (fold path)",
+                self.key,
             )
-            from brendbot.content_gate import ClassifierResult
-            classifier_result = ClassifierResult(
-                criteria={"_parse_error": 2.0},
-                reasoning=f"classifier error: {type(exc).__name__}",
-                parse_error=True,
-            )
+        else:
+            # Run the classifier. For bypass path, this is shadow-mode
+            # (recording would-have-been decisions for audit). For normal
+            # path, this is the primary gate decision.
+            try:
+                classifier_result = await content_gate_classify(raw_user_text)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] content_gate_classify unexpected error: %s",
+                    self.key, exc,
+                )
+                from brendbot.content_gate import ClassifierResult
+                classifier_result = ClassifierResult(
+                    criteria={"_parse_error": 2.0},
+                    reasoning=f"classifier error: {type(exc).__name__}",
+                    parse_error=True,
+                )
 
         shadow_outcome = decide_outcome(
             classifier_result, hard_floors, pass_thr, flag_thr, refuse_thr,
@@ -1143,6 +1174,8 @@ class Session:
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
                 gate_outcome=self._turn_gate_outcome or None,
+                content_fold_used=self._turn_content_fold_used,
+                content_fold_fallback=self._turn_content_fold_fallback,
             )
             if branch_tag:
                 log_branch_audit(
@@ -1213,6 +1246,8 @@ class Session:
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
                 gate_outcome=self._turn_gate_outcome or None,
+                content_fold_used=self._turn_content_fold_used,
+                content_fold_fallback=self._turn_content_fold_fallback,
             )
             if branch_tag:
                 log_branch_audit(
@@ -2425,6 +2460,8 @@ class SessionPool:
         haiku_invoked: bool = False,
         guild_id: str = "",
         gate_outcome: str = "",
+        precomputed_content: "ContentGateResult | None" = None,
+        content_fold_fallback: bool = False,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -2609,6 +2646,14 @@ class SessionPool:
             session._cumulative_haiku_invocations += 1
         # Phase 2b — stash canonical gate outcome for log_bot_response.
         session._turn_gate_outcome = gate_outcome or ""
+        # Phase 4 — fold observability (see Session.__init__ for semantics).
+        # `content_fold_used` is True iff the upstream combined classifier
+        # handed us a parsed content result (precomputed_content is not
+        # None). `content_fold_fallback` means the combined call returned
+        # but the content half was unparseable — only set if the caller
+        # explicitly flags it; default False covers all non-fold paths.
+        session._turn_content_fold_used = precomputed_content is not None
+        session._turn_content_fold_fallback = bool(content_fold_fallback)
 
         # Content gate (phase 4) runs here, between turn state setup and
         # inject. Decides PASS / FLAG / REFUSE / FLOOR_HIT / BYPASS via
@@ -2623,6 +2668,7 @@ class SessionPool:
                 tier=tier,
                 sender_id=sender_id,
                 message_id=message_id,
+                precomputed_content=precomputed_content,
             )
         except Exception as exc:
             logger.error(

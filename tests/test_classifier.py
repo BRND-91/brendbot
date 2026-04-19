@@ -155,3 +155,225 @@ class TestClassify:
         result = _run(classifier.classify("hi", None))
         assert result.engage is True
         assert isinstance(result.engage, bool)
+
+
+# ── classify_combined — Phase 4 fold ─────────────────────────────────────
+
+# The combined classifier issues one raw haiku roundtrip and parses the
+# three-line response itself. These tests stub out get_classifier_pool so
+# every test can script exactly what the SDK "returned" without touching
+# a real subprocess.
+
+def _install_fake_pool(monkeypatch, raw_text: str | None, raise_exc: Exception | None = None):
+    """Monkeypatch brendbot.session.get_classifier_pool to return a pool
+    whose acquire() yields a one-shot client that streams ``raw_text`` as
+    an AssistantMessage then a ResultMessage. If ``raise_exc`` is given,
+    the client's ``query`` coroutine raises it instead.
+
+    Returns a list tracking dispose() calls so tests can assert the client
+    is always torn down on both happy and error paths.
+    """
+    from brendbot import session as _session
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+    dispose_log: list[str] = []
+
+    def _make_block(text: str):
+        # TextBlock is a stub class in conftest; instantiating it and
+        # setting .text mirrors how real SDK TextBlocks look to isinstance.
+        b = TextBlock()
+        b.text = text
+        return b
+
+    class _FakeClient:
+        async def query(self, prompt: str) -> None:
+            if raise_exc is not None:
+                raise raise_exc
+
+        async def receive_messages(self):
+            # Ship one AssistantMessage carrying the canned raw text,
+            # then a ResultMessage so the loop exits cleanly.
+            am = AssistantMessage()
+            am.content = [_make_block(raw_text or "")]
+            yield am
+            yield ResultMessage()
+
+    class _FakePool:
+        async def acquire(self):
+            return _FakeClient()
+
+        async def dispose(self, client) -> None:
+            dispose_log.append("disposed")
+
+    # isinstance(msg, AssistantMessage) needs raw types that match, and
+    # the stubs in conftest.py install them as bare `type(...)` subclasses
+    # so the fake instances pass isinstance without extra wiring.
+
+    monkeypatch.setattr(_session, "get_classifier_pool", lambda: _FakePool())
+    # Caches are process-level singletons — reset between tests so a hit
+    # from a previous test doesn't mask a miss in this one.
+    from brendbot import classifier_cache
+    classifier_cache._combined_cache = None
+    return dispose_log
+
+
+class TestClassifyCombined:
+    def test_both_halves_parse_clean(self, monkeypatch) -> None:
+        """Happy path — ENGAGE: YES tone, TRIGGERED: criterion=weight,
+        REASONING: text. CombinedResult carries both halves, content
+        is a ClassifierResult from content_gate.py, content_parse_error
+        is False."""
+        raw = (
+            "ENGAGE: YES funny\n"
+            "TRIGGERED: tragedy_old=0.3, frame_ambiguous=0.2\n"
+            "REASONING: older historical reference, ambiguous framing.\n"
+        )
+        _install_fake_pool(monkeypatch, raw)
+
+        result = _run(classifier.classify_combined("what happened in 1812?", None))
+
+        assert result.engagement.engage is True
+        assert result.engagement.tone == "funny"
+        assert result.engagement.reason.startswith("sdk:combined:")
+        assert result.content is not None
+        assert result.content.parse_error is False
+        assert result.content.criteria.get("tragedy_old") == 0.3
+        assert result.content.criteria.get("frame_ambiguous") == 0.2
+        assert result.content_parse_error is False
+
+    def test_engage_no_benign_content(self, monkeypatch) -> None:
+        """ENGAGE: NO + benign content (TRIGGERED: none) — the most
+        common middle-band outcome when the classifier rejects."""
+        raw = (
+            "ENGAGE: NO neutral\n"
+            "TRIGGERED: none\n"
+            "REASONING: background chatter.\n"
+        )
+        _install_fake_pool(monkeypatch, raw)
+
+        result = _run(classifier.classify_combined("lol same", None))
+
+        assert result.engagement.engage is False
+        assert result.engagement.tone == "neutral"
+        assert result.content is not None
+        assert result.content.is_benign
+        assert result.content_parse_error is False
+
+    def test_engagement_parses_content_unparseable(self, monkeypatch) -> None:
+        """Engagement line clean, but content half missing TRIGGERED line —
+        CombinedResult keeps the engagement decision, drops the content
+        half, flags content_parse_error=True so the caller can fall back
+        to a standalone content_gate_classify call."""
+        raw = "ENGAGE: YES hype\nWAT: gibberish line\n"
+        _install_fake_pool(monkeypatch, raw)
+
+        result = _run(classifier.classify_combined("test", None))
+
+        assert result.engagement.engage is True
+        assert result.engagement.tone == "hype"
+        assert result.content is None
+        assert result.content_parse_error is True
+
+    def test_sdk_exception_returns_error_sentinel(self, monkeypatch) -> None:
+        """If the SDK call itself raises, return _COMBINED_ERROR_RESULT —
+        no fallback data, caller treats like any other classifier outage."""
+        _install_fake_pool(monkeypatch, raw_text=None, raise_exc=RuntimeError("boom"))
+
+        result = _run(classifier.classify_combined("test", None))
+
+        assert result is classifier._COMBINED_ERROR_RESULT
+        assert result.engagement.reason == "error"
+        assert result.content is None
+        assert result.content_parse_error is False
+
+    def test_empty_response_returns_error_sentinel(self, monkeypatch) -> None:
+        """Pool delivers a client, query succeeds, but the message stream
+        produces no usable text — same error path as SDK failure."""
+        _install_fake_pool(monkeypatch, raw_text="")
+
+        result = _run(classifier.classify_combined("test", None))
+
+        assert result is classifier._COMBINED_ERROR_RESULT
+
+    def test_missing_engage_line_returns_error_sentinel(self, monkeypatch) -> None:
+        """Response is present but has no ENGAGE line — we can't route
+        without an engagement decision, so fall back to the error sentinel
+        rather than guess."""
+        raw = "TRIGGERED: none\nREASONING: missing the ENGAGE prefix entirely.\n"
+        _install_fake_pool(monkeypatch, raw)
+
+        result = _run(classifier.classify_combined("test", None))
+
+        assert result is classifier._COMBINED_ERROR_RESULT
+
+    def test_cache_hit_skips_spawn(self, monkeypatch) -> None:
+        """Second call with identical text + context must read from the
+        combined cache and skip the pool entirely. If it doesn't, the
+        second acquire() will fail because we've replaced the pool
+        factory with one that raises."""
+        raw = (
+            "ENGAGE: YES wholesome\n"
+            "TRIGGERED: none\n"
+            "REASONING: direct address.\n"
+        )
+        _install_fake_pool(monkeypatch, raw)
+        first = _run(classifier.classify_combined("hey brend", None))
+        assert first.engagement.engage is True
+
+        # Replace the pool with one that explodes on acquire — any call
+        # proves the cache was bypassed.
+        from brendbot import session as _session
+
+        class _ExplodingPool:
+            async def acquire(self):
+                raise AssertionError("cache miss — pool acquired unexpectedly")
+
+            async def dispose(self, client):
+                pass
+
+        monkeypatch.setattr(_session, "get_classifier_pool", lambda: _ExplodingPool())
+
+        second = _run(classifier.classify_combined("hey brend", None))
+        assert second.engagement.engage is True
+        assert second.content is first.content  # same cached object
+
+    def test_case_insensitive_engage_token(self, monkeypatch) -> None:
+        """Models drift on case — ENGAGE: yes vs ENGAGE: YES must both work."""
+        raw = "ENGAGE: yes neutral\nTRIGGERED: none\nREASONING: low case ok.\n"
+        _install_fake_pool(monkeypatch, raw)
+        result = _run(classifier.classify_combined("msg", None))
+        assert result.engagement.engage is True
+
+    def test_unknown_tone_defaults_to_neutral(self, monkeypatch) -> None:
+        """If the classifier emits a tone word not in the valid set, we
+        normalize to 'neutral' rather than propagate the drift."""
+        raw = (
+            "ENGAGE: YES chaotic\n"  # not in _VALID_TONES
+            "TRIGGERED: none\n"
+            "REASONING: test.\n"
+        )
+        _install_fake_pool(monkeypatch, raw)
+        result = _run(classifier.classify_combined("msg", None))
+        assert result.engagement.tone == "neutral"
+
+
+# ── CombinedResult dataclass + constants ─────────────────────────────────
+
+class TestCombinedResultShape:
+    def test_error_sentinel_has_error_engagement(self) -> None:
+        """Downstream code keys off engagement.reason == 'error' to trigger
+        the fail-loud escalation rule. The combined error sentinel must
+        propagate that exactly."""
+        sentinel = classifier._COMBINED_ERROR_RESULT
+        assert sentinel.engagement.reason == "error"
+        assert sentinel.engagement.engage is False
+        assert sentinel.content is None
+        assert sentinel.content_parse_error is False
+
+    def test_valid_tones_matches_haiku_palette(self) -> None:
+        """The combined classifier's tone parser must accept the same
+        seven tones haiku_classify uses — a drift here would silently
+        turn every combined-path tone into 'neutral'."""
+        assert classifier._VALID_TONES == {
+            "funny", "hype", "sad", "weird", "dumb", "wholesome", "neutral",
+        }

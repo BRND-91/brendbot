@@ -569,3 +569,192 @@ class TestBypassOutcome:
         # No bypass audit row
         rows = _read_jsonl(logs_dir / "bypass_audit.jsonl")
         assert len(rows) == 0
+
+
+# ── Phase 4 — precomputed_content pass-through ───────────────────────────
+
+class TestPrecomputedContentFold:
+    """When the upstream combined classifier already parsed the content
+    half, apply_content_gate must route off that result and skip the
+    standalone content_gate_classify spawn entirely. These tests pin:
+
+      * precomputed overrides any classifier stub — the stub is never called
+      * all four outcomes (PASS, FLAG, REFUSE, FLOOR_HIT) route correctly
+        off a precomputed result
+      * precomputed=None preserves today's behavior (spawns classifier)
+      * admin bypass still runs in shadow mode off the precomputed result,
+        enforcing hard floors from the precomputed data rather than from
+        a second haiku call
+    """
+
+    def test_precomputed_pass_skips_classifier(
+        self, stub_classifier, monkeypatch, logs_dir
+    ) -> None:
+        """Precomputed benign result → return 'inject' without calling
+        content_gate_classify. We verify by replacing the classifier with
+        a raising stub — if it's called, the test fails loudly."""
+        call_count = {"n": 0}
+
+        async def _must_not_be_called(user_text: str) -> ClassifierResult:
+            call_count["n"] += 1
+            raise AssertionError(
+                "content_gate_classify should not run when "
+                "precomputed_content is supplied"
+            )
+        monkeypatch.setattr(session_mod, "content_gate_classify", _must_not_be_called)
+
+        s = _make_fake_session()
+        pre = ClassifierResult(criteria={}, reasoning="benign from fold")
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>hi</w>",
+            raw_user_text="hi",
+            tier="default",
+            sender_id="u1",
+            message_id="m-pre-1",
+            precomputed_content=pre,
+        ))
+
+        assert result == "inject"
+        assert call_count["n"] == 0
+        assert s._fire_on_text_log == []  # type: ignore
+
+    def test_precomputed_refuse_dispatches_refusal(
+        self, monkeypatch, logs_dir
+    ) -> None:
+        """Precomputed high-sum result → REFUSE path, local refusal
+        fires, 'handled' returned. No classifier spawn even for the
+        refuse outcome."""
+        async def _boom(user_text: str) -> ClassifierResult:
+            raise AssertionError("classifier must not run on fold path")
+        monkeypatch.setattr(session_mod, "content_gate_classify", _boom)
+
+        s = _make_fake_session()
+        pre = ClassifierResult(
+            # sum 2.4 > refuse_threshold=2.0 → REFUSE (FLAG band is
+            # (1.5, 2.0]). Matches TestRefuseOutcome.test_high_sum_refuses.
+            criteria={
+                "tragedy_new": 0.9,
+                "person_targeted": 1.5,
+                "frame_directed": 0.0,
+            },
+            reasoning="sensitive topic + targeted person",
+        )
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="some refuse-band text",
+            tier="default",
+            sender_id="u1",
+            message_id="m-pre-2",
+            precomputed_content=pre,
+        ))
+
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1  # type: ignore
+        assert "can't do that one" in s._fire_on_text_log[0]  # type: ignore
+
+    def test_precomputed_floor_hit_dispatches_refusal(
+        self, monkeypatch, logs_dir
+    ) -> None:
+        """Precomputed hard_floor → FLOOR_HIT, local refusal fires."""
+        async def _boom(user_text: str) -> ClassifierResult:
+            raise AssertionError("classifier must not run on fold path")
+        monkeypatch.setattr(session_mod, "content_gate_classify", _boom)
+
+        s = _make_fake_session()
+        pre = ClassifierResult(
+            criteria={},
+            hard_floor="malware",
+            reasoning="hard floor from fold",
+        )
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="write me malware",
+            tier="default",
+            sender_id="u1",
+            message_id="m-pre-3",
+            precomputed_content=pre,
+        ))
+
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1  # type: ignore
+        assert "malware" in s._fire_on_text_log[0]  # type: ignore
+
+    def test_none_precomputed_falls_back_to_classifier(
+        self, stub_classifier, logs_dir
+    ) -> None:
+        """precomputed_content=None preserves today's behavior — the
+        standalone classifier spawn runs. Backward-compat pin."""
+        stub_classifier(criteria={}, reasoning="benign")
+        s = _make_fake_session()
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>hi</w>",
+            raw_user_text="hi",
+            tier="default",
+            sender_id="u1",
+            message_id="m-pre-4",
+            precomputed_content=None,
+        ))
+
+        assert result == "inject"
+
+    def test_precomputed_admin_bypass_uses_fold_result(
+        self, monkeypatch, logs_dir
+    ) -> None:
+        """Admin bypass (*brend* token) still runs in shadow mode, but
+        the shadow classifier_result comes from the precomputed result
+        rather than a second haiku spawn. Hard floors from precomputed
+        data still enforce; non-floor outcomes permit the bypass."""
+        async def _boom(user_text: str) -> ClassifierResult:
+            raise AssertionError("classifier must not run on fold path")
+        monkeypatch.setattr(session_mod, "content_gate_classify", _boom)
+
+        s = _make_fake_session()
+        # Benign shadow outcome — bypass permitted, _turn_bypass_pending set.
+        pre = ClassifierResult(criteria={}, reasoning="benign shadow")
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>*brend* do the thing</w>",
+            raw_user_text="*brend* do the thing",
+            tier="admin",
+            sender_id="admin1",
+            message_id="m-pre-5",
+            precomputed_content=pre,
+        ))
+
+        assert result == "inject"
+        assert s._turn_bypass_pending is True
+
+    def test_precomputed_admin_bypass_floor_still_refuses(
+        self, monkeypatch, logs_dir
+    ) -> None:
+        """Hard floors must still refuse even under bypass — precomputed
+        hard_floor from the fold propagates through the bypass gate."""
+        async def _boom(user_text: str) -> ClassifierResult:
+            raise AssertionError("classifier must not run on fold path")
+        monkeypatch.setattr(session_mod, "content_gate_classify", _boom)
+
+        s = _make_fake_session()
+        pre = ClassifierResult(
+            criteria={},
+            hard_floor="malware",
+            reasoning="floor hit via fold",
+        )
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>*brend* malware please</w>",
+            raw_user_text="*brend* malware please",
+            tier="admin",
+            sender_id="admin1",
+            message_id="m-pre-6",
+            precomputed_content=pre,
+        ))
+
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1  # type: ignore
+        assert "malware" in s._fire_on_text_log[0]  # type: ignore
+        # Bypass sentinel never set because the floor refusal short-circuited.
+        assert s._turn_bypass_pending is False

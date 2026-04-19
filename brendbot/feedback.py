@@ -164,6 +164,8 @@ def log_bot_response(
     modules_queried: list[str] | None = None,
     haiku_invoked: bool = False,
     gate_outcome: str | None = None,
+    content_fold_used: bool = False,
+    content_fold_fallback: bool = False,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
     and _fire_on_text_streamed after send_message returns the message ID.
@@ -186,7 +188,27 @@ def log_bot_response(
         non-empty AND modules_queried empty AND no branch_tag. That's
         the shape of a turn where the bot engaged ambiguously, matched
         a domain, skipped the KB, and produced untagged output — the
-        highest-risk profile for fabrication."""
+        highest-risk profile for fabrication.
+
+    Phase 4 — content-gate fold observability:
+
+      content_fold_used: True when the upstream combined classifier
+        produced a usable content-gate result that was passed directly
+        into apply_content_gate, replacing the standalone haiku spawn.
+        The signal that the fold actually saved a roundtrip on this turn.
+
+      content_fold_fallback: True when the combined classifier returned
+        but the content half failed to parse (engagement half was used,
+        content half was discarded and standalone content_gate_classify
+        was run as a fallback). Non-fatal; but a high fallback rate
+        means the combined prompt's content-half output is drifting and
+        the prompt needs tuning.
+
+      Both default to False for non-fold paths (hard-pass-at-mention,
+      hard_pass_score, pregate_yes, DM always-engage, etc.) and for
+      turns dispatched before Phase 4 infrastructure was wired up.
+      They're omitted from the record when both are False — so
+      pre-Phase-4 log consumers see no shape change."""
     domains = domains or []
     modules_queried = modules_queried or []
     if not domains:
@@ -220,6 +242,14 @@ def log_bot_response(
     # a coordinated feedback.py bump.
     if gate_outcome is not None:
         record["gate_outcome"] = gate_outcome
+    # Phase 4 — fold observability. Only written when either flag is True
+    # so turns that predate the fold (or never use it) keep the pre-Phase-4
+    # record shape. A False-but-present flag would add noise for the
+    # 90%+ of turns that never touch the fold path.
+    if content_fold_used:
+        record["content_fold_used"] = True
+    if content_fold_fallback:
+        record["content_fold_fallback"] = True
     _append_jsonl(BOT_RESPONSES_LOG, record)
 
 

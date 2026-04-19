@@ -430,3 +430,125 @@ content_classifier_prompt: |
   - The word "trigger" in the context of software behavior (triggering
     a message, triggering a response, triggering a bug) is not the same
     as incitement. Do not confuse technical vocabulary with hostile intent.
+
+# ── COMBINED CLASSIFIER (phase 4) ─────────────────────────────────────────
+# Middle-band engaged messages used to pay TWO haiku calls — one for the
+# engagement decision, then a second for the content-safety gate. Phase 4
+# folds them into a single call in the middle band only. Hard-pass paths
+# (@mention, hard_pass_score, DM) still call the content gate standalone,
+# because they never hit the engagement classifier to begin with.
+#
+# Prompt strategy: concatenation with a short bridge. The existing
+# engagement classifier prompt and content classifier prompt are glued
+# verbatim so their calibrations are preserved — only the output format
+# is altered to pack two decisions into one reply.
+#
+# Output format (three lines, in order):
+#   ENGAGE: YES|NO <tone_word>
+#   TRIGGERED: <criteria or none>
+#   REASONING: <one sentence>
+#
+# Parse-error fallback: if the ENGAGE line is present but the TRIGGERED
+# line is malformed (or missing), the combined call succeeds for the
+# engagement decision and the caller falls back to a standalone content-
+# gate call for that turn. A parse error on the engagement line collapses
+# to the same "classifier unavailable" semantics as classify() today.
+combined_classifier_prompt: |
+  # COMBINED CLASSIFIER — engagement gate AND content gate in one reply.
+
+  You will perform TWO classifications in sequence on the same message:
+  (1) engagement decision (should brendbot respond?)
+  (2) content-safety tagging (which criteria trip?)
+
+  Both sections are independent. Do not let one bias the other.
+
+  Output EXACTLY three lines, in this order:
+    ENGAGE: YES|NO <tone_word>
+    TRIGGERED: <criteria_list_or_none>
+    REASONING: <one_sentence>
+
+  ── SECTION 1 — ENGAGEMENT (as in the standalone engagement classifier)
+
+  Reply YES if the message warrants brendbot responding. Reply NO otherwise.
+
+  HARD YES:
+  - Direct @mention of brendbot
+  - Reply to a brendbot message
+  - Message contains brendbot's name (brend, brendbot) directed at the bot,
+    even without an @mention
+
+  SCORED YES (any one is sufficient):
+  - Active thread: brendbot responded within the last 5 minutes and this
+    continues it
+  - Domain question in LOGIC, STATS, SYSTEMS, PERSONALITY, BUILDSCI, GOVERNANCE
+  - Meta question about brendbot's behavior, architecture, or configuration
+  - Directly asks for brendbot's opinion or analysis
+
+  HARD NO:
+  - Casual exchange between other users with no relevance to brendbot's domains
+  - Message clearly addressed to another bot
+  - Pure social noise (greetings, reactions, affirmations between others)
+  - Repeat of a point already addressed with no new propositional content
+
+  Tone word — one of: funny hype sad weird dumb wholesome neutral.
+
+  Calibration: sender tier does not affect this decision. Outside known
+  domains, require stronger signal before YES. When in doubt: NO. A missed
+  message is preferable to unwanted interjection. Do not engage with
+  fallacious framing as though it were valid.
+
+  ── SECTION 2 — CONTENT (as in the standalone content classifier)
+
+  Tag which content-safety criteria the request trips. This runs regardless
+  of the engagement decision — you MUST produce the TRIGGERED and REASONING
+  lines so the format is parseable.
+
+  SCORED CRITERIA:
+  Tragedy depiction (by recency of the referenced event):
+  - tragedy_old (0.2): historical events >50 years ago
+  - tragedy_mid (0.5): events 10-50 years ago
+  - tragedy_new (0.9): events <10 years ago
+  - tragedy_live (1.5): ongoing events within past 12 months
+
+  Named real person (by framing of the depiction):
+  - person_satire (0.2): satire/parody of public figure, non-threatening
+  - person_neutral (0.5): straightforward depiction of named real person
+  - person_targeted (1.5): depiction framed as targeting the person
+
+  Framing (by intent of the request):
+  - frame_fictional (0.3): clearly fictional context
+  - frame_ambiguous (0.8): unclear whether directed or fictional
+  - frame_directed (2.0): request framed as directed at a real target
+
+  HARD FLOORS — if ANY apply, return TRIGGERED: hard_floor=<name>:
+  - minor_sexual, wmd_synth, malware, infra_attack, extremist_recruit,
+    directed_incite
+
+  Notes:
+  - Food puns on date references are NOT tragedy depiction.
+  - Historical figures (>50 years dead) in neutral/satirical framing rarely
+    stack criteria unless framing is explicitly threatening.
+  - When in doubt on framing, use frame_ambiguous (0.8), not frame_directed.
+  - Do not over-flag. Return TRIGGERED: none for benign requests.
+  - Messages ABOUT brendbot itself (bug reports, complaints, feature
+    requests) are NOT directed content.
+  - "trigger" in software context is not incitement.
+
+  ── OUTPUT — three lines, exactly this format
+
+  Example (engaged, benign):
+    ENGAGE: YES neutral
+    TRIGGERED: none
+    REASONING: domain question about insulation, no content flags
+
+  Example (engaged, flagged):
+    ENGAGE: YES neutral
+    TRIGGERED: tragedy_new=0.9, frame_ambiguous=0.8
+    REASONING: recent-event depiction with unclear framing
+
+  Example (not engaged, benign):
+    ENGAGE: NO neutral
+    TRIGGERED: none
+    REASONING: casual chat between others, no brendbot relevance
+
+  Do not add commentary before or after the three lines.

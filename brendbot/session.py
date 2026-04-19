@@ -1146,6 +1146,9 @@ class Session:
 
         if self._turn_bypass_pending and not text.lstrip().startswith("["):
             text = f"[bypass] {text}"
+        # Pre-send fabrication-risk injection — same policy as the
+        # non-streaming path in _fire_on_text.
+        text = self._maybe_prepend_uncertain(text)
 
         async with self._turn_lock:
             branch_tag, stripped = extract_branch_tag(text)
@@ -1200,6 +1203,37 @@ class Session:
                     response_text=stripped,
                 )
 
+    def _maybe_prepend_uncertain(self, text: str) -> str:
+        """Pre-send fabrication-risk check. If the triadic pattern fires
+        (haiku_invoked + domain match + no kb-query + no branch tag), the
+        response sits on the highest-risk profile for fabrication documented
+        in feedback.log_bot_response. Prepend [uncertain] so the response
+        reaches Discord with the audit tag applied rather than relying on
+        retrospective log review.
+
+        The retrospective audit record in bot_responses.jsonl is still
+        written downstream by log_bot_response — the derived
+        fabrication_risk flag there preserves the training signal on the
+        un-intervened pattern. The chat-bound text just gets the
+        [uncertain] prefix that the model would have self-applied if it
+        were reliably applying the three-branch classifier.
+
+        Called from both _fire_on_text and _fire_on_text_streamed after
+        the bypass-tag check and before extract_branch_tag, so if the
+        injected tag makes it to extract_branch_tag it gets stripped
+        from the visible text and routed to branch_audit.jsonl normally.
+        """
+        if text.lstrip().startswith("["):
+            return text
+        triadic = (
+            self._turn_haiku_invoked
+            and bool(self._turn_domains)
+            and not self._turn_modules_queried
+        )
+        if triadic:
+            return f"[uncertain] {text}"
+        return text
+
     async def _fire_on_text(self, text: str) -> None:
         """Send a turn's response to Discord with feedback-log side effects.
 
@@ -1229,6 +1263,10 @@ class Session:
         # other per-turn flags.
         if self._turn_bypass_pending and not text.lstrip().startswith("["):
             text = f"[bypass] {text}"
+        # Pre-send fabrication-risk injection (see _maybe_prepend_uncertain
+        # docstring). Runs after the bypass tag so [bypass] wins when both
+        # conditions are true.
+        text = self._maybe_prepend_uncertain(text)
         async with self._turn_lock:
             branch_tag, stripped = extract_branch_tag(text)
             try:

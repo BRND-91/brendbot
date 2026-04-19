@@ -667,6 +667,14 @@ class Session:
         # discord.py. Read by _fire_on_text / _fire_on_text_streamed for
         # flow-class and fabrication-risk diagnostics in log_bot_response.
         self._turn_haiku_invoked: bool = False
+        # Phase 2b — canonical gate outcome recorded on bot_responses.jsonl
+        # (for engaged paths) via _fire_on_text / _fire_on_text_streamed.
+        # Set by route_message from the gate_outcome parameter passed
+        # through from discord.py. Values: see feedback.GATE_OUTCOMES.
+        # Empty string when no gate decision was made (shouldn't happen in
+        # normal flow — the engagement gate in discord.py always assigns
+        # one of the canonical outcomes before dispatch).
+        self._turn_gate_outcome: str = ""
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -1134,6 +1142,7 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                gate_outcome=self._turn_gate_outcome or None,
             )
             if branch_tag:
                 log_branch_audit(
@@ -1203,6 +1212,7 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                gate_outcome=self._turn_gate_outcome or None,
             )
             if branch_tag:
                 log_branch_audit(
@@ -2406,6 +2416,7 @@ class SessionPool:
         score: float | None = None,
         haiku_invoked: bool = False,
         guild_id: str = "",
+        gate_outcome: str = "",
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -2588,6 +2599,8 @@ class SessionPool:
         session._turn_haiku_invoked = bool(haiku_invoked)
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
+        # Phase 2b — stash canonical gate outcome for log_bot_response.
+        session._turn_gate_outcome = gate_outcome or ""
 
         # Content gate (phase 4) runs here, between turn state setup and
         # inject. Decides PASS / FLAG / REFUSE / FLOOR_HIT / BYPASS via

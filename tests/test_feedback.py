@@ -134,3 +134,138 @@ class TestFeedbackReactions:
             "🚫": "bad_answer",
             "🎯": "good_answer",
         }
+
+
+# ── gate_outcome (Phase 2b) ──────────────────────────────────────────────
+
+class TestGateOutcome:
+    """Phase 2b — canonical gate outcome threaded through both log streams.
+
+    The field is:
+      * optional on both writers (backward-compatible log shape)
+      * written through unchanged (free-form strings allowed so new paths
+        can add outcomes without a coordinated feedback.py bump)
+      * absent from the record when None (consumers that never saw it
+        before see no shape change)
+    """
+
+    # Expected canonical values — this set must stay in sync with the
+    # decision points in discord.py's on_message. If a new gate branch
+    # lands without a corresponding GATE_OUTCOMES entry, this test fails.
+    _CANONICAL = frozenset({
+        "hard_pass_at_mention",
+        "hard_pass_score",
+        "haiku_yes",
+        "haiku_error_escalate",
+        "dm_always_engage",
+        "hard_drop",
+        "haiku_no",
+        "haiku_error_low_score",
+        "bot_author_not_mentioned",
+        "wrong_mention_target",
+    })
+
+    def test_gate_outcomes_taxonomy_frozen(self) -> None:
+        """Pin the canonical set — adding a new outcome requires a
+        deliberate edit in both feedback.py and this test."""
+        assert fb.GATE_OUTCOMES == self._CANONICAL
+
+    def test_log_bot_response_records_gate_outcome(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.7,
+            domains=["BUILDSCI"],
+            address_level="high",
+            branch_tag=None,
+            gate_outcome="hard_pass_score",
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["gate_outcome"] == "hard_pass_score"
+
+    def test_log_bot_response_omits_gate_outcome_when_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Pre-Phase-2b consumers must see no shape change: when
+        gate_outcome is omitted (or explicitly None) the field is
+        absent from the record."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.5,
+            domains=[],
+            address_level="moderate",
+            branch_tag=None,
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "gate_outcome" not in record
+
+    def test_log_skip_decision_records_gate_outcome(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        log_path = tmp_path / "skip_decisions.jsonl"
+        monkeypatch.setattr(fb, "SKIP_DECISIONS_LOG", log_path)
+        fb.log_skip_decision(
+            channel_id="ch1",
+            sender_id="user1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.1,
+            reason="hard_drop",
+            domains=[],
+            gate_outcome="hard_drop",
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["gate_outcome"] == "hard_drop"
+        # The legacy `reason` field is preserved — existing consumers
+        # joining on it keep working.
+        assert record["reason"] == "hard_drop"
+
+    def test_log_skip_decision_omits_gate_outcome_when_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        log_path = tmp_path / "skip_decisions.jsonl"
+        monkeypatch.setattr(fb, "SKIP_DECISIONS_LOG", log_path)
+        fb.log_skip_decision(
+            channel_id="ch1",
+            sender_id="user1",
+            user_message_id="u1",
+            user_text="hi",
+            score=0.1,
+            reason="hard_drop",
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert "gate_outcome" not in record
+
+    def test_free_form_gate_outcome_accepted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Writers don't validate gate_outcome against GATE_OUTCOMES —
+        they pass it through unchanged. This lets new call sites add
+        outcomes without bumping feedback.py. Downstream consumers are
+        responsible for handling unknown values as 'other'."""
+        log_path = tmp_path / "bot_responses.jsonl"
+        monkeypatch.setattr(fb, "BOT_RESPONSES_LOG", log_path)
+        fb.log_bot_response(
+            channel_id="ch1",
+            bot_message_id="m1",
+            user_message_id="u1",
+            user_text="hi",
+            score=None,
+            domains=[],
+            address_level="high",
+            branch_tag=None,
+            gate_outcome="some_future_outcome",
+        )
+        record = json.loads(log_path.read_text().strip())
+        assert record["gate_outcome"] == "some_future_outcome"

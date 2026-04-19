@@ -70,11 +70,12 @@ async def run() -> None:
         score: float | None = None,
         haiku_invoked: bool = False,
         guild_id: str = "",
+        gate_outcome: str = "",
     ) -> None:
         tier = cfg.tier_for(sender_id)
         is_group = platform == "discord"  # discord = guild, discord_dm = DM
 
-        logger.info("Routing message from %s (tier=%s, is_group=%s, domains=%s, addr=%s, guild=%s)", sender_id, tier, is_group, domain_hint or "none", address_level, guild_id or "dm")
+        logger.info("Routing message from %s (tier=%s, is_group=%s, domains=%s, addr=%s, guild=%s, gate=%s)", sender_id, tier, is_group, domain_hint or "none", address_level, guild_id or "dm", gate_outcome or "-")
         try:
             await pool.route_message(
                 platform=platform,
@@ -94,6 +95,7 @@ async def run() -> None:
                 score=score,
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
+                gate_outcome=gate_outcome,
             )
         except Exception:
             logger.exception("Error routing message from %s", sender_id)

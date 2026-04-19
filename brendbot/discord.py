@@ -65,33 +65,20 @@ _BOT_NAMES = ("brendbot", "brendan", "brend")
 
 
 async def _haiku_gatecheck_with_reason(text: str, context: list[dict]) -> dict:
-    """
-    Ambiguity classifier returning the full {engage, reason} dict so callers
-    can detect classifier errors and escalate rather than silently drop.
+    """Thin dict-returning shim over brendbot.classifier.classify.
 
-    Error semantics: any failure path — exception during the SDK call,
-    auth error inside haiku_classify, or a malformed response — collapses
-    to {"engage": False, "reason": "error"}. Callers should treat
-    reason=="error" as "classifier unavailable, decide for yourself"
-    rather than as a NO from the classifier.
+    Kept to preserve the long-standing return shape ({engage, reason, tone})
+    that older callers and tests depend on. The haiku classifier body was
+    extracted to brendbot/classifier.py in Phase 2b — new code should call
+    classifier.classify() directly and read the typed ClassifierResult.
     """
-    recent = context[-5:] if context else []
-    try:
-        from brendbot.session import haiku_classify
-        decision = await haiku_classify({
-            "message": text,
-            "recent_context": recent,
-        })
-        reason = decision.get("reason", "unknown")
-        logger.info("Haiku gate: %s (message: %r)", reason, text[:50])
-        return {
-            "engage": bool(decision.get("engage", False)),
-            "reason": reason,
-            "tone": decision.get("tone", "neutral"),
-        }
-    except Exception as e:
-        logger.warning("Haiku gate failed: %s", e)
-        return {"engage": False, "reason": "error", "tone": "neutral"}
+    from brendbot.classifier import classify
+    result = await classify(text, context)
+    return {
+        "engage": result.engage,
+        "reason": result.reason,
+        "tone": result.tone,
+    }
 
 
 # ── Haiku failure log ─────────────────────────────────────────────────────
@@ -741,6 +728,7 @@ class DiscordListener:
                             user_text=text,
                             score=None,
                             reason="bot_author_not_mentioned",
+                            gate_outcome="bot_author_not_mentioned",
                         )
                     except Exception:
                         pass
@@ -777,6 +765,7 @@ class DiscordListener:
                                 user_text=text,
                                 score=None,
                                 reason="wrong_mention_target",
+                                gate_outcome="wrong_mention_target",
                             )
                         except Exception:
                             pass
@@ -806,6 +795,11 @@ class DiscordListener:
             matched_domains: set[str] = set()
             matched_context_domains: set[str] = set()  # Phase 3 fix: context-only domains
             final_score: float | None = None  # set in guild path; None in DMs
+            # Phase 2b — canonical gate outcome for this message. Set exactly
+            # once at every decision point and threaded through to the session
+            # layer (bot_responses.jsonl gate_outcome field) or to
+            # log_skip_decision on drop paths. See feedback.GATE_OUTCOMES.
+            gate_outcome: str = ""
 
             if message.guild:
                 # ── Name-triggered path ───────────────────────────────────────
@@ -822,6 +816,7 @@ class DiscordListener:
                     # feedback log can distinguish "mention bypass" from
                     # "scored 0" at audit time.
                     final_score = None
+                    gate_outcome = "hard_pass_at_mention"
                 else:
                     # ── Ambient path — reply-chain + heuristic scoring ────────
                     # Name-mentioned messages enter here and are scored normally.
@@ -855,12 +850,15 @@ class DiscordListener:
                     if engage_result.score >= ENGAGE_HARD_PASS:
                         heuristic_pass = True
                         use_haiku = False
+                        gate_outcome = "hard_pass_score"
                     elif engage_result.score >= ENGAGE_THRESHOLD:
                         heuristic_pass = False
                         use_haiku = True  # ambiguous middle — haiku classifier decides
+                        # gate_outcome is set below based on classifier result
                     else:
                         heuristic_pass = False
                         use_haiku = False  # hard drop
+                        gate_outcome = "hard_drop"
 
                 # Admin messages follow the same engagement gates as all others.
                 # Admin tier governs trust and permissions only, not engagement bypass.
@@ -874,11 +872,12 @@ class DiscordListener:
                 if not heuristic_pass:
                     if use_haiku:
                         haiku_invoked = True  # tracked for cognitive load (Phase 3 #1A)
-                        haiku_result = await _haiku_gatecheck_with_reason(
+                        from brendbot.classifier import classify
+                        classifier_result = await classify(
                             text, context_snapshot
                         )
-                        engage = haiku_result["engage"]
-                        if haiku_result["reason"] == "error":
+                        engage = classifier_result.engage
+                        if classifier_result.reason == "error":
                             _log_haiku_failure(
                                 channel_id, text, engage_result.score
                             )
@@ -887,20 +886,31 @@ class DiscordListener:
                             # "engage" rather than silently dropping.
                             if engage_result.score >= 0.6:
                                 engage = True
+                                gate_outcome = "haiku_error_escalate"
                                 logger.warning(
                                     "Haiku failed but score=%.2f — escalating to engage",
                                     engage_result.score,
                                 )
+                            else:
+                                gate_outcome = "haiku_error_low_score"
+                        elif engage:
+                            gate_outcome = "haiku_yes"
+                        else:
+                            gate_outcome = "haiku_no"
                         if not engage:
-                            tone = haiku_result.get("tone", "neutral")
+                            tone = classifier_result.tone
                             await react_with_fallback(
                                 channel_id, str(message.id), _pick_reaction(tone)
                             )
                             try:
                                 from brendbot.feedback import log_skip_decision
+                                # `reason` stays as the legacy short tag so
+                                # existing `reason`-joining queries keep
+                                # working; `gate_outcome` is the unified
+                                # taxonomy field added in Phase 2b.
                                 _reason = (
                                     "haiku_error_low_score"
-                                    if haiku_result["reason"] == "error"
+                                    if classifier_result.reason == "error"
                                     else "haiku_no"
                                 )
                                 log_skip_decision(
@@ -911,6 +921,7 @@ class DiscordListener:
                                     score=engage_result.score,
                                     reason=_reason,
                                     domains=sorted(engage_result.domains),
+                                    gate_outcome=gate_outcome,
                                 )
                             except Exception:
                                 pass
@@ -926,6 +937,7 @@ class DiscordListener:
                                 score=engage_result.score,
                                 reason="hard_drop",
                                 domains=sorted(engage_result.domains),
+                                gate_outcome="hard_drop",
                             )
                         except Exception:
                             pass
@@ -933,6 +945,7 @@ class DiscordListener:
             else:
                 # DM path — no engagement gate, no haiku.
                 haiku_invoked = False
+                gate_outcome = "dm_always_engage"
 
             # Download and format attachments
             att_text = await _format_attachments(message.attachments)
@@ -1039,6 +1052,7 @@ class DiscordListener:
                 score=final_score,
                 haiku_invoked=haiku_invoked,
                 guild_id=guild_id,
+                gate_outcome=gate_outcome,
             )
 
         @client.event

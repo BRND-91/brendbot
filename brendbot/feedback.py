@@ -66,6 +66,46 @@ SKIP_DECISIONS_LOG = LOGS_DIR / "skip_decisions.jsonl"
 # uncertain: metacognitive confidence self-assessment (low confidence).
 _BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass|uncertain)\]\s*')
 
+# Phase 2b — gate outcome taxonomy.
+# Canonical set of engagement-gate decisions recorded under the
+# `gate_outcome` field in bot_responses.jsonl (when the gate ultimately
+# engaged) and skip_decisions.jsonl (when it dropped). Every path in
+# discord.py's on_message that returns OR dispatches to the session
+# corresponds to exactly one of these strings.
+#
+# Values are intentionally free-form strings rather than an Enum so that
+# downstream consumers (jq, pandas, BigQuery) can filter on literal
+# values without a schema migration. Adding a new outcome to this set
+# is a non-breaking log change — existing consumers that filter on the
+# known set will simply see the new value as "other".
+#
+# Engaged paths (written to bot_responses.jsonl):
+#   hard_pass_at_mention — message contained @bot mention
+#   hard_pass_score      — heuristic score ≥ ENGAGE_HARD_PASS
+#   haiku_yes            — middle-band message, classifier said engage
+#   haiku_error_escalate — classifier failed, but score ≥ 0.6 so
+#                          engaged anyway under fail-loud policy
+#   dm_always_engage     — DM path, no engagement gate runs
+#
+# Skip paths (written to skip_decisions.jsonl):
+#   hard_drop                 — heuristic score < ENGAGE_THRESHOLD
+#   haiku_no                  — classifier said don't-engage
+#   haiku_error_low_score     — classifier failed AND score < 0.6
+#   bot_author_not_mentioned  — another bot posted and didn't address us
+#   wrong_mention_target      — guild @mention addressed to another user
+GATE_OUTCOMES: frozenset[str] = frozenset({
+    "hard_pass_at_mention",
+    "hard_pass_score",
+    "haiku_yes",
+    "haiku_error_escalate",
+    "dm_always_engage",
+    "hard_drop",
+    "haiku_no",
+    "haiku_error_low_score",
+    "bot_author_not_mentioned",
+    "wrong_mention_target",
+})
+
 # Admin-only feedback reactions. Anything else from anyone is ignored.
 # 👎 / 👍 — engagement quality (should/shouldn't have responded)
 # 🚫 / 🎯 — answer quality (engaged correctly but answer was wrong/right)
@@ -116,6 +156,7 @@ def log_bot_response(
     branch_tag: str | None,
     modules_queried: list[str] | None = None,
     haiku_invoked: bool = False,
+    gate_outcome: str | None = None,
 ) -> None:
     """One line per posted response. Called from Session._fire_on_text
     and _fire_on_text_streamed after send_message returns the message ID.
@@ -150,7 +191,7 @@ def log_bot_response(
     fabrication_risk = bool(
         haiku_invoked and domains and not modules_queried and not branch_tag
     )
-    _append_jsonl(BOT_RESPONSES_LOG, {
+    record = {
         "ts": _now_iso(),
         "channel_id": channel_id,
         "bot_message_id": bot_message_id,
@@ -164,7 +205,15 @@ def log_bot_response(
         "haiku_invoked": haiku_invoked,
         "flow_class": flow_class,
         "fabrication_risk": fabrication_risk,
-    })
+    }
+    # Phase 2b — gate_outcome is omitted when None so pre-Phase-2b log
+    # consumers see no shape change. Values are one of the canonical
+    # strings defined in GATE_OUTCOMES below; free-form strings are
+    # written through unchanged so new paths can add outcomes without
+    # a coordinated feedback.py bump.
+    if gate_outcome is not None:
+        record["gate_outcome"] = gate_outcome
+    _append_jsonl(BOT_RESPONSES_LOG, record)
 
 
 def log_branch_audit(
@@ -280,6 +329,7 @@ def log_skip_decision(
     score: float | None,
     reason: str,
     domains: list[str] | None = None,
+    gate_outcome: str | None = None,
 ) -> None:
     """One line per engagement-gate drop. Written from discord.py's
     on_message handler at any return path that skipped generation:
@@ -288,9 +338,16 @@ def log_skip_decision(
 
     reason is a short tag identifying the drop path: 'hard_drop',
     'haiku_no', 'haiku_error_low_score', 'bot_author_not_mentioned',
-    'other'. Downstream training-data export joins this stream against
-    bot_responses.jsonl to build balanced (engage, skip) pairs."""
-    _append_jsonl(SKIP_DECISIONS_LOG, {
+    'wrong_mention_target', 'other'. Downstream training-data export
+    joins this stream against bot_responses.jsonl to build balanced
+    (engage, skip) pairs.
+
+    Phase 2b — gate_outcome duplicates `reason` for skip decisions but
+    lives under the unified taxonomy shared with bot_responses.jsonl
+    (see GATE_OUTCOMES). Keeping both lets existing `reason`-joining
+    queries work unchanged while new cross-stream analytics can pivot
+    on gate_outcome as a single column."""
+    record = {
         "ts": _now_iso(),
         "channel_id": channel_id,
         "sender_id": sender_id,
@@ -299,4 +356,7 @@ def log_skip_decision(
         "score": score,
         "reason": reason,
         "domains": domains or [],
-    })
+    }
+    if gate_outcome is not None:
+        record["gate_outcome"] = gate_outcome
+    _append_jsonl(SKIP_DECISIONS_LOG, record)

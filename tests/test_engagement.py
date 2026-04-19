@@ -50,12 +50,14 @@ class TestScoreMessage:
         assert "BUILDSCI" in result.domains
         assert result.score >= bd._SCORE_DOMAIN
 
-    def test_systems_multi_word_phrase(self) -> None:
+    def test_buildsci_multi_word_phrase(self) -> None:
+        # SYSTEMS domain was removed — this test now exercises the same
+        # multi-word matching behavior against BUILDSCI's "air barrier".
         result = bd._score_message(
-            "explain feedback loops in complex systems",
+            "inspecting the air barrier around the sill plate",
             "ch1", False, None,
         )
-        assert "SYSTEMS" in result.domains
+        assert "BUILDSCI" in result.domains
 
     def test_word_boundary_no_false_positive(self) -> None:
         # "stats" should not match the word "statistical" if it's not in the

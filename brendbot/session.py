@@ -869,6 +869,16 @@ class Session:
         # discord.py. Read by _fire_on_text / _fire_on_text_streamed for
         # flow-class and fabrication-risk diagnostics in log_bot_response.
         self._turn_haiku_invoked: bool = False
+        # Phase 1 — prompt-cache observability. The CLI surfaces these on
+        # ResultMessage.usage; we stash them at result time so both
+        # _fire_on_text and _fire_on_text_streamed can log per-turn cache
+        # behaviour to bot_responses.jsonl. None means the SDK/API didn't
+        # return a usage block for this turn (e.g. housekeeping, restart,
+        # SDK error); log_bot_response omits the fields entirely in that
+        # case so downstream consumers never see partial rows.
+        self._turn_input_tokens: int | None = None
+        self._turn_cache_read_tokens: int | None = None
+        self._turn_cache_creation_tokens: int | None = None
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -1380,6 +1390,9 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                input_tokens=self._turn_input_tokens,
+                cache_read_input_tokens=self._turn_cache_read_tokens,
+                cache_creation_input_tokens=self._turn_cache_creation_tokens,
             )
             if branch_tag:
                 log_branch_audit(
@@ -1484,6 +1497,9 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                input_tokens=self._turn_input_tokens,
+                cache_read_input_tokens=self._turn_cache_read_tokens,
+                cache_creation_input_tokens=self._turn_cache_creation_tokens,
             )
             if branch_tag:
                 log_branch_audit(
@@ -1665,6 +1681,33 @@ class Session:
                         # they're typically faster, narrower, less stateful.
                         self._turn_other_tool_calls += 1
         elif isinstance(message, ResultMessage):
+            # ── Phase 1: cache-metric stash ──────────────────────────
+            # Read usage up-front so the _turn_*_tokens fields are set
+            # before _fire_on_text / _fire_on_text_streamed get scheduled
+            # below. asyncio.create_task doesn't run the task immediately
+            # (the receive loop must yield first), so this is belt-and-
+            # braces — the values would be set in time anyway, but pulling
+            # them here makes the ordering explicit rather than relying
+            # on scheduler internals. The same `usage` dict is reused for
+            # context / load tracking further down.
+            _usage_for_cache = message.usage or {}
+            if isinstance(_usage_for_cache, dict) and _usage_for_cache:
+                self._turn_input_tokens = int(
+                    _usage_for_cache.get("input_tokens", 0) or 0
+                )
+                self._turn_cache_read_tokens = int(
+                    _usage_for_cache.get("cache_read_input_tokens", 0) or 0
+                )
+                self._turn_cache_creation_tokens = int(
+                    _usage_for_cache.get("cache_creation_input_tokens", 0) or 0
+                )
+            else:
+                # No usage dict this turn — leave fields as None so
+                # log_bot_response omits the cache block entirely.
+                self._turn_input_tokens = None
+                self._turn_cache_read_tokens = None
+                self._turn_cache_creation_tokens = None
+
             # Phase 3 #1B — housekeeping turns (e.g. shallow rest injection)
             # suppress both the normal text dispatch and the silent-drop
             # fallback. The model is told not to respond and we don't want

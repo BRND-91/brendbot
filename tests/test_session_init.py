@@ -60,3 +60,17 @@ def test_session_has_trigger_shallow_rest(tmp_path):
     method = getattr(s, "_trigger_shallow_rest", None)
     assert method is not None
     assert inspect.iscoroutinefunction(method)
+
+
+def test_session_init_sets_phase1_cache_fields(tmp_path):
+    """Phase 1 — prompt-cache observability fields initialize to None.
+
+    None is the correct sentinel because the ResultMessage handler may
+    never fire for a session that gets restarted mid-boot, and in that
+    case log_bot_response should omit the cache block entirely rather
+    than write zeros that would skew hit-ratio aggregates.
+    """
+    s = _make_session(tmp_path)
+    assert s._turn_input_tokens is None
+    assert s._turn_cache_read_tokens is None
+    assert s._turn_cache_creation_tokens is None

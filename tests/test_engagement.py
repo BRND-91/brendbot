@@ -50,20 +50,26 @@ class TestScoreMessage:
         assert "BUILDSCI" in result.domains
         assert result.score >= bd._SCORE_DOMAIN
 
-    def test_systems_multi_word_phrase(self) -> None:
+    def test_buildsci_multi_word_phrase(self) -> None:
+        # Multi-word phrase "air barrier" must match the BUILDSCI domain
+        # even though neither "air" nor "barrier" alone is a keyword.
         result = bd._score_message(
-            "explain feedback loops in complex systems",
+            "how do I detail an air barrier at the rim joist",
             "ch1", False, None,
         )
-        assert "SYSTEMS" in result.domains
+        assert "BUILDSCI" in result.domains
 
     def test_word_boundary_no_false_positive(self) -> None:
-        # "stats" should not match the word "statistical" if it's not in the
-        # domain list — and "delay" should not match "delayed". The compiled
-        # regex uses \b boundaries so substring matches don't fire.
-        result = bd._score_message("delayed reaction time", "ch1", False, None)
-        # "delay" is in SYSTEMS but only as exact word — "delayed" should not match.
-        assert "SYSTEMS" not in result.domains
+        # Word boundaries \b in the compiled regex mean substring matches
+        # don't fire. "paint" contains "ain" but IMAGEGEN's "paint" keyword
+        # only matches the exact word. Sanity-check: no domain matches for
+        # a message that only contains substring-look-alikes.
+        result = bd._score_message(
+            "the partition between rooms was painted last week",
+            "ch1", False, None,
+        )
+        # "painted" should NOT match "paint" — boundary enforcement.
+        assert "IMAGEGEN" not in result.domains
 
     def test_recency_boost_only_with_word_count(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time()

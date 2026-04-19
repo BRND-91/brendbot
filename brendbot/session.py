@@ -2322,6 +2322,14 @@ class SessionPool:
             refresh_engagement_config()
         except Exception as exc:
             logger.warning("engagement.yaml refresh failed: %s", exc)
+        # Pregate owns its own slice of engagement.yaml (the `pregate:`
+        # block). Reloading it separately keeps pregate.py self-contained
+        # and avoids a circular import between discord.py and pregate.py.
+        try:
+            from brendbot.pregate import refresh_pregate_config
+            refresh_pregate_config()
+        except Exception as exc:
+            logger.warning("pregate config refresh failed: %s", exc)
         logger.info("SessionPool cache refreshed")
 
     def _bump_lru(self, key: str) -> None:

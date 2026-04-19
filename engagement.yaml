@@ -235,6 +235,68 @@ classifier_prompt: |
   When in doubt: NO. A missed message is preferable to unwanted interjection.
   Do not engage with fallacious framing as though it were valid — incorrect premises in a message are not a reason to engage, they are a reason to let it pass unless directly asked.
 
+# ── PREGATE (phase 3) ──────────────────────────────────────────────────
+# Deterministic short-circuit for middle-band messages that would
+# otherwise pay the haiku-subprocess latency. The pregate runs BEFORE
+# the haiku classifier; if it returns a definite decision, haiku is
+# skipped entirely. Only one heuristic ships in phase 3 — the
+# short-pleasantry reject — because it's the only middle-band case
+# that both fires often AND is near-zero risk to short-circuit.
+#
+# Heuristic (short_pleasantry):
+#   text length ≤ max_pleasantry_length chars
+#   AND no domain keyword in the current message
+#   AND no bot name mention
+#   AND no '?'
+#   AND last whitespace-split token (stripped of trailing punctuation)
+#       is in the pleasantries list
+#   → decision = don't engage, reason = "short_pleasantry"
+#
+# Everything else falls through to haiku. The pleasantries list
+# overlaps with noise_tokens on purpose; noise_tokens hard-drops ≤2-word
+# messages before scoring, while pregate catches 3+ word messages that
+# happen to land in the middle band but end in filler.
+pregate:
+  max_pleasantry_length: 15
+  pleasantries:
+    - lol
+    - lmao
+    - haha
+    - hehe
+    - ok
+    - k
+    - kk
+    - nice
+    - cool
+    - sure
+    - sweet
+    - good
+    - gg
+    - bet
+    - word
+    - fair
+    - true
+    - same
+    - valid
+    - based
+    - real
+    - fr
+    - yep
+    - yup
+    - nope
+    - nah
+    - yeah
+    - yea
+    - rip
+    - oof
+    - hmm
+    - huh
+    - wow
+    - thanks
+    - thx
+    - ty
+    - np
+
 # ── CONTENT GATE (phase 4) ────────────────────────────────────────────────
 # Three-outcome content-safety gate. Runs a pre-gate classifier (one-shot
 # haiku call, parallel to the engagement classifier) that tags which

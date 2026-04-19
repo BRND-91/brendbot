@@ -155,10 +155,12 @@ class TestGateOutcome:
     _CANONICAL = frozenset({
         "hard_pass_at_mention",
         "hard_pass_score",
+        "pregate_yes",
         "haiku_yes",
         "haiku_error_escalate",
         "dm_always_engage",
         "hard_drop",
+        "pregate_no",
         "haiku_no",
         "haiku_error_low_score",
         "bot_author_not_mentioned",

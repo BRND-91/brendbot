@@ -871,61 +871,109 @@ class DiscordListener:
                 haiku_invoked = False
                 if not heuristic_pass:
                     if use_haiku:
-                        haiku_invoked = True  # tracked for cognitive load (Phase 3 #1A)
-                        from brendbot.classifier import classify
-                        classifier_result = await classify(
-                            text, context_snapshot
+                        # ── Pregate — deterministic short-circuit ─────────────
+                        # Runs before the haiku classifier so obvious
+                        # middle-band cases (e.g. short pleasantries) skip the
+                        # subprocess entirely. On a definite decision we
+                        # synthesize the matching gate_outcome and bypass
+                        # haiku; `haiku_invoked` stays False so latency
+                        # accounting reflects the saved subprocess.
+                        # `has_domain` is true iff the CURRENT message matched
+                        # a domain keyword — context-only matches don't count
+                        # for the pregate (the short-pleasantry heuristic
+                        # wants a plain-filler message, and context fallback
+                        # means the current message was unstructured enough
+                        # that the fallback fired). See pregate.py header.
+                        from brendbot import pregate as _pregate
+                        _pregate_result = _pregate.pregate_classify(
+                            text,
+                            has_domain=bool(
+                                matched_domains - matched_context_domains
+                            ),
+                            name_mentioned=name_mentioned,
                         )
-                        engage = classifier_result.engage
-                        if classifier_result.reason == "error":
-                            _log_haiku_failure(
-                                channel_id, text, engage_result.score
-                            )
-                            # Fail-loud escalation: if score was already close to
-                            # the hard-pass band, treat the classifier outage as
-                            # "engage" rather than silently dropping.
-                            if engage_result.score >= 0.6:
-                                engage = True
-                                gate_outcome = "haiku_error_escalate"
-                                logger.warning(
-                                    "Haiku failed but score=%.2f — escalating to engage",
-                                    engage_result.score,
-                                )
-                            else:
-                                gate_outcome = "haiku_error_low_score"
-                        elif engage:
-                            gate_outcome = "haiku_yes"
-                        else:
-                            gate_outcome = "haiku_no"
-                        if not engage:
-                            tone = classifier_result.tone
-                            await react_with_fallback(
-                                channel_id, str(message.id), _pick_reaction(tone)
-                            )
+                        if _pregate_result.decision is False:
+                            gate_outcome = "pregate_no"
                             try:
                                 from brendbot.feedback import log_skip_decision
-                                # `reason` stays as the legacy short tag so
-                                # existing `reason`-joining queries keep
-                                # working; `gate_outcome` is the unified
-                                # taxonomy field added in Phase 2b.
-                                _reason = (
-                                    "haiku_error_low_score"
-                                    if classifier_result.reason == "error"
-                                    else "haiku_no"
-                                )
                                 log_skip_decision(
                                     channel_id=channel_id,
                                     sender_id=sender_id,
                                     user_message_id=msg_id,
                                     user_text=text,
                                     score=engage_result.score,
-                                    reason=_reason,
+                                    reason=_pregate_result.reason or "pregate_no",
                                     domains=sorted(engage_result.domains),
                                     gate_outcome=gate_outcome,
                                 )
                             except Exception:
                                 pass
                             return
+                        if _pregate_result.decision is True:
+                            # Reserved for future accept-side heuristics;
+                            # short_pleasantry never takes this branch today.
+                            # We engage without the haiku call; fall through
+                            # to the post-gate generation path below.
+                            gate_outcome = "pregate_yes"
+                        else:
+                            # Defer: fall through to haiku as before.
+                            haiku_invoked = True  # tracked for cognitive load (Phase 3 #1A)
+                            from brendbot.classifier import classify
+                            classifier_result = await classify(
+                                text, context_snapshot
+                            )
+                            engage = classifier_result.engage
+                            if classifier_result.reason == "error":
+                                _log_haiku_failure(
+                                    channel_id, text, engage_result.score
+                                )
+                                # Fail-loud escalation: if score was already
+                                # close to the hard-pass band, treat the
+                                # classifier outage as "engage" rather than
+                                # silently dropping.
+                                if engage_result.score >= 0.6:
+                                    engage = True
+                                    gate_outcome = "haiku_error_escalate"
+                                    logger.warning(
+                                        "Haiku failed but score=%.2f — escalating to engage",
+                                        engage_result.score,
+                                    )
+                                else:
+                                    gate_outcome = "haiku_error_low_score"
+                            elif engage:
+                                gate_outcome = "haiku_yes"
+                            else:
+                                gate_outcome = "haiku_no"
+                            if not engage:
+                                tone = classifier_result.tone
+                                await react_with_fallback(
+                                    channel_id, str(message.id), _pick_reaction(tone)
+                                )
+                                try:
+                                    from brendbot.feedback import log_skip_decision
+                                    # `reason` stays as the legacy short tag
+                                    # so existing `reason`-joining queries
+                                    # keep working; `gate_outcome` is the
+                                    # unified taxonomy field added in
+                                    # Phase 2b.
+                                    _reason = (
+                                        "haiku_error_low_score"
+                                        if classifier_result.reason == "error"
+                                        else "haiku_no"
+                                    )
+                                    log_skip_decision(
+                                        channel_id=channel_id,
+                                        sender_id=sender_id,
+                                        user_message_id=msg_id,
+                                        user_text=text,
+                                        score=engage_result.score,
+                                        reason=_reason,
+                                        domains=sorted(engage_result.domains),
+                                        gate_outcome=gate_outcome,
+                                    )
+                                except Exception:
+                                    pass
+                                return
                     else:
                         try:
                             from brendbot.feedback import log_skip_decision

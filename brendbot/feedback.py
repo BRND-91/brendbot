@@ -82,6 +82,8 @@ _BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass|u
 # Engaged paths (written to bot_responses.jsonl):
 #   hard_pass_at_mention — message contained @bot mention
 #   hard_pass_score      — heuristic score ≥ ENGAGE_HARD_PASS
+#   pregate_yes          — deterministic pregate said engage (Phase 3,
+#                          reserved — no heuristic returns True today)
 #   haiku_yes            — middle-band message, classifier said engage
 #   haiku_error_escalate — classifier failed, but score ≥ 0.6 so
 #                          engaged anyway under fail-loud policy
@@ -89,6 +91,9 @@ _BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass|u
 #
 # Skip paths (written to skip_decisions.jsonl):
 #   hard_drop                 — heuristic score < ENGAGE_THRESHOLD
+#   pregate_no                — deterministic pregate rejected the message
+#                               before haiku ran (Phase 3; e.g. short
+#                               pleasantry filler in an active thread)
 #   haiku_no                  — classifier said don't-engage
 #   haiku_error_low_score     — classifier failed AND score < 0.6
 #   bot_author_not_mentioned  — another bot posted and didn't address us
@@ -96,10 +101,12 @@ _BRANCH_TAG_RE = re.compile(r'^\[(rejected|searching|unverified|flagged|bypass|u
 GATE_OUTCOMES: frozenset[str] = frozenset({
     "hard_pass_at_mention",
     "hard_pass_score",
+    "pregate_yes",
     "haiku_yes",
     "haiku_error_escalate",
     "dm_always_engage",
     "hard_drop",
+    "pregate_no",
     "haiku_no",
     "haiku_error_low_score",
     "bot_author_not_mentioned",

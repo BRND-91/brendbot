@@ -2717,6 +2717,14 @@ class SessionPool:
                 channel=chat_id,
                 domains=current_domains,
                 limit=3,
+                # Patch 3: semantic re-rank. The raw inbound text is
+                # the recall cue — passing it lets query_episodes
+                # cosine-score stored episode summaries against the
+                # current question instead of relying purely on the
+                # lexical domain-LIKE prefilter + recency order.
+                # Degrades gracefully when sentence-transformers is
+                # unavailable.
+                query_text=text,
             )
             if episodes:
                 # Patch A: filter out episodes already injected this session.

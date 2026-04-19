@@ -11,6 +11,16 @@ dependencies = [
   "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+# Semantic-retrieval tier for episodes.py (cosine re-rank on stored
+# summaries) and classifier_cache.py (semantic cache-hit lookup).
+# Optional: brendbot runs without this; installing it unlocks both
+# consumers via the shared embedding_model singleton.
+embeddings = [
+  "sentence-transformers>=2.7",
+  "numpy>=1.26",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",

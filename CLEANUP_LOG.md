@@ -109,3 +109,52 @@ git push origin --delete phase2b/zero-cost-plumbing
 git push origin --delete phase3/pregate
 git push origin --delete phase4/content-fold
 ```
+
+Executed after merge. Origin is now master-only.
+
+## Stage 2 — dead code (2026-04-22)
+
+Three deletions, each on its own commit so any of them can be reverted
+independently.
+
+### `agent_core/solver.py` + `tests/agent_core/test_solver.py`
+
+The Z3 SAT/SMT wrapper (308 lines) was never imported at runtime. The
+only non-self reference was its own test file. The `z3-solver` package
+was not listed in `pyproject.toml`, so the module couldn't have run in
+a clean deploy regardless. Deleted together with its 201-line test
+file. Total: 509 lines removed with no behavior change.
+
+If a future iteration wants SMT, reintroduce it then — with a call site
+already in place. Orphan modules rot faster than they're useful.
+
+### Unused imports in `session.py`
+
+`UserMessage` and `ToolResultBlock` were imported from
+`claude_agent_sdk` but referenced nowhere in `session.py`. Grep-verified
+before removal (the two matches were the import lines themselves).
+Stripped both.
+
+### `brendbot/knowledge/knowledge.db` untracked
+
+The 236K SQLite binary was committed early (before `.gitignore` picked
+it up) and never removed from the index. Every bot run or
+knowledge-base update produced a large staged diff on a binary file
+nobody should be reviewing. `git rm --cached` removes it from the
+index without touching the on-disk file, so the bot still finds
+`knowledge.db` at `brendbot/knowledge/knowledge.db` at runtime. The
+pre-existing `.gitignore` entry keeps it out on future adds.
+
+### Post-stage pytest
+
+- `293 passed` (1 skipped in Stage 1 baseline was the z3-solver test
+  skipping due to missing dependency; that test is gone, so the
+  skipped count is 0 now).
+
+No new failures.
+
+### Disk / repo impact
+
+- 509 LOC deleted
+- One 236K binary no longer tracked
+- Zero behavior change

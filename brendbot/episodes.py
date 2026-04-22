@@ -74,20 +74,57 @@ def _open(db: Path) -> sqlite3.Connection:
 
 
 def _ensure_migrated(conn: sqlite3.Connection, db_key: str) -> None:
-    """Add the `embedding` BLOB column if missing. Idempotent per
-    `db_key`. Never raises — failed migration just means embedding
-    columns won't be populated and the cosine re-rank will degrade to
-    lexical order."""
+    """Bootstrap the `episodes` table and migrate the `embedding` column.
+
+    Idempotent per ``db_key``. Never raises — failed migration just
+    means episodic memory won't be readable/writable and the cosine
+    re-rank will degrade to lexical order.
+
+    Historically this function only handled the ``ALTER TABLE ADD COLUMN
+    embedding`` migration because the ``episodes`` table itself came
+    pre-seeded in the tracked ``brendbot/knowledge/knowledge.db``. The
+    hotfix after Stage 2 (which untracked that binary) adds
+    ``CREATE TABLE IF NOT EXISTS`` + the two indexes so a fresh
+    ``knowledge.db`` bootstraps correctly without the pre-seeded
+    schema carrier. Schema mirrors the test fixture in
+    ``tests/test_episodes.py``.
+    """
     if db_key in _migrated_paths:
         return
     try:
         cur = conn.cursor()
+        # Bootstrap: create the table and its indexes if they don't
+        # exist. IF NOT EXISTS makes this idempotent per-database; the
+        # _migrated_paths set guards against redundant per-process calls.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS episodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                ts_start TEXT NOT NULL,
+                ts_end TEXT NOT NULL,
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                domains TEXT NOT NULL DEFAULT '',
+                entities TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                outcome TEXT NOT NULL DEFAULT 'ok'
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_channel_ts "
+            "ON episodes (channel, ts_end DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_episodes_domains "
+            "ON episodes (domains)"
+        )
+        # Migrate: add the embedding BLOB column on databases that
+        # pre-date its introduction.
         cur.execute("PRAGMA table_info(episodes)")
         cols = {row[1] for row in cur.fetchall()}
         if "embedding" not in cols:
             cur.execute("ALTER TABLE episodes ADD COLUMN embedding BLOB")
-            conn.commit()
             logger.info("episodes: added embedding BLOB column (%s)", db_key)
+        conn.commit()
         _migrated_paths.add(db_key)
     except Exception as exc:
         logger.warning("episodes: migration check failed for %s: %s", db_key, exc)

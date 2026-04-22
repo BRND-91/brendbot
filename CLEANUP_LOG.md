@@ -177,3 +177,101 @@ bot actually does (engagement gating, content safety, episodic
 memory).
 
 Post-stage pytest: `293 passed`. Unchanged, as expected.
+
+## Stage 4 — extract classifier pool (2026-04-22)
+
+Goal: lift the warm classifier pool, the four classifier entry points,
+and the acquire/dispose pattern out of `session.py` into their own
+module. This is the first of the `session.py` god-object extractions
+(stages 4–7). Rule 4 applies strictly here: mechanical move + one
+small context-manager refactor, no other changes.
+
+### New module: `brendbot/classifier_pool.py` (675 lines)
+
+Contains: `ClassifierPool`, `get_classifier_pool`, `warm_classifier_pool`,
+`acquire_classifier_client` (new), `haiku_classify`,
+`content_gate_classify`, `content_gate_cross_check_floor`,
+`flagged_generate`. All of these were self-contained — none depended on
+`Session` / `SessionPool` instance state — so the move is purely
+mechanical except for the context-manager refactor described below.
+
+### `acquire_classifier_client` context manager
+
+The try/finally pattern around pool.acquire/pool.dispose appeared three
+times in `haiku_classify`, `content_gate_classify._one_shot`, and
+`content_gate_cross_check_floor._one_call`. Collapsed to an
+`@asynccontextmanager` in the new module:
+
+```
+async with acquire_classifier_client() as client:
+    await client.query(prompt)
+    ...
+```
+
+Behaviour is identical — the CM does `pool = pool or
+get_classifier_pool(); client = await pool.acquire()` in `__aenter__`
+and `await pool.dispose(client)` in `__aexit__`. The one observable
+difference is that the old `haiku_classify` body had a
+`classifier_client is not None` guard in its finally; the CM version
+does not need that guard because `pool.acquire()` either returns a
+client or raises, and in both cases the CM does the right thing (yields
+on success, exits without dispose on raise because `__aenter__` never
+returned).
+
+### `_load_template` and `_render` — deviation from plan
+
+The plan listed these as part of the Stage 4 move. They sat between
+`flagged_generate` and the Session class in `session.py` so physical
+adjacency suggested classifier-related utilities. In fact they are
+prompt-templating helpers used only by `Session` internals (SOUL.md /
+GROUP_SOUL.md loading and the main system-prompt render path at the
+SessionPool layer). Moving them into `classifier_pool.py` would have
+created a semantically awkward `session → classifier_pool` import for
+functions the classifier pool itself does not use. Left in `session.py`
+with no other change; if a future extraction wants a shared
+prompt-utils module they can both move there together.
+
+### `session.py` — re-import block in place of extracted code
+
+Lines 59–661 (the classifier block) were replaced with a module-level
+re-import block:
+
+```
+from brendbot.classifier_pool import (
+    ClassifierPool,
+    acquire_classifier_client,
+    content_gate_classify,
+    content_gate_cross_check_floor,
+    flagged_generate,
+    get_classifier_pool,
+    haiku_classify,
+    warm_classifier_pool,
+)
+```
+
+The re-import preserves three external contracts:
+
+1. `main.py` imports `warm_classifier_pool` from `brendbot.session` —
+   still works.
+2. `discord.py` imports `haiku_classify` from `brendbot.session` via
+   lazy inline import — still works.
+3. `tests/test_admin_bypass.py` uses
+   `monkeypatch.setattr(session_mod, "content_gate_classify", fake)`
+   and `monkeypatch.setattr(session_mod, "flagged_generate", fake)`.
+   The patched binding in `session.py`'s module dict is what the
+   (still-resident) `apply_content_gate` resolves at call time — so
+   the tests see the fake exactly as before. This will need one more
+   adjustment when `apply_content_gate` itself moves in Stage 5; noted
+   as a Stage 5 gotcha.
+
+### Size impact
+
+`session.py`: 3,429 → 2,850 lines (-579, about 17% smaller).
+`classifier_pool.py`: 675 lines (net +96 from docstrings and the new
+context manager).
+
+### Post-stage pytest
+
+- `293 passed`. No new failures; no tests needed to change because
+  every patched binding still resolves via `session.py`'s module
+  namespace.

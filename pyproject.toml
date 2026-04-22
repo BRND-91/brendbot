@@ -1,7 +1,7 @@
 [project]
 name = "brendbot"
 version = "0.1.0"
-description = "A Claude-powered Discord bot in ~300 lines"
+description = "A Claude-powered Discord bot with engagement gating, content safety, and episodic memory"
 requires-python = ">=3.12"
 dependencies = [
   "claude-agent-sdk>=0.1.0",

@@ -363,3 +363,115 @@ unchanged.
 - `tests/test_admin_bypass.py`: 18/18 passing — the ~20
   `s.apply_content_gate(…)` call sites all resolve through the
   delegate and land in the extracted module correctly.
+
+
+## Stage 6 — Extract message-handler logic
+
+**Branch:** `cleanup/stage-6-message-handler`
+**PR:** #16 (to be opened)
+**Baseline:** `293 passed` on master after Stage 5 merge.
+
+### Target
+
+Three methods on `Session` carry all SDK-message-handling behaviour:
+
+- `_handle` — 354 lines, dispatches `AssistantMessage` and
+  `ResultMessage`. `AssistantMessage` path demultiplexes `ThinkingBlock`
+  / `TextBlock` / `ToolUseBlock` inline; `ResultMessage` path does the
+  cache-metric stash, the intentional-silent-drop vs phantom-turn
+  discriminator, the three-way text dispatch (tool-suffix final
+  segment / streamed final edit / fresh full send), the per-turn flag
+  reset, the context-threshold check, the cumulative load-score
+  update, the context-status file write, and reaction cleanup.
+- `_fire_on_text` — 76 lines, send + feedback-log sequence guarded by
+  `_turn_lock`.
+- `_fire_on_text_streamed` — 93 lines, same sequence but skips the
+  initial send (it already happened during streaming) and does a
+  final edit on the stored `_stream_msg_id`, with an
+  `asyncio.wait_for(…_stream_first_chunk_done…)` gate to close the
+  pre-Discord-send race window.
+
+Combined: 523 of `session.py`'s 2,599 lines. The _handle decomposition
+is the dominant win — the method was long enough that the
+phantom-turn discriminator logic, the load-score update, and the
+reaction cleanup all lived inside the same 100-plus-line block and
+read as one monolithic "ResultMessage" block rather than the five
+distinct concerns they actually are.
+
+### New module: `brendbot/session_handler.py` (521 lines)
+
+Public surface:
+
+- `handle_message(session, message)` — synchronous dispatcher for
+  `AssistantMessage` and `ResultMessage`.
+- `fire_on_text(session, text)` — async, full send + feedback path.
+- `fire_on_text_streamed(session, text)` — async, streamed-finalize
+  + feedback path.
+
+### Internal structure
+
+`handle_message` → `_handle_assistant_message` →
+`_handle_thinking_block` / `_handle_text_block` /
+`_handle_tool_use_block` — one helper per content-block type, each
+doing exactly the mutation set the corresponding block owns. Drops
+the nested `for block in message.content: if/elif/elif` chain that
+previously ran to ~70 lines under one `for` loop.
+
+`handle_message` → `_handle_result_message` → `_stash_cache_metrics`,
+`_dispatch_turn_output`, `_reset_per_turn_state`,
+`_update_context_tracking`, `_update_load_score`,
+`_write_context_status`, `_clear_reactions`. Each helper owns one
+concern; `_handle_result_message` reads top-to-bottom as a short
+sequence of named steps rather than a 270-line unrolled script.
+
+`fire_on_text` and `fire_on_text_streamed` share two helpers:
+`_prepare_send_text` (bypass-tag + uncertain-tag injection in the
+right order) and `_post_send_bookkeeping` (engagement /
+record_bot_spoke / log_bot_response / log_branch_audit). The two
+send-paths previously open-coded identical copies of both blocks;
+now the shared section lives in one place and each send-path
+contains only its unique pre-send / send-vs-edit logic.
+
+### Constant access via lazy session-module import
+
+`_update_context_tracking` and `_update_load_score` need
+`_CONTEXT_REFRESH_THRESHOLD`, `_CONTEXT_SOFT_WARNING`, the
+`_LOAD_WEIGHT_*` family, and `_LOAD_BUDGET_*`. Those live in
+`session.py` and move to their own constants module only in Stage 7.
+For now the handler does `from brendbot import session as
+_session_mod` inside each function body and reads
+`_session_mod._CONTEXT_REFRESH_THRESHOLD` etc. The lazy import keeps
+Stage 7 clean (swapping the import target is a one-line change per
+helper) and avoids a circular import at module load time:
+`session.py` is the one importing `session_handler` (inside the
+delegate methods).
+
+### `Session._handle` / `_fire_on_text` / `_fire_on_text_streamed` kept as delegates
+
+Multiple test modules drive these directly — `test_phantom_discriminator.py`,
+`test_load_score.py`, and `test_cache_metrics.py` all construct a bare
+`Session` and call `s._handle(msg)`; some pool-level tests replace
+`s._fire_on_text` with a fake. Rewriting those call sites was out of
+scope, so all three methods stay in `session.py` as 3-line delegates
+that import the handler module and forward `self` plus arguments.
+`_handle` stays synchronous (matching the SDK dispatch contract);
+the two `_fire_on_text*` delegates are `async` and use `await`.
+
+### Size impact
+
+- `session.py`: 2,599 → 2,089 lines (−510, another 20% smaller;
+  cumulative −39% from the pre-cleanup 3,429).
+- `session_handler.py`: 521 lines (net −2 relative to the extracted
+  methods' 523 lines; the module-level structure is tighter than
+  the inline version despite added docstrings and helper
+  signatures).
+
+### Post-stage pytest
+
+- `293 passed` on the first run — no flakes this time.
+- `293 passed` on the re-run, stable.
+- Targeted runs of `tests/test_phantom_discriminator.py` (15 tests),
+  `tests/test_load_score.py` (8 tests), and `tests/test_cache_metrics.py`
+  (7 tests) all green: 30/30. The three test modules that drive
+  `_handle` directly through the delegate all land in the extracted
+  handler correctly.

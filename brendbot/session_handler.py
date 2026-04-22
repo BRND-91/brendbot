@@ -18,10 +18,9 @@ functions that take a ``Session`` as their first argument:
 discriminator, load score, cache metrics) continue working unchanged.
 
 Constants referenced here (``_CONTEXT_REFRESH_THRESHOLD``, the
-``_LOAD_WEIGHT_*`` family, etc.) live in ``brendbot.session``; we
-resolve them lazily at call time via
-``from brendbot import session as _session_mod`` to avoid a circular
-import and to keep Stage 7's constants-consolidation clean.
+``_LOAD_WEIGHT_*`` family, etc.) live in
+``brendbot.session_constants`` as of Stage 7 and are imported
+directly at module top.
 """
 
 from __future__ import annotations
@@ -38,6 +37,17 @@ from claude_agent_sdk import (
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+)
+
+from brendbot.session_constants import (
+    _CONTEXT_REFRESH_THRESHOLD,
+    _CONTEXT_SOFT_WARNING,
+    _LOAD_BUDGET_PREEMPTIVE,
+    _LOAD_BUDGET_SHALLOW,
+    _LOAD_WEIGHT_BASH_CALL,
+    _LOAD_WEIGHT_HAIKU_INVOCATION,
+    _LOAD_WEIGHT_TOKENS_PER_K,
+    _LOAD_WEIGHT_TOOL_OTHER,
 )
 
 if TYPE_CHECKING:
@@ -364,8 +374,6 @@ def _reset_per_turn_state(session: "Session") -> None:
 
 
 def _update_context_tracking(session: "Session", message: ResultMessage) -> None:
-    from brendbot import session as _session_mod
-
     usage = message.usage or {}
     if not (isinstance(usage, dict) and usage):
         return
@@ -376,16 +384,16 @@ def _update_context_tracking(session: "Session", message: ResultMessage) -> None
     if not total_context:
         return
     session._last_input_tokens = int(total_context)
-    if session._last_input_tokens >= _session_mod._CONTEXT_REFRESH_THRESHOLD:
+    if session._last_input_tokens >= _CONTEXT_REFRESH_THRESHOLD:
         if session._context_state == "normal":
             session._context_state = "threshold_hit"
         logger.warning(
             "[%s] context at %d tokens (>=%d threshold) — clean restart queued",
             session.key,
             session._last_input_tokens,
-            _session_mod._CONTEXT_REFRESH_THRESHOLD,
+            _CONTEXT_REFRESH_THRESHOLD,
         )
-    elif (session._last_input_tokens >= _session_mod._CONTEXT_SOFT_WARNING
+    elif (session._last_input_tokens >= _CONTEXT_SOFT_WARNING
           and not session._soft_warning_sent):
         session._soft_warning_sent = True
         # Promote soft warning to threshold_hit so the receiver
@@ -405,8 +413,6 @@ def _update_load_score(session: "Session") -> float:
 
     Returns the current load score for logging.
     """
-    from brendbot import session as _session_mod
-
     # ── Cognitive load update (Phase 3 #1A) ───────────────────
     # Roll per-turn counters into cumulative load. Compute current
     # load score as weighted sum and trip preemptive restart if it
@@ -416,23 +422,23 @@ def _update_load_score(session: "Session") -> float:
     session._cumulative_bash_calls += session._turn_bash_calls
     session._cumulative_other_tools += session._turn_other_tool_calls
     current_load = (
-        (session._last_input_tokens / 1000.0) * _session_mod._LOAD_WEIGHT_TOKENS_PER_K
-        + session._cumulative_bash_calls * _session_mod._LOAD_WEIGHT_BASH_CALL
-        + session._cumulative_haiku_invocations * _session_mod._LOAD_WEIGHT_HAIKU_INVOCATION
-        + session._cumulative_other_tools * _session_mod._LOAD_WEIGHT_TOOL_OTHER
+        (session._last_input_tokens / 1000.0) * _LOAD_WEIGHT_TOKENS_PER_K
+        + session._cumulative_bash_calls * _LOAD_WEIGHT_BASH_CALL
+        + session._cumulative_haiku_invocations * _LOAD_WEIGHT_HAIKU_INVOCATION
+        + session._cumulative_other_tools * _LOAD_WEIGHT_TOOL_OTHER
     )
     session._cumulative_load = current_load
-    if (current_load >= _session_mod._LOAD_BUDGET_PREEMPTIVE
+    if (current_load >= _LOAD_BUDGET_PREEMPTIVE
             and session._context_state == "normal"):
         session._context_state = "threshold_hit"
         logger.info(
             "[%s] load score %.1f >= budget %.1f — preemptive restart queued "
             "(bash=%d, haiku=%d, other=%d, tokens=%d)",
-            session.key, current_load, _session_mod._LOAD_BUDGET_PREEMPTIVE,
+            session.key, current_load, _LOAD_BUDGET_PREEMPTIVE,
             session._cumulative_bash_calls, session._cumulative_haiku_invocations,
             session._cumulative_other_tools, session._last_input_tokens,
         )
-    elif (current_load >= _session_mod._LOAD_BUDGET_SHALLOW
+    elif (current_load >= _LOAD_BUDGET_SHALLOW
             and not session._shallow_rested
             and session._context_state == "normal"):
         # Phase 3 #1B — fire shallow rest. Scheduled as a task so
@@ -440,11 +446,11 @@ def _update_load_score(session: "Session") -> float:
         # and doesn't block the receive loop.
         logger.info(
             "[%s] load score %.1f >= shallow budget %.1f — rest cycle queued",
-            session.key, current_load, _session_mod._LOAD_BUDGET_SHALLOW,
+            session.key, current_load, _LOAD_BUDGET_SHALLOW,
         )
         asyncio.create_task(session._trigger_shallow_rest())
     elif (session._shallow_rested
-            and current_load < _session_mod._LOAD_BUDGET_SHALLOW * 0.7):
+            and current_load < _LOAD_BUDGET_SHALLOW * 0.7):
         # Recovery: load dropped well below the shallow trigger.
         # Clear the rested flag so a future spike can re-fire.
         session._shallow_rested = False

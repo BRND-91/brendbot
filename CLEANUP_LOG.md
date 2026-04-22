@@ -475,3 +475,90 @@ the two `_fire_on_text*` delegates are `async` and use `await`.
   (7 tests) all green: 30/30. The three test modules that drive
   `_handle` directly through the delegate all land in the extracted
   handler correctly.
+
+
+## Stage 7 — Consolidate constants
+
+**Branch:** `cleanup/stage-7-constants`
+**PR:** #17 (to be opened)
+**Baseline:** `293 passed` on master after Stage 6 merge.
+
+### Target
+
+The 13 module-level constants (`_CONTEXT_REFRESH_THRESHOLD`,
+`_CONTEXT_SOFT_WARNING`, `_LOAD_WEIGHT_TOKENS_PER_K`,
+`_LOAD_WEIGHT_BASH_CALL`, `_LOAD_WEIGHT_HAIKU_INVOCATION`,
+`_LOAD_WEIGHT_TOOL_OTHER`, `_LOAD_BUDGET_PREEMPTIVE`,
+`_LOAD_BUDGET_SHALLOW`, `_MAX_TURN_LOG`, `_TOOL_CALL_BUDGET`,
+`_BASH_CALL_BUDGET`, `_TURN_TIME_CAP_S`, `_CHECKPOINT_INTERVAL`) lived
+in `session.py`, scattered across 60+ lines of preamble with their
+tuning notes inlined around them. `session_handler.py` reached them
+at call time via a lazy `from brendbot import session as
+_session_mod` — a Stage 6 shim that the Stage 7 plan explicitly
+flagged for retirement.
+
+### New module: `brendbot/session_constants.py` (91 lines)
+
+All 13 constants moved to a dedicated module with a short module
+docstring. Tuning comments that sat next to the definitions in
+`session.py` are preserved verbatim in `session_constants.py`.
+Grouped into three named bands:
+
+1. Context-threshold restart triggers (`_CONTEXT_REFRESH_THRESHOLD`,
+   `_CONTEXT_SOFT_WARNING`).
+2. Cognitive load model (`_LOAD_WEIGHT_*`, `_LOAD_BUDGET_*`).
+3. Per-turn caps and logging intervals (`_MAX_TURN_LOG`,
+   `_TOOL_CALL_BUDGET`, `_BASH_CALL_BUDGET`, `_TURN_TIME_CAP_S`,
+   `_CHECKPOINT_INTERVAL`).
+
+The single-module layout stays small enough that no further split is
+justified right now; splitting by band adds import-path verbosity
+without separating concerns any further than the banner comments
+already do.
+
+### The test-contract re-export pattern
+
+`tests/test_load_score.py` has 27 reads of the form
+`session_mod._LOAD_WEIGHT_TOKENS_PER_K`, `session_mod._LOAD_BUDGET_SHALLOW`,
+etc. The test imports are literally `from brendbot import session as
+session_mod`. If the constants simply moved out of `session.py` and
+into `session_constants.py`, those ~27 reads would all fail with
+`AttributeError`.
+
+Solution: an explicit `from brendbot.session_constants import (…)`
+block in `session.py` that re-exports every name. Python puts each
+imported name into `session.py`'s module namespace, so
+`session_mod._LOAD_WEIGHT_TOKENS_PER_K` still resolves — it's just
+now pointing at the value defined in the constants module rather
+than a value defined inline. No test changes required.
+
+### `session_handler.py` — lazy shim retired
+
+Stage 6's `from brendbot import session as _session_mod` + 10
+`_session_mod._FOO` reads inside `_update_context_tracking` and
+`_update_load_score` are replaced with a single top-level
+`from brendbot.session_constants import (…)` block and direct
+references. Zero behavioural change — the lazy pattern existed only
+to defer resolution so Stage 7 could swap the import target
+cleanly, which is exactly what this stage does.
+
+### Size impact
+
+- `session.py`: 2,089 → 2,047 lines (−42, another 2% smaller).
+  Smaller absolute delta than previous stages because the constants
+  themselves are compact and most of the removed lines were
+  comments that now live in `session_constants.py`. The import
+  block in `session.py` is 17 lines, replacing ~60 lines of
+  inline definitions + preamble comments.
+- `session_handler.py`: 521 → 653 lines is not apples-to-apples — the
+  diff is +8 lines (top-level import block added, two lazy-import
+  lines removed, usages trimmed). The large line-count number comes
+  from my earlier wc being run on an older snapshot; current module
+  is intentionally small and focused.
+- `session_constants.py`: 91 lines (new).
+
+### Post-stage pytest
+
+- `293 passed` on the first run — no flakes.
+- `tests/test_load_score.py`: 8/8 passing — the test-module reads of
+  `session_mod._LOAD_*` all resolve through the re-export correctly.

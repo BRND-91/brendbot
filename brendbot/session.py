@@ -28,9 +28,7 @@ from claude_agent_sdk import (
     SystemMessage,
     TextBlock,
     ThinkingBlock,
-    ToolResultBlock,
     ToolUseBlock,
-    UserMessage,
 )
 
 # Patch SDK parser to handle unknown message types gracefully

@@ -275,3 +275,91 @@ context manager).
 - `293 passed`. No new failures; no tests needed to change because
   every patched binding still resolves via `session.py`'s module
   namespace.
+
+## Stage 5 — extract content-gate logic (2026-04-22)
+
+Goal: lift `Session.apply_content_gate` out of `session.py` into its
+own module `brendbot/session_gate.py`. Second of the god-object
+extractions. Per plan, split BYPASS / FLAG / FLOOR_HIT / REFUSE branches
+into helpers.
+
+### New module: `brendbot/session_gate.py` (426 lines)
+
+Public surface: module-level `apply_content_gate(session, wrapped_text,
+raw_user_text, tier, sender_id, message_id)`. Takes a `Session`
+instance and mutates `session._turn_bypass_pending` and
+`session._flagged_count` through it — acceptable transitional surface;
+a cleaner seam becomes available only if those bits of Session state
+move elsewhere too.
+
+### Internal structure
+
+The monolithic 270-line method decomposes into:
+
+- `apply_content_gate` — orchestrator. Loads gate_cfg, parses
+  thresholds / flagged model / bypass flags, runs the classifier (with
+  conservative fail-to-REFUSE on SDK error), computes the shadow
+  outcome, and dispatches to the right branch helper.
+- `_load_gate_cfg`, `_parse_gate_cfg_basics`, `_parse_flagged_cfg`,
+  `_parse_bypass_cfg` — config extraction helpers. The env > yaml >
+  hardcoded-fallback precedence chain for `flagged_model` is preserved
+  verbatim (via `Config.claude_flagged_model`).
+- `_handle_bypass` — admin bypass path. Hard-floor refusal vs
+  sentinel-on-session-for-tag-injection.
+- `_handle_flag` — FLAG branch. Channel `gate2_bypass` override,
+  per-session budget cap, background flagged-path generation.
+- `_handle_refuse_or_floor` — REFUSE + FLOOR_HIT dispatch. FLOOR_HIT
+  runs the cross-check and logs DISPUTED verdicts; refusal fires
+  either way.
+
+### The monkeypatching contract — preserved via lazy module-ref
+
+`tests/test_admin_bypass.py` uses `monkeypatch.setattr(session_mod,
+"content_gate_classify", fake)` and the same for `flagged_generate`.
+In the extracted module, naïvely doing `from brendbot.session import
+content_gate_classify` at module top would snapshot the unpatched
+reference at import time and break the contract.
+
+Resolution: `from brendbot import session as _session_mod` is done
+*inside* `apply_content_gate` (and inside `_handle_flag` /
+`_handle_refuse_or_floor`), and the classifier call is written as
+`await _session_mod.content_gate_classify(...)`. That's attribute
+lookup on the session module at call time, so
+`monkeypatch.setattr(session_mod, "content_gate_classify", fake)`
+still takes effect. The deferred import also sidesteps a circular
+import: `session.py` imports `session_gate` (inside the delegate
+method), and `session_gate` imports `session` (inside
+`apply_content_gate`).
+
+### `Session.apply_content_gate` kept as a delegate
+
+`tests/test_admin_bypass.py` has ~20 direct `s.apply_content_gate(…)`
+call sites. Rewriting them was out of scope for "move the logic out";
+instead the method stays in `session.py` as a 5-line delegate that
+imports `brendbot.session_gate.apply_content_gate` and awaits it with
+`self` as the first argument. `SessionPool.route_message` is likewise
+unchanged.
+
+### Size impact
+
+- `session.py`: 2,850 → 2,599 lines (-251, another 9% smaller;
+  cumulative -24% from the pre-cleanup 3,429).
+- `session_gate.py`: 426 lines (net +175 over the extracted method's
+  270 lines; the overhead is docstrings, per-branch helper signatures
+  with named kwargs for clarity, and the config-parsing helpers).
+
+### Post-stage pytest
+
+- `293 passed`.
+- One first-run flake on `test_concurrent_write_episode_does_not_lock`
+  from `tests/test_sqlite_concurrency.py` — the "duplicate column
+  name: embedding" migration warning it emits in the log is a sign
+  the test is racing on schema migration rather than on the
+  write-path hardening it actually exercises. Passes on every
+  subsequent run and in isolation, so this is pre-existing flakiness
+  in that test fixture, not a Stage 5 regression. Noted as a
+  separate cleanup item for a future stage — out of scope for
+  Stage 5.
+- `tests/test_admin_bypass.py`: 18/18 passing — the ~20
+  `s.apply_content_gate(…)` call sites all resolve through the
+  delegate and land in the extracted module correctly.

@@ -1,6 +1,6 @@
 # brendbot
 
-A Claude-powered Discord bot in ~300 lines of Python. Your computer is just a thin client — all the AI runs on Anthropic's servers. A potato with wifi can run this.
+A Claude-powered Discord bot (~7,300 LOC across the `brendbot/` package). Your computer is just a thin client — all the AI runs on Anthropic's servers. A potato with wifi can run this.
 
 ## What It Does
 
@@ -238,7 +238,7 @@ The included `setup.sh` handles everything:
 /                    SOUL.md, GROUP_SOUL.md, FUSED-CORE.md, engagement.yaml, README, pyproject
 brendbot/            main, config, discord, session, classifier_cache, episodes, feedback, content_gate, knowledge/
 scripts/             send-discord, react-discord, generate-image, kb-query, calc, export-training-data, migrations/
-tests/               conftest + 6 test files, 69 tests
+tests/               conftest + 16 test files, 293 tests
 ```
 
 ### Core files
@@ -247,9 +247,9 @@ tests/               conftest + 6 test files, 69 tests
 
 **`config.py`** — `.env` loader. Discord token, admin ID, tier map.
 
-**`discord.py`** (36K) — gateway layer. `_score_message` reads `engagement.yaml` at import, scores against thresholds. `_classify_address` maps score→low/moderate/high (both @mentions and name-mentions route to high). `on_message` runs the two-path engagement gate (@mention hard-pass, ambient score→haiku). `send_message` + `edit_message` handle Discord output (streaming edits + final sends). `on_raw_reaction_add` filters feedback emotes (admin + bot-author + valid emoji). Owns `EngageResult` dataclass including `context_domains` for `[ctx]`-tagged fallback matches.
+**`discord.py`** (1,234 lines) — gateway layer. `_score_message` reads `engagement.yaml` at import, scores against thresholds. `_classify_address` maps score→low/moderate/high (both @mentions and name-mentions route to high). `on_message` runs the two-path engagement gate (@mention hard-pass, ambient score→haiku). `send_message` + `edit_message` handle Discord output (streaming edits + final sends). `on_raw_reaction_add` filters feedback emotes (admin + bot-author + valid emoji). Owns `EngageResult` dataclass including `context_domains` for `[ctx]`-tagged fallback matches.
 
-**`session.py`** (70K) — core lifecycle. `ClassifierPool` pre-spawns 3 warm haiku SDK clients at boot (boot-split: concurrent with Discord gateway connect). `haiku_classify` and `content_gate_classify` draw from the pool instead of cold-spawning per call; both check the `ClassifierCache` (LRU, 500 entries, 5min TTL) before acquiring a client. `Session` owns subprocess, turn lock, inject queue, load counters, shallow rest state, episode fields, and streaming state (message edits on a 400ms debounced timer). `_handle()` routes SDK messages — TextBlocks stream to Discord as they arrive on text-only turns. `_fire_on_text_streamed` finalizes streamed responses with audit logging. `_build_options` sets tier-based effort modulation (admin=high, trusted=medium, default=low) alongside adaptive thinking. `_run_loop` drains queue, unpacks `(text, housekeeping)` tuples, sets flag under lock, calls `query()`. `_trigger_clean_restart` writes episode + respawns. `_trigger_shallow_rest` clears tool counters + injects `<system-rest>` without respawn. `_permission_check` enforces address-level budget caps (low=0, moderate=3, high=8 Bash) and tier tool restrictions. `SessionPool` caches soul files (SIGHUP-refreshable), renders CLAUDE.md per session, runs startup injects (memory frags, MEMORY.md, ref block — all housekeeping), queries `episodes` for `<recall>` blocks at ingest.
+**`session.py`** (3,429 lines) — core lifecycle. `ClassifierPool` pre-spawns 3 warm haiku SDK clients at boot (boot-split: concurrent with Discord gateway connect). `haiku_classify` and `content_gate_classify` draw from the pool instead of cold-spawning per call; both check the `ClassifierCache` (LRU, 500 entries, 5min TTL) before acquiring a client. `Session` owns subprocess, turn lock, inject queue, load counters, shallow rest state, episode fields, and streaming state (message edits on a 400ms debounced timer). `_handle()` routes SDK messages — TextBlocks stream to Discord as they arrive on text-only turns. `_fire_on_text_streamed` finalizes streamed responses with audit logging. `_build_options` sets tier-based effort modulation (admin=high, trusted=medium, default=low) alongside adaptive thinking. `_run_loop` drains queue, unpacks `(text, housekeeping)` tuples, sets flag under lock, calls `query()`. `_trigger_clean_restart` writes episode + respawns. `_trigger_shallow_rest` clears tool counters + injects `<system-rest>` without respawn. `_permission_check` enforces address-level budget caps (low=0, moderate=3, high=8 Bash) and tier tool restrictions. `SessionPool` caches soul files (SIGHUP-refreshable), renders CLAUDE.md per session, runs startup injects (memory frags, MEMORY.md, ref block — all housekeeping), queries `episodes` for `<recall>` blocks at ingest.
 
 **`classifier_cache.py`** — LRU hash-based cache for classifier results. Keyed on full prompt string (SHA-256), 5-minute TTL, 500-entry capacity. Separate singletons for engagement and content-gate classifiers. Eliminates redundant SDK subprocess calls for repeated identical messages.
 

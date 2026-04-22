@@ -158,3 +158,22 @@ No new failures.
 - 509 LOC deleted
 - One 236K binary no longer tracked
 - Zero behavior change
+
+## Stage 3 — docs accuracy (2026-04-22)
+
+Docs-only stage. No runtime change, no test impact.
+
+`README.md` claimed "~300 lines of Python" as the headline; actual is
+~7,300 LOC across `brendbot/`. Test count was listed as 69; actual is
+293 across 16 test files plus the agent_core subdirectory. File-size
+labels in the Core files section (`discord.py (36K)`, `session.py
+(70K)`) were stale — replaced with current line counts (1,234 and
+3,429 respectively), which are more meaningful and rot slower.
+
+`pyproject.toml` had the same "~300 lines" claim in its `description`
+field, which becomes the visible summary if the package ever ships to
+PyPI. Replaced with a factual one-line description that notes what the
+bot actually does (engagement gating, content safety, episodic
+memory).
+
+Post-stage pytest: `293 passed`. Unchanged, as expected.

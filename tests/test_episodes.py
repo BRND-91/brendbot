@@ -270,3 +270,78 @@ def test_query_respects_limit(tmp_path):
         )
     hits = query_episodes("ch1", domains=["BUILDSCI"], limit=3, db_path=db)
     assert len(hits) == 3
+
+
+# ── Fresh-DB bootstrap (post-Stage-2 untracked-knowledge-db regression) ──
+
+
+def test_write_episode_creates_table_on_fresh_db(tmp_path):
+    """Writing to a db file with no pre-existing schema must bootstrap
+    the episodes table. Guards the regression where Stage 2 untracked
+    brendbot/knowledge/knowledge.db and left _ensure_migrated() only
+    able to ALTER TABLE ADD COLUMN — the table it assumed to exist was
+    never actually created in code, only in the tracked binary."""
+    # Create an empty database file with no schema at all.
+    db = tmp_path / "knowledge.db"
+    sqlite3.connect(db).close()
+
+    # Reset the per-process migrated-path cache so this test's db
+    # actually runs through _ensure_migrated. Shared module state
+    # across tests would otherwise let an earlier fresh-db test mark
+    # some other path as migrated and skip this one.
+    from brendbot import episodes
+    episodes._migrated_paths.discard(str(db))
+
+    ok = write_episode(
+        channel="ch1",
+        ts_start="2026-04-22T10:00:00",
+        turn_log=[{"role": "user", "text": "bootstrap test"}],
+        domains=["BUILDSCI"],
+        db_path=db,
+    )
+    assert ok is True
+
+    # Schema is load-bearing: confirm the table, indexes, and
+    # embedding column all got bootstrapped.
+    conn = sqlite3.connect(db)
+    try:
+        tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "episodes" in tables
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(episodes)")}
+        assert "embedding" in cols
+        assert cols >= {
+            "id", "channel", "ts_start", "ts_end", "turn_count",
+            "domains", "entities", "summary", "outcome", "embedding",
+        }
+
+        indexes = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='episodes' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        assert "idx_episodes_channel_ts" in indexes
+        assert "idx_episodes_domains" in indexes
+    finally:
+        conn.close()
+
+
+def test_query_episodes_empty_on_fresh_db(tmp_path):
+    """A fresh db with nothing written yet must return [] rather than
+    raising 'no such table'. Companion to the write-side bootstrap
+    test: the pilot log showed that query ran before any write and
+    the warning fired on every ingest, silently degrading episodic
+    retrieval to no-op."""
+    db = tmp_path / "knowledge.db"
+    sqlite3.connect(db).close()
+
+    from brendbot import episodes
+    episodes._migrated_paths.discard(str(db))
+
+    hits = query_episodes("ch1", domains=["BUILDSCI"], db_path=db)
+    assert hits == []

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -383,22 +384,60 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
         logger.debug("content_gate_classify cache hit")
         return cached
 
-    pool = get_classifier_pool()
-    classifier_client: ClaudeSDKClient | None = None
+    async def _one_shot(query: str) -> str:
+        """Single classifier round-trip. Returns raw text. Callers handle
+        parse. Pool acquire/dispose handled per call so the retry path
+        can get a fresh client if the first one drifted off-format."""
+        classifier_client: ClaudeSDKClient | None = None
+        try:
+            classifier_client = await get_classifier_pool().acquire()
+            await classifier_client.query(query)
+            raw = ""
+            async for msg in classifier_client.receive_messages():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock) and block.text.strip():
+                            raw += block.text
+                if isinstance(msg, ResultMessage):
+                    break
+            return raw
+        finally:
+            if classifier_client is not None:
+                await get_classifier_pool().dispose(classifier_client)
+
     try:
-        classifier_client = await pool.acquire()
-        await classifier_client.query(prompt)
-
-        raw_text = ""
-        async for msg in classifier_client.receive_messages():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        raw_text += block.text
-            if isinstance(msg, ResultMessage):
-                break
-
+        raw_text = await _one_shot(prompt)
         result = parse_classifier_response(raw_text)
+
+        # 2026-04-16: one retry with explicit format-reminder on parse
+        # errors. flag_audit showed the classifier is mostly right on
+        # content but drifts on formatting (preamble, code fences,
+        # markdown headers). A single reminder typically recovers — this
+        # is much cheaper than failing-conservative to REFUSE every time.
+        if result.parse_error:
+            logger.warning(
+                "content_gate_classify parse_error on first attempt; retrying. raw=%r",
+                raw_text[:200],
+            )
+            retry_prompt = (
+                f"{classifier_rules}\n\n"
+                f"Request to classify:\n{user_text[:2000]}\n\n"
+                f"REMINDER: your previous response was unparseable. "
+                f"Return EXACTLY two lines with no preamble, no code "
+                f"fences, no markdown. First line starts with "
+                f"'TRIGGERED:', second line starts with 'REASONING:'."
+            )
+            retry_raw = await _one_shot(retry_prompt)
+            retry_result = parse_classifier_response(retry_raw)
+            if not retry_result.parse_error:
+                logger.info("content_gate_classify retry succeeded")
+                result = retry_result
+            else:
+                logger.warning(
+                    "content_gate_classify retry still parse_error; failing conservative. raw=%r",
+                    retry_raw[:200],
+                )
+
         content_cache.put(prompt, result, semantic_key=user_text)
         return result
     except Exception as e:
@@ -408,9 +447,6 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
             reasoning=f"classifier SDK error: {type(e).__name__}",
             parse_error=True,
         )
-    finally:
-        if classifier_client is not None:
-            await pool.dispose(classifier_client)
 
 
 async def content_gate_cross_check_floor(
@@ -869,6 +905,25 @@ class Session:
         # discord.py. Read by _fire_on_text / _fire_on_text_streamed for
         # flow-class and fabrication-risk diagnostics in log_bot_response.
         self._turn_haiku_invoked: bool = False
+        # Phase 1 — prompt-cache observability. The CLI surfaces these on
+        # ResultMessage.usage; we stash them at result time so both
+        # _fire_on_text and _fire_on_text_streamed can log per-turn cache
+        # behaviour to bot_responses.jsonl. None means the SDK/API didn't
+        # return a usage block for this turn (e.g. housekeeping, restart,
+        # SDK error); log_bot_response omits the fields entirely in that
+        # case so downstream consumers never see partial rows.
+        self._turn_input_tokens: int | None = None
+        self._turn_cache_read_tokens: int | None = None
+        self._turn_cache_creation_tokens: int | None = None
+        # Phase 2a — stage-timing instrumentation. time.monotonic() stamps
+        # at four points in the turn lifecycle; _fire_on_text computes
+        # deltas in ms for log_bot_response. None means the stage didn't
+        # execute this turn (e.g. DMs skip the engagement gate, housekeeping
+        # turns skip first-token). Reset in route_message at turn start.
+        self._turn_t_received: float | None = None           # on_message entry in discord.py
+        self._turn_t_engage_gate_done: float | None = None   # engagement decision complete
+        self._turn_t_content_gate_done: float | None = None  # content gate classifier returned
+        self._turn_t_first_token: float | None = None        # first AssistantMessage TextBlock
         # Patch A — deduplicated recall injection.
         # Tracks episode IDs (SQLite rowid from episodes table) that have
         # already been injected into this session. On subsequent turns,
@@ -1300,6 +1355,42 @@ class Session:
                 pass
         self._stream_reset()
 
+    def _compute_stage_timings_ms(self) -> dict[str, float] | None:
+        """Phase 2a — compute per-stage wall-time deltas in milliseconds
+        from the four _turn_t_* stamps. Returns None if no stamps were
+        collected (e.g. legacy caller that didn't pass recv_ts). Missing
+        stamps produce None for the affected delta, which log_bot_response
+        filters out before writing. t_first_token_to_complete is stamped
+        here (at log time) rather than earlier so it captures the full
+        stream-finalize + Discord-send latency."""
+        now = time.monotonic()
+        t_recv = self._turn_t_received
+        t_engage = self._turn_t_engage_gate_done
+        t_gate = self._turn_t_content_gate_done
+        t_first = self._turn_t_first_token
+        timings: dict[str, float | None] = {
+            "t_receive_to_engage_gate": (
+                (t_engage - t_recv) * 1000.0
+                if (t_recv is not None and t_engage is not None) else None
+            ),
+            "t_engage_gate_to_content_gate": (
+                (t_gate - t_engage) * 1000.0
+                if (t_engage is not None and t_gate is not None) else None
+            ),
+            "t_content_gate_to_first_token": (
+                (t_first - t_gate) * 1000.0
+                if (t_gate is not None and t_first is not None) else None
+            ),
+            "t_first_token_to_complete": (
+                (now - t_first) * 1000.0
+                if t_first is not None else None
+            ),
+        }
+        # Drop None entries; if every entry is None return None so callers
+        # can skip the field entirely.
+        result = {k: v for k, v in timings.items() if v is not None}
+        return result or None
+
     async def _fire_on_text_streamed(self, text: str) -> None:
         """Finalize a streamed response: do the last edit, then audit-log.
 
@@ -1380,6 +1471,10 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                input_tokens=self._turn_input_tokens,
+                cache_read_input_tokens=self._turn_cache_read_tokens,
+                cache_creation_input_tokens=self._turn_cache_creation_tokens,
+                stage_timings_ms=self._compute_stage_timings_ms(),
             )
             if branch_tag:
                 log_branch_audit(
@@ -1484,6 +1579,10 @@ class Session:
                 branch_tag=branch_tag,
                 modules_queried=sorted(self._turn_modules_queried),
                 haiku_invoked=self._turn_haiku_invoked,
+                input_tokens=self._turn_input_tokens,
+                cache_read_input_tokens=self._turn_cache_read_tokens,
+                cache_creation_input_tokens=self._turn_cache_creation_tokens,
+                stage_timings_ms=self._compute_stage_timings_ms(),
             )
             if branch_tag:
                 log_branch_audit(
@@ -1619,6 +1718,12 @@ class Session:
                     logger.info("[%s] %s", self.key, block.text[:200])
                     self.log_turn("assistant", block.text)
                     if block.text.strip():
+                        # Phase 2a — stamp first-token time on the first
+                        # non-empty TextBlock this turn. Subsequent blocks
+                        # don't re-stamp. Non-empty guard prevents empty
+                        # SDK-drift blocks from registering as first token.
+                        if self._turn_t_first_token is None:
+                            self._turn_t_first_token = time.monotonic()
                         self._turn_text_buffer.append(block.text)
                         # Stream text to Discord as it arrives (text-only
                         # turns only). Once a tool fires, streaming stops
@@ -1665,6 +1770,33 @@ class Session:
                         # they're typically faster, narrower, less stateful.
                         self._turn_other_tool_calls += 1
         elif isinstance(message, ResultMessage):
+            # ── Phase 1: cache-metric stash ──────────────────────────
+            # Read usage up-front so the _turn_*_tokens fields are set
+            # before _fire_on_text / _fire_on_text_streamed get scheduled
+            # below. asyncio.create_task doesn't run the task immediately
+            # (the receive loop must yield first), so this is belt-and-
+            # braces — the values would be set in time anyway, but pulling
+            # them here makes the ordering explicit rather than relying
+            # on scheduler internals. The same `usage` dict is reused for
+            # context / load tracking further down.
+            _usage_for_cache = message.usage or {}
+            if isinstance(_usage_for_cache, dict) and _usage_for_cache:
+                self._turn_input_tokens = int(
+                    _usage_for_cache.get("input_tokens", 0) or 0
+                )
+                self._turn_cache_read_tokens = int(
+                    _usage_for_cache.get("cache_read_input_tokens", 0) or 0
+                )
+                self._turn_cache_creation_tokens = int(
+                    _usage_for_cache.get("cache_creation_input_tokens", 0) or 0
+                )
+            else:
+                # No usage dict this turn — leave fields as None so
+                # log_bot_response omits the cache block entirely.
+                self._turn_input_tokens = None
+                self._turn_cache_read_tokens = None
+                self._turn_cache_creation_tokens = None
+
             # Phase 3 #1B — housekeeping turns (e.g. shallow rest injection)
             # suppress both the normal text dispatch and the silent-drop
             # fallback. The model is told not to respond and we don't want
@@ -2529,7 +2661,13 @@ class SessionPool:
             return ""
         import sqlite3
         try:
-            conn = sqlite3.connect(str(knowledge_db))
+            # timeout waits for a contending writer rather than raising; the
+            # pragmas match user_registry._conn / episodes._open so the DB
+            # runs uniformly in WAL mode across all call sites.
+            conn = sqlite3.connect(str(knowledge_db), timeout=5.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             defs = conn.execute(
                 "SELECT id, term, description, formal, source FROM definitions "
                 "WHERE module_id = ? ORDER BY id",
@@ -2710,6 +2848,8 @@ class SessionPool:
         score: float | None = None,
         haiku_invoked: bool = False,
         guild_id: str = "",
+        recv_ts: float | None = None,
+        engage_done_ts: float | None = None,
     ) -> None:
         key = f"{platform}:{chat_id}" if is_group else f"{platform}:{sender_id}"
 
@@ -2911,6 +3051,16 @@ class SessionPool:
         if haiku_invoked:
             session._cumulative_haiku_invocations += 1
 
+        # Phase 2a — carry discord.py-side timing stamps onto the session.
+        # These are time.monotonic() values; deltas are computed in
+        # _fire_on_text / _fire_on_text_streamed. None is tolerated at every
+        # stage (callers that don't instrument still work). Set before the
+        # complexity preflight so an early refusal still logs timings.
+        session._turn_t_received = recv_ts
+        session._turn_t_engage_gate_done = engage_done_ts
+        session._turn_t_content_gate_done = None
+        session._turn_t_first_token = None
+
         # Patch 1b — agent_core.complexity pre-flight. Before the content
         # gate spends a haiku call and the session spends a full
         # generation pass, classify the inbound request by Chapter-5
@@ -2975,6 +3125,11 @@ class SessionPool:
                 session.key, exc,
             )
             gate_action = "inject"
+        # Phase 2a — stamp content-gate-done after the classifier returns.
+        # Stamped regardless of gate_action so FLAG/REFUSE/BYPASS turns still
+        # emit a timing for the gate stage (useful when tuning gate latency
+        # relative to generation latency).
+        session._turn_t_content_gate_done = time.monotonic()
 
         if gate_action == "inject":
             # Stage 4 — expand the KB index on first domain match. The

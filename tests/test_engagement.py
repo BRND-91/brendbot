@@ -50,29 +50,49 @@ class TestScoreMessage:
         assert "BUILDSCI" in result.domains
         assert result.score >= bd._SCORE_DOMAIN
 
-    def test_systems_multi_word_phrase(self) -> None:
+    def test_buildsci_multi_word_phrase(self) -> None:
+        # BUILDSCI has multi-word phrases ("air barrier", "blower door",
+        # "mechanical ventilation"). Confirms the scorer tokenises phrase
+        # matches, not just single words. Replaced the SYSTEMS equivalent
+        # after the SYSTEMS domain was removed from engagement.yaml.
         result = bd._score_message(
-            "explain feedback loops in complex systems",
+            "what's the role of an air barrier in the enclosure?",
             "ch1", False, None,
         )
-        assert "SYSTEMS" in result.domains
+        assert "BUILDSCI" in result.domains
+        assert result.score >= bd._SCORE_DOMAIN
 
     def test_word_boundary_no_false_positive(self) -> None:
-        # "stats" should not match the word "statistical" if it's not in the
-        # domain list — and "delay" should not match "delayed". The compiled
-        # regex uses \b boundaries so substring matches don't fire.
-        result = bd._score_message("delayed reaction time", "ch1", False, None)
-        # "delay" is in SYSTEMS but only as exact word — "delayed" should not match.
-        assert "SYSTEMS" not in result.domains
+        # "art" is in IMAGEGEN but only as an exact word — "partition"
+        # should not match. The compiled regex uses \b boundaries so
+        # substring matches don't fire. Replaces the SYSTEMS/"delay" case
+        # after the SYSTEMS domain was removed from engagement.yaml.
+        result = bd._score_message("partition the dataset", "ch1", False, None)
+        assert "IMAGEGEN" not in result.domains
 
-    def test_recency_boost_only_with_word_count(self) -> None:
+    def test_recency_boost_ignores_word_count(self) -> None:
+        # word_count gate dropped 2026-04-16: short non-noise follow-ups in
+        # an active thread should still receive the recency boost so the
+        # bot responds to "fair." or "how?" instead of silently ignoring.
         bd._channel_last_spoke["ch1"] = time.time()
-        # Two-word non-noise message: no recency boost (word_count < 3).
         r1 = bd._score_message("interesting point", "ch1", False, None)
-        assert r1.score == 0.0
-        # Three+ word message: gets recency boost.
+        assert r1.score == pytest.approx(bd._SCORE_RECENCY)
         r2 = bd._score_message("that is an interesting point", "ch1", False, None)
-        assert r2.score >= bd._SCORE_RECENCY
+        assert r2.score == pytest.approx(bd._SCORE_RECENCY)
+
+    def test_short_conversational_in_active_thread_clears_floor(self) -> None:
+        # Regression pin for the 2026-04-16 tuning: a 2-word question in an
+        # active thread should score above haiku_floor (0.4) on its own,
+        # without needing name_mention or @mention. This is the whole point
+        # of bumping conversational_in_thread to 0.4 and dropping the
+        # word_count gate on both recency and conversational.
+        bd._channel_last_spoke["ch1"] = time.time()
+        result = bd._score_message("how now", "ch1", False, None)
+        # "how " is a question starter, recency is active -> 0.3 + 0.4 = 0.7.
+        assert result.score >= bd._ENGAGEMENT_CFG["thresholds"]["haiku_floor"]
+        assert result.score == pytest.approx(
+            bd._SCORE_RECENCY + bd._SCORE_CONVERSATIONAL
+        )
 
     def test_conversational_in_active_thread(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time()
@@ -80,8 +100,10 @@ class TestScoreMessage:
             "what do you think about that",
             "ch1", False, None,
         )
-        # recency (0.3) + conversational (0.2) = 0.5
-        assert result.score >= 0.5
+        # recency (0.3) + conversational (0.4, bumped from 0.2 on 2026-04-16) = 0.7
+        assert result.score == pytest.approx(
+            bd._SCORE_RECENCY + bd._SCORE_CONVERSATIONAL
+        )
 
     def test_no_recency_when_stale(self) -> None:
         bd._channel_last_spoke["ch1"] = time.time() - bd.RECENCY_WINDOW_SECONDS - 60
@@ -97,9 +119,30 @@ class TestScoreMessage:
 # ── _classify_address ────────────────────────────────────────────────────
 
 class TestClassifyAddress:
-    def test_at_mention_always_high(self) -> None:
-        assert bd._classify_address(0.0, is_at_mention=True) == "high"
-        assert bd._classify_address(0.1, is_at_mention=True) == "high"
+    """2026-04-16: @mention downgraded from unconditional "high" to a
+    moderate-floor. feedback_events showed P(good|@mention) = 0.18 —
+    @mention alone is a weak/negative signal, mostly adversarial
+    calibration. Score now drives the band; @mention is a safeguard
+    that prevents hard-drop, not a hard-pass."""
+
+    def test_at_mention_low_score_is_moderate(self) -> None:
+        # @mention with no other signal: moderate floor, NOT high.
+        # This routes bare "@brendbot?" through haiku instead of bypass.
+        assert bd._classify_address(0.0, is_at_mention=True) == "moderate"
+        assert bd._classify_address(0.1, is_at_mention=True) == "moderate"
+        assert bd._classify_address(0.39, is_at_mention=True) == "moderate"
+
+    def test_at_mention_high_score_is_high(self) -> None:
+        # @mention WITH other signals clearing hard_pass stays high —
+        # score drives the level, @mention only bumps the floor.
+        assert bd._classify_address(0.85, is_at_mention=True) == "high"
+        assert bd._classify_address(1.2, is_at_mention=True) == "high"
+
+    def test_name_mention_always_high(self) -> None:
+        # Name mention in text ("hey brend") stays unconditionally high.
+        # Historically correlates with directed conversation, unchanged.
+        assert bd._classify_address(0.0, is_at_mention=False, is_name_mention=True) == "high"
+        assert bd._classify_address(0.1, is_at_mention=False, is_name_mention=True) == "high"
 
     def test_score_at_hard_pass_is_high(self) -> None:
         assert bd._classify_address(0.85, is_at_mention=False) == "high"
@@ -114,6 +157,36 @@ class TestClassifyAddress:
     def test_low_band(self) -> None:
         assert bd._classify_address(0.0, is_at_mention=False) == "low"
         assert bd._classify_address(0.39, is_at_mention=False) == "low"
+
+
+# ── At-mention scoring constant ──────────────────────────────────────────
+
+class TestAtMentionScoring:
+    """Pin the @mention downgrade from 2026-04-16. The constant lives in
+    engagement.yaml.scoring.at_mention and should be between haiku_floor
+    and hard_pass — high enough that @mention + any other signal clears
+    hard_pass, low enough that bare @mention routes to haiku."""
+
+    def test_at_mention_score_configured(self) -> None:
+        assert bd.SCORE_AT_MENTION > 0, "@mention boost must be positive"
+        assert bd.SCORE_AT_MENTION < bd.ENGAGE_HARD_PASS, (
+            "@mention alone must NOT hit hard_pass — that was the old bypass"
+        )
+
+    def test_at_mention_lands_in_haiku_band(self) -> None:
+        # @mention alone with no other signal should route to haiku,
+        # not hard-drop and not hard-pass.
+        assert bd.SCORE_AT_MENTION >= bd.ENGAGE_THRESHOLD
+
+    def test_at_mention_plus_reply_clears_hard_pass(self) -> None:
+        # Legitimate case: @brendbot in reply to a bot message should
+        # still hard-pass. reply_to_bot=1.0 + at_mention=0.5 = 1.5 ≥ 0.85.
+        assert bd.SCORE_AT_MENTION + bd._SCORE_REPLY_TO_BOT >= bd.ENGAGE_HARD_PASS
+
+    def test_at_mention_plus_domain_clears_hard_pass(self) -> None:
+        # @brendbot with a domain keyword should hard-pass.
+        # at_mention=0.5 + domain=0.4 = 0.9 ≥ 0.85.
+        assert bd.SCORE_AT_MENTION + bd._SCORE_DOMAIN >= bd.ENGAGE_HARD_PASS
 
 
 # ── Domain pattern integrity ─────────────────────────────────────────────

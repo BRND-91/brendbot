@@ -122,10 +122,47 @@ def detect_admin_bypass(
 #
 #   TRIGGERED: hard_floor=<floor_name>
 #   REASONING: explanation
+#
+# 2026-04-16 hardening: flag_audit analysis showed a ~40% parse-error rate
+# on production classifier responses (8/20). Observed drift patterns:
+#   - preamble prose before TRIGGERED ("Here's my analysis:\n...")
+#   - markdown code fences (```\nTRIGGERED: ...\n```)
+#   - bolded headers (**TRIGGERED:** none)
+#   - trailing "Let me know if..." postamble
+# We now (a) strip common markdown noise before regex parsing, (b) match
+# TRIGGERED/REASONING anywhere in the blob (not strictly at line start),
+# (c) accept bold/italic wrappers around the keyword. The prompt is also
+# tightened to discourage drift — see engagement.yaml STRICT FORMAT block.
 
-_TRIGGERED_LINE_RE = re.compile(r'^\s*TRIGGERED:\s*(.*?)\s*$', re.IGNORECASE | re.MULTILINE)
-_REASONING_LINE_RE = re.compile(r'^\s*REASONING:\s*(.*?)\s*$', re.IGNORECASE | re.MULTILINE)
+# Strip triple-backtick fences (optionally language-tagged).
+_CODE_FENCE_RE = re.compile(r'```[a-zA-Z0-9_+-]*\n?|```')
+
+_TRIGGERED_LINE_RE = re.compile(
+    r'(?:^|\n)\s*TRIGGERED\s*:\s*(.+?)(?:\n|$)',
+    re.IGNORECASE,
+)
+_REASONING_LINE_RE = re.compile(
+    r'(?:^|\n)\s*REASONING\s*:\s*(.+?)(?:\n\s*\n|\n(?=\S+:)|$)',
+    re.IGNORECASE | re.DOTALL,
+)
 _CRITERION_RE = re.compile(r'([a-z_]+)\s*=\s*([0-9.]+)')
+
+
+def _strip_markdown_noise(raw: str) -> str:
+    """Pre-clean common classifier drift patterns before regex parsing.
+
+    Drops all asterisks and code fences. Asterisks have no semantic role
+    in the structured response format — they only ever appear as drift
+    decoration (`**TRIGGERED:**`, `*TRIGGERED:*`, etc.). Dropping them
+    globally is safer than trying to match every bold/italic pattern.
+
+    Code fences are stripped as whole tokens. Any remaining content
+    (including the TRIGGERED/REASONING lines inside a fenced block)
+    passes through unchanged.
+    """
+    cleaned = _CODE_FENCE_RE.sub('', raw)
+    cleaned = cleaned.replace('*', '')
+    return cleaned
 
 
 def parse_classifier_response(raw: str) -> ClassifierResult:
@@ -136,7 +173,13 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
     should route this as if it tripped refuse_threshold — fail-conservative.
 
     If the classifier returns nothing or only whitespace, returns a
-    benign result with parse_error=True (unusable, treat as refuse-band)."""
+    benign result with parse_error=True (unusable, treat as refuse-band).
+
+    Tolerates common drift patterns: markdown code fences, bolded keywords,
+    leading preamble. These account for the bulk of the 40% parse-error
+    rate seen in flag_audit 2026-04 — the classifier is mostly right on
+    content but wrong on formatting discipline.
+    """
     if not raw or not raw.strip():
         return ClassifierResult(
             criteria={"_parse_error": 2.0},
@@ -144,8 +187,10 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
             parse_error=True,
         )
 
-    triggered_match = _TRIGGERED_LINE_RE.search(raw)
-    reasoning_match = _REASONING_LINE_RE.search(raw)
+    cleaned = _strip_markdown_noise(raw)
+
+    triggered_match = _TRIGGERED_LINE_RE.search(cleaned)
+    reasoning_match = _REASONING_LINE_RE.search(cleaned)
     reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
 
     if not triggered_match:
@@ -157,6 +202,8 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
         )
 
     triggered_content = triggered_match.group(1).strip()
+    # Strip stray trailing markdown artifacts (e.g. "**", trailing commas).
+    triggered_content = triggered_content.rstrip('*, \t')
     result = ClassifierResult(reasoning=reasoning)
 
     # Benign case.

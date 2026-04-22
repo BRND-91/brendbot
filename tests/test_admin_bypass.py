@@ -281,7 +281,7 @@ class TestFlagOutcome:
         assert result == "handled"
         assert s._flagged_count == 1
         assert len(calls) == 1
-        assert calls[0]["model"] == "claude-sonnet-4-20250514"
+        assert calls[0]["model"] == "claude-sonnet-4-6"
         assert calls[0]["wrapped_message"] == "<w>satirical request</w>"
         assert len(s._fire_on_text_log) == 1  # type: ignore
         assert "[flagged]" in s._fire_on_text_log[0]  # type: ignore
@@ -311,7 +311,7 @@ class TestFlagOutcome:
         assert row["user_text"] == "historical satire"
         assert row["criteria_tripped"] == {"tragedy_mid": 0.5, "person_satire": 0.2}
         assert row["weighted_sum"] == pytest.approx(0.7)
-        assert row["flagged_model"] == "claude-sonnet-4-20250514"
+        assert row["flagged_model"] == "claude-sonnet-4-6"
         assert row["session_flag_count"] == 1
 
     def test_flag_budget_cap_blocks_third_request(

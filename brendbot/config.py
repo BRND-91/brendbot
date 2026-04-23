@@ -21,6 +21,15 @@ class Config:
     admin_discord_id: str = field(
         default_factory=lambda: os.getenv("ADMIN_DISCORD_ID", "")
     )
+    # Guild snowflake for the owner's own Discord server. When set, the
+    # content gate's admin-bypass and the haiku prefilter are both
+    # short-circuited on messages originating there — the assumption is
+    # that a private owner-occupied server doesn't need the defensive
+    # guards designed for public deployments. Unset → guards apply
+    # uniformly across all guilds (the original behaviour).
+    owner_guild_id: str = field(
+        default_factory=lambda: os.getenv("OWNER_GUILD_ID", "")
+    )
     trusted_discord_ids: set[str] = field(default_factory=set)
     claude_model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "sonnet")

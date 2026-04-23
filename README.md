@@ -221,6 +221,7 @@ The included `setup.sh` handles everything:
 | `DISCORD_TOKEN` | Yes | Your Discord bot token |
 | `BOT_NAME` | No | Bot's name for mention detection (default: `brendbot`) |
 | `ADMIN_DISCORD_ID` | Yes | Your Discord user ID (gets admin tier) |
+| `OWNER_GUILD_ID` | No | Guild snowflake for your own Discord server. When set, content gate and haiku prefilter are skipped on admin-tier messages originating there — the defensive guards designed for public deployments get out of the way on your own server. |
 | `TRUSTED_DISCORD_IDS` | No | Comma-separated user IDs for trusted tier |
 | `CLAUDE_MODEL` | No | Model to use (default: `sonnet`) |
 

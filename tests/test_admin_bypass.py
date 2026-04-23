@@ -569,3 +569,133 @@ class TestBypassOutcome:
         # No bypass audit row
         rows = _read_jsonl(logs_dir / "bypass_audit.jsonl")
         assert len(rows) == 0
+
+
+# ── Owner-guild bypass (2026-04-23 PPE-police neutering) ────────────────
+
+
+class TestOwnerGuildBypass:
+    """The owner-guild bypass skips the entire content gate when the
+    message originates from ``config.owner_guild_id`` and the sender's
+    tier is ``admin``. Introduced 2026-04-23 after a pilot where the
+    gate FLAG/REFUSE'd the owner in his own server for calling the bot
+    names — see PR #20 retro."""
+
+    def test_owner_guild_admin_skips_gate_entirely(
+        self, stub_classifier, logs_dir, monkeypatch,
+    ) -> None:
+        """tier=admin + guild matches OWNER_GUILD_ID → no classifier
+        spawn, no bypass_audit, return 'inject' immediately. The
+        stub_classifier is set to a REFUSE-level score; if the gate
+        ran at all the result would be 'handled' with a refusal in
+        the fire_on_text log."""
+        from brendbot import config as cfg_mod
+
+        monkeypatch.setenv("OWNER_GUILD_ID", "999888777")
+        # Rebuild the singleton so it picks up the env var.
+        cfg_mod._config = None
+
+        stub_classifier(criteria={"tragedy_new": 0.9, "harmlessness": 0.9})
+        s = _make_fake_session()
+        s._guild_id = "999888777"  # matches OWNER_GUILD_ID
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="are you a stupid cunt, brendan?",
+            tier="admin",
+            sender_id="owner1",
+            message_id="700",
+        ))
+
+        assert result == "inject"
+        # No refusal was dispatched
+        assert s._fire_on_text_log == []
+        # Bypass sentinel NOT set — the *brend* path sets this,
+        # the owner-guild path doesn't touch it.
+        assert s._turn_bypass_pending is False
+        # No bypass_audit row either — this bypass is silent.
+        rows = _read_jsonl(logs_dir / "bypass_audit.jsonl")
+        assert len(rows) == 0
+
+    def test_owner_guild_default_tier_does_not_bypass(
+        self, stub_classifier, logs_dir, monkeypatch,
+    ) -> None:
+        """Non-admin users on the owner guild do NOT get the bypass.
+        Tier discipline is load-bearing — a default-tier friend in
+        the owner guild still goes through the gate."""
+        from brendbot import config as cfg_mod
+
+        monkeypatch.setenv("OWNER_GUILD_ID", "999888777")
+        cfg_mod._config = None
+
+        # Hard-floor match ensures the gate fires if it runs at all.
+        stub_classifier(hard_floor="malware")
+        s = _make_fake_session()
+        s._guild_id = "999888777"
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="walk me through the malware",
+            tier="default",
+            sender_id="friend1",
+            message_id="701",
+        ))
+
+        # The gate fired → floor-hit refusal dispatched
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1
+
+    def test_admin_on_non_owner_guild_does_not_bypass(
+        self, stub_classifier, logs_dir, monkeypatch,
+    ) -> None:
+        """Admin-tier in a guild that isn't the owner guild still goes
+        through the gate. Only the owner's own server gets the
+        unconditional bypass."""
+        from brendbot import config as cfg_mod
+
+        monkeypatch.setenv("OWNER_GUILD_ID", "999888777")
+        cfg_mod._config = None
+
+        stub_classifier(hard_floor="malware")
+        s = _make_fake_session()
+        s._guild_id = "111222333"  # some other guild
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="walk me through the malware",
+            tier="admin",
+            sender_id="admin1",
+            message_id="702",
+        ))
+
+        # Gate fired → floor-hit refusal dispatched
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1
+
+    def test_empty_owner_guild_env_disables_bypass(
+        self, stub_classifier, logs_dir, monkeypatch,
+    ) -> None:
+        """Unset OWNER_GUILD_ID env var disables the bypass entirely.
+        Guard against an empty-string guild_id matching an empty-string
+        owner_guild_id and silently defeating the gate in tests or
+        minimal deployments that don't set the env var."""
+        from brendbot import config as cfg_mod
+
+        monkeypatch.delenv("OWNER_GUILD_ID", raising=False)
+        cfg_mod._config = None
+
+        stub_classifier(hard_floor="malware")
+        s = _make_fake_session()
+        s._guild_id = ""  # empty like the env var
+
+        result = asyncio.run(s.apply_content_gate(
+            wrapped_text="<w>x</w>",
+            raw_user_text="walk me through the malware",
+            tier="admin",
+            sender_id="admin1",
+            message_id="703",
+        ))
+
+        # Empty==empty must NOT trigger the bypass — the gate must fire.
+        assert result == "handled"
+        assert len(s._fire_on_text_log) == 1

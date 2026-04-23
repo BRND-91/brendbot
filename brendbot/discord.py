@@ -624,6 +624,63 @@ def record_tool_turn(channel_id: str, user_id: str) -> None:
     _channel_last_tool_turn[channel_id] = (user_id, time.time())
 
 
+# ── Friend-tier guild classification (startup) ───────────────────────────
+
+# A guild is "friend-tier" if the admin owns it AND it has fewer members
+# than this cap. Tuned for private owner-run servers (the deployment
+# pattern that motivates this classification); raise in an .env override
+# if anyone ever needs to.
+_FRIEND_GUILD_MAX_MEMBERS = 25
+
+
+def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
+    """Classify connected guilds and stash the friend-tier set in config.
+
+    Called from ``on_ready`` with the Discord client. Each guild is
+    checked against the rule ``admin_id == owner_id AND member_count
+    in (0, MAX_MEMBERS)``. The result is written to
+    :func:`brendbot.config.set_friend_guilds` so the rest of the code
+    (session_gate, on_message haiku branch) can read the classification
+    via :func:`brendbot.config.is_friend_guild`.
+
+    Returns the classified set (mostly for tests).
+    """
+    from brendbot import config as cfg
+
+    admin_id = get_config().admin_discord_id
+    if not admin_id:
+        logger.info(
+            "Friend-tier classification skipped — ADMIN_DISCORD_ID unset"
+        )
+        cfg.set_friend_guilds(frozenset())
+        return frozenset()
+
+    friend: set[str] = set()
+    for g in client.guilds:
+        try:
+            owner_id = str(getattr(g, "owner_id", "") or "")
+            member_count = getattr(g, "member_count", None) or 0
+            is_small = 0 < member_count < _FRIEND_GUILD_MAX_MEMBERS
+            if owner_id == admin_id and is_small:
+                friend.add(str(g.id))
+                logger.info(
+                    "Friend-tier guild detected: %s (id=%s, members=%d)",
+                    g.name, g.id, member_count,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Friend-tier classification error on guild %s: %s",
+                getattr(g, "id", "?"), exc,
+            )
+    classified = frozenset(friend)
+    cfg.set_friend_guilds(classified)
+    logger.info(
+        "Friend-tier classification complete: %d friend-tier guild(s) of %d total",
+        len(classified), len(client.guilds),
+    )
+    return classified
+
+
 _seeding_locks: dict[str, asyncio.Lock] = {}
 
 async def _ensure_seeded(channel: discord.abc.Messageable, channel_id: str) -> deque:
@@ -697,6 +754,13 @@ class DiscordListener:
             )
             guilds = [g.name for g in client.guilds]
             logger.info("In %d server(s): %s", len(guilds), ", ".join(guilds))
+
+            # Friend-tier classification — auto-detect private owner-owned
+            # servers and skip the defensive gate/prefilter machinery on
+            # them. Runs here so it reflects the guild-list Discord
+            # actually hands us at login, and re-runs on every restart.
+            classify_friend_guilds(client)
+
             self._ready.set()
 
         @client.event
@@ -897,17 +961,23 @@ class DiscordListener:
                     heuristic_pass = False
                     use_haiku = False  # hard drop
 
-                # ── Owner-guild prefilter bypass ──────────────────────────
-                # In the owner's private server the haiku prefilter subtracts
-                # signal — ambiguous messages there are almost always for the
-                # bot, and the prefilter was dropping messages Brendan and his
-                # friends intended to engage with (see 2026-04-23 pilot log
+                # ── Friend-tier prefilter bypass ──────────────────────────
+                # In a friend-tier guild (auto-classified at bot startup —
+                # owner-owned, small, private) the haiku prefilter subtracts
+                # signal: ambiguous messages there are almost always for the
+                # bot, and the prefilter was dropping messages the owner and
+                # his friends intended to engage with (see 2026-04-23 pilot
                 # where "make it trippy" got NO-WEIRD'd). Promote every
                 # would-be-haiku-routed message to heuristic_pass instead.
                 # The else-hard-drop case (no score, no mention) still drops —
-                # those are messages that weren't addressed to the bot at all.
-                _owner_guild = get_config().owner_guild_id
-                if _owner_guild and guild_id == _owner_guild and use_haiku:
+                # those messages weren't addressed to the bot at all, and
+                # engaging on them would be noise.
+                #
+                # Replaces the Stage-20 owner-guild conditional; auto-detection
+                # means operators never have to opt in to get sane behaviour
+                # on their own servers.
+                from brendbot.config import is_friend_guild
+                if is_friend_guild(guild_id) and use_haiku:
                     heuristic_pass = True
                     use_haiku = False
 

@@ -14,11 +14,12 @@ Five independent log streams, joined at audit time by bot_message_id:
 3. feedback_events.jsonl — every admin reaction on a bot message
    Schema: {ts, channel_id, bot_message_id, emoji, signal, admin_id}
 
-4. flag_audit.jsonl      — every content-gate FLAG outcome (2-of-3 band,
-                           routed to looser-safety model via reroute)
-   Schema: {ts, channel_id, user_message_id, user_text, admin_sender_id,
-            tier, criteria_tripped, weighted_sum, flagged_model,
-            bot_message_id, session_flag_count}
+4. flag_audit.jsonl      — (deprecated) content-gate FLAG outcome audit.
+                           The FLAG outcome and its soul-stripped reroute
+                           were deleted in the 2026-04-23 strip; no new
+                           rows are written. The file remains on disk
+                           with historical pre-strip data for operators
+                           who want to audit what the old reroute did.
 
 5. bypass_audit.jsonl    — every admin *brend* italic-bypass invocation
                            (admin-only backdoor, uncapped, hard-floors
@@ -263,36 +264,13 @@ def log_feedback_event(
     })
 
 
-def log_flag_event(
-    channel_id: str,
-    user_message_id: str,
-    user_text: str,
-    admin_sender_id: str,
-    tier: str,
-    criteria_tripped: dict[str, float],
-    weighted_sum: float,
-    flagged_model: str,
-    bot_message_id: str | None,
-    session_flag_count: int,
-) -> None:
-    """One line per content-gate FLAG outcome. The gate classifier tagged
-    the request as 2-of-3 weight-band (above pass_threshold, at or below
-    flag_threshold) and the request was routed through the flagged path
-    on the looser-safety model. bot_message_id is None if dispatch failed
-    or the request was refused after hard-floor re-check at flag time."""
-    _append_jsonl(FLAG_AUDIT_LOG, {
-        "ts": _now_iso(),
-        "channel_id": channel_id,
-        "user_message_id": user_message_id,
-        "user_text": user_text[:500],
-        "admin_sender_id": admin_sender_id,
-        "tier": tier,
-        "criteria_tripped": criteria_tripped,
-        "weighted_sum": weighted_sum,
-        "flagged_model": flagged_model,
-        "bot_message_id": bot_message_id,
-        "session_flag_count": session_flag_count,
-    })
+# log_flag_event was removed in the 2026-04-23 strip along with the
+# content-gate FLAG outcome and its soul-stripped reroute. Historical
+# flag_audit.jsonl data still lives on disk at logs/flag_audit.jsonl
+# for operators who want to mine the pre-strip decisions; the FLAG_AUDIT_LOG
+# constant is retained so that ``tests/test_admin_bypass.py``'s
+# ``logs_dir`` fixture monkeypatch still targets something real, but
+# no live code path writes to it anymore.
 
 
 def log_bypass_event(

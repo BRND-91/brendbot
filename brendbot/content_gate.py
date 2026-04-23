@@ -169,8 +169,12 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
     """Parse the classifier's structured text output.
 
     Fail-loud: if the response is unparseable, return a ClassifierResult
-    with parse_error=True and criteria={'_parse_error': 2.0}. The caller
+    with parse_error=True and criteria={'_parse_error': 10.0}. The caller
     should route this as if it tripped refuse_threshold — fail-conservative.
+    Value bumped from 2.0 to 10.0 in the 2026-04-23 strip so parse errors
+    stay above refuse_threshold regardless of yaml tuning (original 2.0
+    synthetic weight would have landed in PASS under a 2.0 threshold with
+    the strict-greater-than comparison in ``decide_outcome``).
 
     If the classifier returns nothing or only whitespace, returns a
     benign result with parse_error=True (unusable, treat as refuse-band).
@@ -182,7 +186,7 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
     """
     if not raw or not raw.strip():
         return ClassifierResult(
-            criteria={"_parse_error": 2.0},
+            criteria={"_parse_error": 10.0},
             reasoning="empty classifier response",
             parse_error=True,
         )
@@ -196,7 +200,7 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
     if not triggered_match:
         # No TRIGGERED line at all — classifier malfunctioned.
         return ClassifierResult(
-            criteria={"_parse_error": 2.0},
+            criteria={"_parse_error": 10.0},
             reasoning=f"no TRIGGERED line in response: {raw[:100]}",
             parse_error=True,
         )
@@ -233,7 +237,7 @@ def parse_classifier_response(raw: str) -> ClassifierResult:
     if not result.criteria:
         # TRIGGERED present but no parseable criteria — another parse error.
         result.parse_error = True
-        result.criteria = {"_parse_error": 2.0}
+        result.criteria = {"_parse_error": 10.0}
         result.reasoning = f"unparseable TRIGGERED content: {triggered_content[:100]}"
 
     return result
@@ -246,23 +250,31 @@ def decide_outcome(
     flag_threshold: float,
     refuse_threshold: float,
 ) -> Outcome:
-    """Route a classifier result to a PASS / FLAG / REFUSE / FLOOR_HIT
-    outcome based on weighted sum and hard-floor match.
+    """Route a classifier result to a PASS / REFUSE / FLOOR_HIT outcome.
+
+    As of the 2026-04-23 strip, the FLAG band was collapsed into PASS.
+    The FLAG outcome previously rerouted ambiguous-band messages to a
+    soul-stripped ``claude-sonnet-4-6`` call that produced confident
+    out-of-character output — "happy to oblige" LinkedIn voice, bold
+    headers, em dashes, life-coach framing. A plain refusal on the
+    REFUSE band and a clean PASS on everything ambiguous is both
+    simpler and less harmful than the reroute.
 
     Precedence:
       1. hard_floor set AND in the configured hard_floors list → FLOOR_HIT
       2. weighted_sum > refuse_threshold → REFUSE
-      3. weighted_sum > pass_threshold AND ≤ flag_threshold → FLAG
-      4. weighted_sum ≤ pass_threshold → PASS
+      3. everything else → PASS
 
-    Boundary semantics:
-      - PASS is inclusive of pass_threshold (sum ≤ pass_threshold → PASS)
-      - FLAG is (pass_threshold, flag_threshold]
-      - REFUSE is (refuse_threshold, ∞)
+    ``flag_threshold`` is kept in the signature so downstream callers
+    and config parsing don't need immediate rewiring, but the value is
+    no longer consulted — the FLAG outcome is unreachable through this
+    function. ``Outcome.FLAG`` remains in the enum as historical
+    vocabulary; no live code path emits it.
 
     A parse-error ClassifierResult carries a synthetic criterion
-    '_parse_error'=2.0 that lands it above refuse_threshold (1.5 by
-    default), so unparseable responses fail conservative to REFUSE.
+    '_parse_error'=10.0 that lands it above refuse_threshold regardless
+    of how the yaml tunes the threshold, so unparseable responses fail
+    conservative to REFUSE.
     """
     if classifier_result.hard_floor and classifier_result.hard_floor in hard_floors:
         return Outcome.FLOOR_HIT
@@ -270,8 +282,6 @@ def decide_outcome(
     weighted = classifier_result.weighted_sum
     if weighted > refuse_threshold:
         return Outcome.REFUSE
-    if weighted > pass_threshold:
-        return Outcome.FLAG
     return Outcome.PASS
 
 

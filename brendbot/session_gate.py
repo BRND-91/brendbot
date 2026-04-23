@@ -7,19 +7,20 @@ is :func:`apply_content_gate`, a module-level function taking a
 kept as a thin delegate so existing callers (including ~20 test call
 sites) are unaffected.
 
-Gate routing is unchanged from the pre-extraction implementation:
+Gate routing, post-2026-04-23 strip:
 
+* **FRIEND-TIER BYPASS** — if the originating guild is in the friend-
+  tier set (auto-classified at bot startup by
+  :func:`brendbot.discord.classify_friend_guilds`), skip the entire
+  gate and return ``'inject'``. No classifier spawn, no refusal.
 * **BYPASS** — admin italic ``*brend*`` token (tier=admin, bypass
   enabled): runs the classifier in shadow mode, refuses only on hard
   floors, otherwise marks ``_turn_bypass_pending`` and lets the normal
-  injection proceed so the current session generates with a ``[bypass]``
-  branch tag.
-* **PASS** — classifier says clean: return ``'inject'`` and let the
+  injection proceed with a ``[bypass]`` branch tag. Reachable only for
+  non-friend-tier guilds.
+* **PASS** — classifier says clean (or weighted-sum lands in the
+  collapsed FLAG-band-now-PASS zone): return ``'inject'`` and let the
   caller resume the normal query flow.
-* **FLAG** — 2-of-3-band weighted result: bill against the per-session
-  ``_flagged_count`` budget, spawn a background flagged-path generation
-  on the configured sonnet model, dispatch via ``_fire_on_text``,
-  return ``'handled'`` so the caller skips injection.
 * **REFUSE / FLOOR_HIT** — dispatch a local refusal explanation. For
   FLOOR_HIT specifically, a haiku cross-check (see
   :func:`brendbot.classifier_pool.content_gate_cross_check_floor`) runs
@@ -28,9 +29,17 @@ Gate routing is unchanged from the pre-extraction implementation:
   vocabulary like ``trigger``, ``payload``, ``exploit``) can be tuned
   out of the primary classifier.
 
+The FLAG outcome (reroute to soul-stripped claude-sonnet-4-6) was
+deleted in the 2026-04-23 strip. It produced confident out-of-
+character output — "happy to oblige" LinkedIn voice, bold headers,
+life-coach framing — and was the worst-behaving subsystem in the
+2026-04-23 pilot. ``decide_outcome`` now collapses the former FLAG
+band into PASS; there's no reroute, no ``_flagged_count`` budget,
+no ``_handle_flag`` function.
+
 The classifier entry points (``content_gate_classify``,
-``content_gate_cross_check_floor``, ``flagged_generate``) are resolved
-via ``brendbot.session``'s module namespace at call time. That keeps
+``content_gate_cross_check_floor``) are resolved via
+``brendbot.session``'s module namespace at call time. That keeps
 ``tests/test_admin_bypass.py``'s
 ``monkeypatch.setattr(session_mod, "content_gate_classify", fake)``
 contract working — the patched binding is what the gate reads when it
@@ -72,7 +81,7 @@ async def apply_content_gate(
         format_refusal_explanation,
         Outcome,
     )
-    from brendbot.config import get_config
+    from brendbot.config import is_friend_guild
 
     # Resolved via session.py's namespace so
     # monkeypatch.setattr(session_mod, "content_gate_classify", …) still
@@ -81,30 +90,33 @@ async def apply_content_gate(
     # Session.apply_content_gate).
     from brendbot import session as _session_mod
 
-    # ── Owner-guild admin bypass ─────────────────────────────────────────
-    # Short-circuit the entire gate when an admin-tier user messages from
-    # the owner's own Discord server. The classifier + FLAG/REFUSE machinery
-    # was built to defend against hostile users in public deployments; it
-    # has no business firing on the owner in his own private server. Skips
-    # the classifier spawn entirely — no token cost, no latency, no audit
-    # record. The *brend* token bypass below still applies for DMs and
-    # other guilds where the admin might appear.
+    # ── Friend-tier bypass ──────────────────────────────────────────────
+    # Skip the entire gate when the message originates in a friend-tier
+    # guild (owner-owned, small, private — auto-classified at bot startup
+    # by ``discord.classify_friend_guilds``). The classifier +
+    # REFUSE / FLOOR_HIT machinery was designed to defend against hostile
+    # users in public deployments; it has no business firing on a private
+    # owner-run server where everyone present is known-trusted.
     #
-    # Guarded by `owner_guild_id` being non-empty so tests that don't set
-    # OWNER_GUILD_ID (and therefore get `""` for both sides) never trip
-    # this branch — preserving the pre-existing test fixture contract.
-    config = get_config()
-    owner_guild = config.owner_guild_id
-    if owner_guild and tier == "admin" and getattr(session, "_guild_id", "") == owner_guild:
+    # This replaces the Stage-20 opt-in via OWNER_GUILD_ID env var. Auto-
+    # detection is strictly better than opt-in because the opt-in silently
+    # failed when the operator didn't know to flip the switch — which
+    # happened in the 2026-04-23 pilot and caused the gate to FLAG/REFUSE
+    # the owner in his own server despite the feature being "shipped."
+    #
+    # Tests stub ``is_friend_guild`` (or populate
+    # ``config._FRIEND_GUILDS``) directly; the default at test time is
+    # an empty friend-guild set so the gate still runs for every test
+    # scenario that doesn't explicitly opt in.
+    if is_friend_guild(getattr(session, "_guild_id", "")):
         logger.info(
-            "[%s] owner-guild admin — content gate skipped",
+            "[%s] friend-tier guild — content gate skipped",
             session.key,
         )
         return "inject"
 
     gate_cfg = _load_gate_cfg()
     hard_floors, outcome_thresholds = _parse_gate_cfg_basics(gate_cfg)
-    flagged_model, flagged_cap = _parse_flagged_cfg(gate_cfg)
     bypass_enabled, bypass_enforces_floors = _parse_bypass_cfg(gate_cfg)
 
     # Admin bypass detection runs before the classifier spawn so the
@@ -123,7 +135,7 @@ async def apply_content_gate(
         )
         from brendbot.content_gate import ClassifierResult
         classifier_result = ClassifierResult(
-            criteria={"_parse_error": 2.0},
+            criteria={"_parse_error": 10.0},
             reasoning=f"classifier error: {type(exc).__name__}",
             parse_error=True,
         )
@@ -150,19 +162,9 @@ async def apply_content_gate(
     if shadow_outcome == Outcome.PASS:
         return "inject"
 
-    if shadow_outcome == Outcome.FLAG:
-        return await _handle_flag(
-            session,
-            wrapped_text=wrapped_text,
-            raw_user_text=raw_user_text,
-            tier=tier,
-            sender_id=sender_id,
-            message_id=message_id,
-            classifier_result=classifier_result,
-            flagged_model=flagged_model,
-            flagged_cap=flagged_cap,
-            gate_cfg=gate_cfg,
-        )
+    # The FLAG outcome was removed in the 2026-04-23 strip; decide_outcome
+    # no longer emits it, the soul-stripped reroute path is gone, and
+    # ambiguous-band results fall through to PASS above.
 
     # REFUSE or FLOOR_HIT.
     return await _handle_refuse_or_floor(
@@ -205,26 +207,6 @@ def _parse_gate_cfg_basics(gate_cfg: dict) -> tuple[set[str], tuple[float, float
     flag_thr = float(outcomes_cfg.get("flag_threshold", 1.5))
     refuse_thr = float(outcomes_cfg.get("refuse_threshold", 1.5))
     return hard_floors, (pass_thr, flag_thr, refuse_thr)
-
-
-def _parse_flagged_cfg(gate_cfg: dict) -> tuple[str, int]:
-    """Resolve flagged-path model (env > yaml > fallback) and per-session cap.
-
-    The env-var precedence via ``Config.claude_flagged_model`` lets
-    operators pin a fresh model without editing yaml and prevents
-    silently-unreachable dated model strings from pinning FLAG-band
-    traffic to a 410 Gone revision.
-    """
-    flagged_cfg = gate_cfg.get("flagged_path", {}) or {}
-    from brendbot.config import get_config as _get_cfg
-    _cfg = _get_cfg()
-    flagged_model = (
-        _cfg.claude_flagged_model
-        or flagged_cfg.get("model")
-        or "claude-sonnet-4-20250514"
-    )
-    flagged_cap = int(flagged_cfg.get("max_per_session", 2))
-    return flagged_model, flagged_cap
 
 
 def _parse_bypass_cfg(gate_cfg: dict) -> tuple[bool, bool]:
@@ -305,90 +287,6 @@ async def _handle_bypass(
     )
     session._turn_bypass_pending = True
     return "inject"
-
-
-async def _handle_flag(
-    session: "Session",
-    *,
-    wrapped_text: str,
-    raw_user_text: str,
-    tier: str,
-    sender_id: str,
-    message_id: str,
-    classifier_result,
-    flagged_model: str,
-    flagged_cap: int,
-    gate_cfg: dict,
-) -> str:
-    """FLAG branch: channel-override bypass check, budget cap check,
-    background flagged generation."""
-    from brendbot.feedback import log_flag_event
-    from brendbot import session as _session_mod
-
-    # Channel-level gate2_bypass: treat FLAG as PASS in designated channels.
-    channel_overrides = gate_cfg.get("channel_overrides", {}) or {}
-    ch_cfg = channel_overrides.get(str(session._chat_id), {}) or {}
-    if ch_cfg.get("gate2_bypass", False):
-        logger.info(
-            "[%s] FLAG outcome but gate2_bypass active for channel — treating as PASS",
-            session.key,
-        )
-        return "inject"
-
-    # Per-session budget cap.
-    if session._flagged_count >= flagged_cap:
-        refusal = (
-            "can't do that one — flagged-path budget exhausted "
-            f"for this session ({flagged_cap}/session). "
-            "restart the session to reset."
-        )
-        logger.info(
-            "[%s] FLAG outcome but budget exhausted (%d/%d)",
-            session.key, session._flagged_count, flagged_cap,
-        )
-        asyncio.create_task(session._fire_on_text(refusal))
-        return "handled"
-
-    session._flagged_count += 1
-    logger.info(
-        "[%s] FLAG outcome (sum=%.2f, count=%d/%d) — rerouting to %s",
-        session.key, classifier_result.weighted_sum,
-        session._flagged_count, flagged_cap, flagged_model,
-    )
-
-    # Audit entry is written pre-dispatch so any failure in
-    # flagged_generate still produces a log entry.
-    log_flag_event(
-        channel_id=session._chat_id,
-        user_message_id=message_id,
-        user_text=raw_user_text,
-        admin_sender_id=sender_id,
-        tier=tier,
-        criteria_tripped=dict(classifier_result.criteria),
-        weighted_sum=classifier_result.weighted_sum,
-        flagged_model=flagged_model,
-        bot_message_id=None,
-        session_flag_count=session._flagged_count,
-    )
-
-    async def _flagged_task() -> None:
-        try:
-            response = await _session_mod.flagged_generate(
-                wrapped_message=wrapped_text,
-                model=flagged_model,
-                cwd=None,
-            )
-            await session._fire_on_text(response)
-        except Exception as exc:
-            logger.warning(
-                "[%s] flagged path failed: %s", session.key, exc,
-            )
-            await session._fire_on_text(
-                "[flagged] (flagged path failed to produce output)"
-            )
-
-    asyncio.create_task(_flagged_task())
-    return "handled"
 
 
 async def _handle_refuse_or_floor(

@@ -1,14 +1,26 @@
-"""Tests for Phase 3 #1A — cognitive load tracking and load-weighted restart."""
+"""Tests for the cognitive-load metric (Phase 3 #1A).
+
+Post-2026-04-23 strip: the load score is an observability-only metric.
+The preemptive-restart-on-load trigger and the shallow-rest cycle were
+deleted because they never fired in any observed pilot — the pure token
+threshold at 400k always reached _CONTEXT_REFRESH_THRESHOLD first.
+What remains is the weighted formula (bash + haiku + other + tokens/1k)
+which is logged on every turn-complete line so operators can still see
+the combined-pressure signal when reading logs.
+
+This file used to exercise the budget-trip branches (shallow rest,
+preemptive restart). Those tests are gone. What survives: the formula
+shape, weight ordering, and weight sign sanity checks.
+"""
 from brendbot import session as session_mod
 
 
-def test_load_constants_present_and_positive():
-    """Sanity: weights and budget exist with sensible values."""
+def test_load_weights_present_and_positive():
+    """Sanity: the four load-weight constants exist with positive values."""
     assert session_mod._LOAD_WEIGHT_TOKENS_PER_K > 0
     assert session_mod._LOAD_WEIGHT_BASH_CALL > 0
     assert session_mod._LOAD_WEIGHT_HAIKU_INVOCATION > 0
     assert session_mod._LOAD_WEIGHT_TOOL_OTHER > 0
-    assert session_mod._LOAD_BUDGET_PREEMPTIVE > 0
 
 
 def test_bash_weighted_higher_than_other_tools():
@@ -16,7 +28,7 @@ def test_bash_weighted_higher_than_other_tools():
 
     A Bash subprocess can run arbitrary code, hold state across stdout
     boundaries, and chain commands. A Read tool call is a bounded file
-    fetch. The weights must reflect that asymmetry or the load score
+    fetch. The weights reflect that asymmetry; the load score otherwise
     underestimates the cost of Bash-heavy turns.
     """
     assert (
@@ -26,11 +38,12 @@ def test_bash_weighted_higher_than_other_tools():
 
 
 def test_load_score_formula_matches_expected():
-    """Reproduce the formula in _handle() ResultMessage branch.
+    """Reproduce the formula in _update_load_score.
 
-    Validates that 320k tokens + 6 Bash calls + 1 haiku + 2 other tools
-    crosses the preemptive budget — the canonical 'busy turn' that token
-    count alone would not catch.
+    320k tokens + 6 Bash + 1 haiku + 2 other = 354. The number itself
+    isn't load-bearing anymore (no budget trips on it); this test just
+    pins the formula shape so a future refactor can't quietly change
+    what the logged load metric means.
     """
     tokens = 320_000
     bash = 6
@@ -43,81 +56,5 @@ def test_load_score_formula_matches_expected():
         + haiku * session_mod._LOAD_WEIGHT_HAIKU_INVOCATION
         + other * session_mod._LOAD_WEIGHT_TOOL_OTHER
     )
-    # 320 + 30 + 2 + 2 = 354 — close to budget 360, demonstrates the
-    # weights are calibrated so heavy-tool-use spikes accumulate visibly.
+    # 320 + 30 + 2 + 2 = 354
     assert load == 354.0
-    assert load < session_mod._LOAD_BUDGET_PREEMPTIVE
-
-
-def test_load_score_pure_token_growth_trips_budget():
-    """A 360k+ token turn alone trips the budget even with zero tool use.
-
-    This is the degenerate case where token count is the only signal —
-    confirms the load model degrades gracefully to 'just tokens' when
-    nothing else is happening.
-    """
-    tokens = 360_001
-    load = (tokens / 1000.0) * session_mod._LOAD_WEIGHT_TOKENS_PER_K
-    assert load > session_mod._LOAD_BUDGET_PREEMPTIVE
-
-
-def test_load_score_heavy_bash_trips_budget_at_lower_token_count():
-    """The point of the model: catch heavy-tool turns before tokens spike.
-
-    300k tokens + 12 Bash calls + 3 haiku invocations should exceed budget
-    even though the token threshold (320k preemptive) hasn't been hit.
-    """
-    tokens = 300_000
-    bash = 12
-    haiku = 3
-    other = 0
-    load = (
-        (tokens / 1000.0) * session_mod._LOAD_WEIGHT_TOKENS_PER_K
-        + bash * session_mod._LOAD_WEIGHT_BASH_CALL
-        + haiku * session_mod._LOAD_WEIGHT_HAIKU_INVOCATION
-        + other * session_mod._LOAD_WEIGHT_TOOL_OTHER
-    )
-    # 300 + 60 + 6 = 366
-    assert load > session_mod._LOAD_BUDGET_PREEMPTIVE
-    # And confirm token count alone wouldn't have tripped the existing
-    # 320k soft warning.
-    assert tokens < session_mod._CONTEXT_SOFT_WARNING
-
-
-# ── Phase 3 #1B — shallow rest budget ────────────────────────────────────
-
-
-def test_shallow_budget_below_preemptive():
-    """Shallow rest must fire before preemptive restart, not after.
-
-    If shallow >= preemptive, the trigger order in _handle() never reaches
-    the shallow branch — preemptive always wins. The whole point of 1B is
-    the intermediate step.
-    """
-    assert session_mod._LOAD_BUDGET_SHALLOW < session_mod._LOAD_BUDGET_PREEMPTIVE
-
-
-def test_shallow_budget_leaves_meaningful_headroom():
-    """Shallow rest should fire with at least 15% headroom before preemptive.
-
-    Too close and shallow rest accomplishes nothing — load crosses
-    shallow and immediately crosses preemptive on the same turn. The
-    point of shallow rest is to give the session a chance to recover
-    before forcing a full restart.
-    """
-    headroom_ratio = (
-        (session_mod._LOAD_BUDGET_PREEMPTIVE - session_mod._LOAD_BUDGET_SHALLOW)
-        / session_mod._LOAD_BUDGET_PREEMPTIVE
-    )
-    assert headroom_ratio >= 0.15
-
-
-def test_shallow_rest_recovery_threshold_below_trigger():
-    """Recovery threshold (shallow * 0.7) must be strictly less than trigger.
-
-    Otherwise the recovery branch fires on the same turn as the trigger
-    branch and the rested flag never sticks. Hardcoded 0.7 in session.py
-    line ~655; this test guards against it being raised to 1.0+ later.
-    """
-    recovery = session_mod._LOAD_BUDGET_SHALLOW * 0.7
-    assert recovery < session_mod._LOAD_BUDGET_SHALLOW

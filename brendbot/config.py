@@ -21,15 +21,6 @@ class Config:
     admin_discord_id: str = field(
         default_factory=lambda: os.getenv("ADMIN_DISCORD_ID", "")
     )
-    # Guild snowflake for the owner's own Discord server. When set, the
-    # content gate's admin-bypass and the haiku prefilter are both
-    # short-circuited on messages originating there — the assumption is
-    # that a private owner-occupied server doesn't need the defensive
-    # guards designed for public deployments. Unset → guards apply
-    # uniformly across all guilds (the original behaviour).
-    owner_guild_id: str = field(
-        default_factory=lambda: os.getenv("OWNER_GUILD_ID", "")
-    )
     trusted_discord_ids: set[str] = field(default_factory=set)
     claude_model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "sonnet")
@@ -55,15 +46,6 @@ class Config:
     )
     imagen_model_default: str = field(
         default_factory=lambda: os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001")
-    )
-    # Content-gate FLAG reroute model. When set, overrides engagement.yaml's
-    # flagged_path.model. The yaml used to hardcode a dated sonnet revision
-    # (claude-sonnet-4-20250514) which ages badly — six months after deploy
-    # the revision may be silently unreachable. This env var lets operators
-    # pin a fresh model without editing yaml, and the yaml entry becomes
-    # the fallback when the var is unset.
-    claude_flagged_model: str = field(
-        default_factory=lambda: os.getenv("CLAUDE_FLAGGED_MODEL", "")
     )
     # Session pool cap with LRU eviction (Stage 3). 0 disables the cap.
     max_sessions: int = field(
@@ -94,3 +76,51 @@ def get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
+
+
+# ── Friend-tier guild classification ─────────────────────────────────────
+#
+# A "friend-tier" guild is a private owner-occupied server small enough
+# to treat as a trust circle: no content gate, no haiku prefilter, no
+# FLAG reroute. The classification is auto-detected at bot startup (see
+# discord.classify_friend_guilds) rather than opt-in via env var,
+# because the opt-in model from PR #20 failed silently when the operator
+# didn't know to flip the switch.
+#
+# Classification rule: admin is the guild owner AND member_count < 25.
+# Both conditions are required — a giant community server the admin
+# happens to own isn't friend-tier, and a small server where the admin
+# is a member but not the owner isn't either. Conservative defaults:
+# unknown member_count (Discord didn't populate it) → not friend-tier.
+#
+# DMs with the admin are also friend-tier; they hit this via empty
+# guild_id, which is_friend_guild accepts explicitly.
+
+_FRIEND_GUILDS: frozenset[str] = frozenset()
+
+
+def set_friend_guilds(guild_ids: frozenset[str]) -> None:
+    """Replace the classified friend-guild set. Called from
+    ``discord.classify_friend_guilds`` at bot startup. Tests can call
+    this directly to stub the classification."""
+    global _FRIEND_GUILDS
+    _FRIEND_GUILDS = guild_ids
+
+
+def get_friend_guilds() -> frozenset[str]:
+    """Return the current classified friend-guild set."""
+    return _FRIEND_GUILDS
+
+
+def is_friend_guild(guild_id: str) -> bool:
+    """Return True if ``guild_id`` is classified friend-tier.
+
+    Empty ``guild_id`` (DM) counts as friend-tier only when the DM
+    partner is the admin; callers that need that semantic should check
+    sender tier explicitly. This helper just handles the guild-level
+    classification and returns False on empty guild_id so the safe
+    default is "apply gates."
+    """
+    if not guild_id:
+        return False
+    return guild_id in _FRIEND_GUILDS

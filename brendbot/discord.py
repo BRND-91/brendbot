@@ -897,6 +897,20 @@ class DiscordListener:
                     heuristic_pass = False
                     use_haiku = False  # hard drop
 
+                # ── Owner-guild prefilter bypass ──────────────────────────
+                # In the owner's private server the haiku prefilter subtracts
+                # signal — ambiguous messages there are almost always for the
+                # bot, and the prefilter was dropping messages Brendan and his
+                # friends intended to engage with (see 2026-04-23 pilot log
+                # where "make it trippy" got NO-WEIRD'd). Promote every
+                # would-be-haiku-routed message to heuristic_pass instead.
+                # The else-hard-drop case (no score, no mention) still drops —
+                # those are messages that weren't addressed to the bot at all.
+                _owner_guild = get_config().owner_guild_id
+                if _owner_guild and guild_id == _owner_guild and use_haiku:
+                    heuristic_pass = True
+                    use_haiku = False
+
                 # Admin messages follow the same engagement gates as all others.
                 # Admin tier governs trust and permissions only, not engagement bypass.
 

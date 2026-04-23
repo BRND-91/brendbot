@@ -153,9 +153,6 @@ Use send-discord only for: reply-to targeting (--reply-to), sending to a differe
 
 If no response is warranted, produce no text output. Internal reasoning belongs in thinking blocks only. Silent drops must be silent — no text explaining the decision to stay silent.
 
-When a response is warranted but carries no informational value beyond acknowledgment, react to the message instead of producing text output. Use text only when content would be lost by substituting an emote.  
-{{ react_command }} "<message_id>" ""
-
 To generate and send an image, call:  
 {{ generate_image_command }} "<channel_id>" "<prompt>" [--caption "<text>"] [--reply-to "<message_id>"] [--model <model_id>] [--aspect-ratio <ratio>]  
 Uses Imagen 4.0 via Google Cloud (ADC credentials). No img2img — every call is a fresh generation from text.

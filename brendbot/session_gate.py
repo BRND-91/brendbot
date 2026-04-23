@@ -72,6 +72,7 @@ async def apply_content_gate(
         format_refusal_explanation,
         Outcome,
     )
+    from brendbot.config import get_config
 
     # Resolved via session.py's namespace so
     # monkeypatch.setattr(session_mod, "content_gate_classify", …) still
@@ -79,6 +80,27 @@ async def apply_content_gate(
     # import at module load (session.py imports us to delegate
     # Session.apply_content_gate).
     from brendbot import session as _session_mod
+
+    # ── Owner-guild admin bypass ─────────────────────────────────────────
+    # Short-circuit the entire gate when an admin-tier user messages from
+    # the owner's own Discord server. The classifier + FLAG/REFUSE machinery
+    # was built to defend against hostile users in public deployments; it
+    # has no business firing on the owner in his own private server. Skips
+    # the classifier spawn entirely — no token cost, no latency, no audit
+    # record. The *brend* token bypass below still applies for DMs and
+    # other guilds where the admin might appear.
+    #
+    # Guarded by `owner_guild_id` being non-empty so tests that don't set
+    # OWNER_GUILD_ID (and therefore get `""` for both sides) never trip
+    # this branch — preserving the pre-existing test fixture contract.
+    config = get_config()
+    owner_guild = config.owner_guild_id
+    if owner_guild and tier == "admin" and getattr(session, "_guild_id", "") == owner_guild:
+        logger.info(
+            "[%s] owner-guild admin — content gate skipped",
+            session.key,
+        )
+        return "inject"
 
     gate_cfg = _load_gate_cfg()
     hard_floors, outcome_thresholds = _parse_gate_cfg_basics(gate_cfg)

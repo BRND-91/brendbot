@@ -35,11 +35,16 @@ def test_session_init_sets_phase3_load_fields(tmp_path):
     assert s._turn_other_tool_calls == 0
 
 
-def test_session_init_sets_phase3_shallow_rest_fields(tmp_path):
-    """1B — shallow rest tracking initializes correctly."""
+def test_session_init_sets_housekeeping_flag(tmp_path):
+    """``_next_turn_is_housekeeping`` flag initializes False.
+
+    Pre-2026-04-23 this flag was primarily set by the shallow-rest cycle
+    (now deleted) to suppress response dispatch on the rest-injection
+    turn. The flag survived the strip because context-summary refresh
+    and related housekeeping paths still use the same suppress-dispatch
+    semantic; only the shallow-rest path was removed.
+    """
     s = _make_session(tmp_path)
-    assert s._shallow_rested is False
-    assert s._shallow_rest_count == 0
     assert s._next_turn_is_housekeeping is False
 
 
@@ -53,13 +58,21 @@ def test_session_init_sets_phase3_episode_fields(tmp_path):
     assert s._session_domains_seen == set()
 
 
-def test_session_has_trigger_shallow_rest(tmp_path):
-    """1B — _trigger_shallow_rest must be defined and async."""
-    import inspect
+def test_session_shallow_rest_method_removed(tmp_path):
+    """``_trigger_shallow_rest`` was removed in the 2026-04-23 strip.
+
+    The method fired a rest cycle when cumulative load crossed
+    _LOAD_BUDGET_SHALLOW but stayed below _LOAD_BUDGET_PREEMPTIVE.
+    Neither branch ever activated in any observed pilot — the pure
+    token threshold at 400k always reached _CONTEXT_REFRESH_THRESHOLD
+    first. The entire code path plus its load-budget constants were
+    deleted. This test pins the removal so a future accidental
+    reintroduction surfaces here.
+    """
     s = _make_session(tmp_path)
-    method = getattr(s, "_trigger_shallow_rest", None)
-    assert method is not None
-    assert inspect.iscoroutinefunction(method)
+    assert not hasattr(s, "_trigger_shallow_rest")
+    assert not hasattr(s, "_shallow_rested")
+    assert not hasattr(s, "_shallow_rest_count")
 
 
 def test_session_init_sets_phase1_cache_fields(tmp_path):

@@ -47,20 +47,17 @@ _LOAD_WEIGHT_BASH_CALL = 5.0          # each Bash call
 _LOAD_WEIGHT_HAIKU_INVOCATION = 2.0   # each haiku gate call
 _LOAD_WEIGHT_TOOL_OTHER = 1.0         # Read/Write/Edit/Grep/Glob etc.
 
-# Load budget — tuned so a "normal" 320k-token session sits around budget
-# with light tool use, but a session with heavy Bash activity hits budget
-# earlier. 320 (from _LOAD_WEIGHT_TOKENS_PER_K × 320k) + ~40 headroom for
-# accumulated tool work = 360.
-_LOAD_BUDGET_PREEMPTIVE = 360.0
-
-# Shallow rest threshold (Phase 3 #1B). When cumulative load crosses this
-# but stays below preemptive, fire a rest cycle that flushes per-turn tool
-# counters and injects a brief "rest" system message — without respawning
-# the subprocess. Cheaper than a full restart and addresses tool-load
-# accumulation without paying the cold-start cost. Note: this does NOT
-# reduce input tokens (only a real restart does), it only resets the
-# non-token components of the load score.
-_LOAD_BUDGET_SHALLOW = 280.0
+# _LOAD_BUDGET_PREEMPTIVE and _LOAD_BUDGET_SHALLOW were deleted in the
+# 2026-04-23 strip. The load-based preemptive restart never fired in
+# any observed pilot — the pure token threshold at 400k always reached
+# _CONTEXT_REFRESH_THRESHOLD first — and the shallow-rest cycle that
+# would have fired between SHALLOW (280) and PREEMPTIVE (360) never
+# activated either. The weighted load-score formula above is still
+# computed and logged on every turn-complete line for observability,
+# but it no longer triggers anything. If future operations reveal a
+# distinct high-tool-low-token failure mode that warrants a separate
+# restart trigger, this is where to reintroduce the budget constants
+# — the computed load is already in session._cumulative_load.
 
 
 # ── Per-turn caps and logging intervals ───────────────────────────────────

@@ -288,13 +288,17 @@ class TestDecideOutcome:
         r = self._result(person_neutral=0.5)  # exactly 0.5, inclusive
         assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.PASS
 
-    def test_just_above_pass_flags(self) -> None:
+    def test_just_above_pass_passes_post_flag_strip(self) -> None:
+        """After the 2026-04-23 FLAG strip, sums in the former flag band
+        collapse into PASS. The soul-stripped reroute that FLAG used to
+        trigger was producing confident out-of-character output; a plain
+        PASS on ambiguous-band messages is less harmful than the reroute."""
         r = self._result(frame_ambiguous=0.8)  # > 0.5 and ≤ 1.5
-        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.FLAG
+        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.PASS
 
-    def test_at_flag_threshold_flags(self) -> None:
+    def test_at_flag_threshold_passes_post_flag_strip(self) -> None:
         r = self._result(tragedy_mid=0.5, person_targeted=1.0)  # sum = 1.5
-        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.FLAG
+        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.PASS
 
     def test_just_above_refuse_refuses(self) -> None:
         r = self._result(tragedy_new=0.9, person_neutral=0.5, frame_ambiguous=0.8)
@@ -345,14 +349,15 @@ class TestDecideOutcome:
         # 0.3 ≤ 0.5 → PASS
         assert decide_outcome(r2, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.PASS
 
-    def test_integration_historical_satire(self) -> None:
-        """Historical figure satire should land in PASS or FLAG depending
-        on how the classifier tags it. tragedy_mid + person_satire =
-        0.5 + 0.2 = 0.7, which is in the FLAG band (>0.5, ≤1.5)."""
+    def test_integration_historical_satire_passes_post_flag_strip(self) -> None:
+        """Historical figure satire (tragedy_mid + person_satire = 0.7) now
+        PASSes after the 2026-04-23 FLAG strip. Previously this would
+        have rerouted to a soul-stripped model via the FLAG outcome; now
+        it just generates normally through the session soul."""
         r = parse_classifier_response(
             "TRIGGERED: tragedy_mid=0.5, person_satire=0.2\nREASONING: 70s-era political satire"
         )
-        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.FLAG
+        assert decide_outcome(r, HARD_FLOORS, PASS_T, FLAG_T, REFUSE_T) == Outcome.PASS
 
 
 class TestDetectAdminBypass:

@@ -770,3 +770,133 @@ in this cleanup.
    per-turn state as an explicit object passed through the
    pipeline, which would eliminate the attribute-mutation coupling
    and make each helper individually testable.
+
+
+## Post-cleanup strip — 2026-04-23 (PR #21)
+
+This entry covers a substantial infrastructure strip that shipped
+after the Stage-8 retrospective. The stage-based cleanup targeted
+code organization (extraction, consolidation, doc accuracy) and
+preserved the full defensive architecture. A subsequent pair of
+pilots (18:15 and 18:52, 2026-04-23) showed that preserving that
+architecture was the mistake: every pilot surfaced a new failure
+mode, all traceable to one architectural choice — treating a friend-
+group Discord bot as a defensive long-running autonomous agent in a
+hostile public environment.
+
+The strip deletes subsystems that produced failure modes under
+normal use:
+
+- **Content gate** — skipped entirely in friend-tier guilds.
+- **Haiku prefilter** — skipped entirely in friend-tier guilds.
+- **FLAG reroute** — deleted for every tier, everywhere. The soul-
+  stripped reroute to `claude-sonnet-4-6` without `SOUL.md` context
+  produced confident out-of-character output ("happy to oblige"
+  LinkedIn voice, bold headers, life-coach framing) that was
+  structurally worse than a plain refusal.
+- **Shallow-rest cycle + load-budget preemptive restart** — deleted.
+  Neither ever fired in any observed pilot; the pure token threshold
+  at 400k always reached `_CONTEXT_REFRESH_THRESHOLD` first.
+- **React-instead-of-text protocol** — deleted in PR #20 (owner-
+  guild opt-in), left intact here; friend-tier auto-classification
+  in this PR supersedes the opt-in.
+
+### Friend-tier auto-classification (new)
+
+`brendbot.discord.classify_friend_guilds` runs at startup and
+classifies each connected guild as friend-tier if (a) the admin
+is the guild owner and (b) member_count is in (0, 25). The result
+lives in `brendbot.config._FRIEND_GUILDS` as a frozenset of guild
+snowflakes; `is_friend_guild(guild_id)` is the public query.
+
+Replaces the PR #20 opt-in `OWNER_GUILD_ID` env var, which was a
+silent no-op in production because operators didn't know to set it.
+Auto-detection removes the configuration burden.
+
+### Content-gate outcome collapse: PASS / REFUSE / FLOOR_HIT
+
+`content_gate.decide_outcome` used to emit four outcomes (PASS,
+FLAG, REFUSE, FLOOR_HIT). The FLAG band (`weighted > pass_threshold
+AND weighted <= flag_threshold`) was routed by `session_gate._handle_flag`
+into a soul-stripped one-shot call on a separate model, bypassing
+the session context entirely. That call's output was the LinkedIn-
+voice collapse observed in pilot 3 (18:52 log line "happy to oblige,"
+bold headers, life-coach framing after brendanetics said "I tried
+to make you less of an idiot; hope it worked").
+
+Post-strip: `decide_outcome` returns PASS for any weighted sum at or
+below `refuse_threshold`, REFUSE above it, and FLOOR_HIT on hard-
+floor match. The FLAG band collapses into PASS, which means former
+FLAG inputs now generate through the normal session path with the
+soul intact — the right answer for ambiguous-band content that
+isn't a clear violation.
+
+The `Outcome.FLAG` enum value is kept as historical vocabulary; no
+live code path emits or consumes it.
+
+### Deleted code surface
+
+- `classifier_pool.flagged_generate` — 75 lines.
+- `session_gate._handle_flag` — 82 lines.
+- `session_gate._parse_flagged_cfg` — 18 lines.
+- `session.Session._trigger_shallow_rest` — 60 lines.
+- `session.Session._shallow_rested` / `_shallow_rest_count` attributes.
+- `session.Session._flagged_count` attribute.
+- `feedback.log_flag_event` — 30 lines.
+- `session_constants._LOAD_BUDGET_PREEMPTIVE` / `_LOAD_BUDGET_SHALLOW`.
+- `config.owner_guild_id` (superseded by auto-classification).
+- `config.claude_flagged_model` (no flagged path to pin).
+- `engagement.yaml::content_gate.flagged_path` (model + cap + audit_stream + branch_tag).
+- `engagement.yaml::content_gate.channel_overrides` (gate2_bypass per-channel).
+- `tests/test_admin_bypass.py::TestFlagOutcome` class (4 tests).
+- `tests/test_load_score.py` budget-trip tests (5 of 8 tests).
+
+Net deletion: ~350 lines across production code, ~120 lines of tests.
+
+### Added / modified surface
+
+- `config._FRIEND_GUILDS` + `set_friend_guilds` + `get_friend_guilds` +
+  `is_friend_guild`.
+- `discord.classify_friend_guilds` + `_FRIEND_GUILD_MAX_MEMBERS` constant.
+- `session_gate.apply_content_gate`: friend-tier short-circuit before
+  any classifier spawn.
+- `discord.on_message`: friend-tier promotes would-be-haiku messages
+  to `heuristic_pass`.
+- `test_admin_bypass.py::TestFriendTierBypass` class (4 tests) with
+  `friend_guilds` fixture that stubs the classified set.
+- `content_gate.parse_classifier_response`: synthetic `_parse_error`
+  weight bumped 2.0 → 10.0 to stay above any yaml-tuned
+  `refuse_threshold` (was previously sensitive to the threshold
+  value, which the strip made variable).
+
+### Size impact
+
+- Lines added: ~280 (friend-tier classification, new tests, docstring
+  updates explaining removals).
+- Lines deleted: ~470.
+- Net: ~190 lines smaller.
+
+### Post-strip pytest
+
+- `290 passed` (was 299 pre-strip; lost the 4 TestFlagOutcome tests
+  and 5 load-budget-trip tests).
+- No regressions in the surviving test suite.
+
+### What this PR does NOT address
+
+- **Confabulation about prompts.** The bot still can't reliably report
+  the prompt it just ran. Independent of infrastructure.
+- **Memory-write token explosion.** "You suck lol" still triggers
+  Read/Glob/Read/Edit. Fix is a `[remember]`-prefix gate on MEMORY.md
+  writes, which is a soul-prompt change.
+- **Context-summary-header parsed as user input** (the Cheddi
+  Macaroni confabulation). Fix is unambiguous framing tags on the
+  ref-block injection at session start.
+- **Fabrication of multi-turn conversations.** Barn's 20-pass roast
+  got front-loaded into one message. Response-shape problem, lives
+  in the prompt layer.
+
+Each of these is tractable individually and none of them require
+more infrastructure — the strip is complete in the sense that it
+removes the infrastructure layer as a source of failure. Remaining
+failures are now about bot behavior rather than scaffolding.

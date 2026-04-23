@@ -42,8 +42,6 @@ from claude_agent_sdk import (
 from brendbot.session_constants import (
     _CONTEXT_REFRESH_THRESHOLD,
     _CONTEXT_SOFT_WARNING,
-    _LOAD_BUDGET_PREEMPTIVE,
-    _LOAD_BUDGET_SHALLOW,
     _LOAD_WEIGHT_BASH_CALL,
     _LOAD_WEIGHT_HAIKU_INVOCATION,
     _LOAD_WEIGHT_TOKENS_PER_K,
@@ -409,16 +407,21 @@ def _update_context_tracking(session: "Session", message: ResultMessage) -> None
 
 
 def _update_load_score(session: "Session") -> float:
-    """Roll per-turn counters into cumulative load, trip budgets.
+    """Roll per-turn counters into a cumulative load score and return it
+    for logging.
 
-    Returns the current load score for logging.
+    The score is kept for observability — it's logged alongside the
+    token count on every turn-complete line — but as of the 2026-04-23
+    strip it no longer triggers anything. The preemptive-restart-on-load
+    branch and the shallow-rest cycle were removed: in every pilot
+    examined, the pure token threshold (400k) reached
+    _CONTEXT_REFRESH_THRESHOLD before the load budget would have fired,
+    and neither the shallow rest nor the load-based preemptive restart
+    had ever actually triggered in practice. The weighted formula stays
+    (bash + haiku + other + tokens/1k) so the number keeps some meaning
+    when reading logs, but it's now purely a metric.
     """
-    # ── Cognitive load update (Phase 3 #1A) ───────────────────
-    # Roll per-turn counters into cumulative load. Compute current
-    # load score as weighted sum and trip preemptive restart if it
-    # exceeds budget — independent of token count. Catches the
-    # heavy-tool-use turns that don't spike tokens but do degrade
-    # the worker's effective capacity.
+    # ── Cognitive load metric (Phase 3 #1A, observability only) ───────
     session._cumulative_bash_calls += session._turn_bash_calls
     session._cumulative_other_tools += session._turn_other_tool_calls
     current_load = (
@@ -428,32 +431,6 @@ def _update_load_score(session: "Session") -> float:
         + session._cumulative_other_tools * _LOAD_WEIGHT_TOOL_OTHER
     )
     session._cumulative_load = current_load
-    if (current_load >= _LOAD_BUDGET_PREEMPTIVE
-            and session._context_state == "normal"):
-        session._context_state = "threshold_hit"
-        logger.info(
-            "[%s] load score %.1f >= budget %.1f — preemptive restart queued "
-            "(bash=%d, haiku=%d, other=%d, tokens=%d)",
-            session.key, current_load, _LOAD_BUDGET_PREEMPTIVE,
-            session._cumulative_bash_calls, session._cumulative_haiku_invocations,
-            session._cumulative_other_tools, session._last_input_tokens,
-        )
-    elif (current_load >= _LOAD_BUDGET_SHALLOW
-            and not session._shallow_rested
-            and session._context_state == "normal"):
-        # Phase 3 #1B — fire shallow rest. Scheduled as a task so
-        # it runs after the current ResultMessage finishes processing
-        # and doesn't block the receive loop.
-        logger.info(
-            "[%s] load score %.1f >= shallow budget %.1f — rest cycle queued",
-            session.key, current_load, _LOAD_BUDGET_SHALLOW,
-        )
-        asyncio.create_task(session._trigger_shallow_rest())
-    elif (session._shallow_rested
-            and current_load < _LOAD_BUDGET_SHALLOW * 0.7):
-        # Recovery: load dropped well below the shallow trigger.
-        # Clear the rested flag so a future spike can re-fire.
-        session._shallow_rested = False
     return current_load
 
 

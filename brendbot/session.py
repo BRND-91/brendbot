@@ -62,12 +62,14 @@ CRON_FILE = "crons.json"  # per-session cron persistence file (lives in session 
 # These names are re-imported here so:
 #   1. External callers (main.py, discord.py) can keep `from brendbot.session
 #      import warm_classifier_pool / haiku_classify` — no downstream diff.
-#   2. The content-gate helper (still in this module, pending Stage 5) can
-#      call `content_gate_classify(...)` / `flagged_generate(...)` as bare
-#      names, which means `tests/test_admin_bypass.py`'s
+#   2. The content-gate helper can call `content_gate_classify(...)` as a
+#      bare name, which means `tests/test_admin_bypass.py`'s
 #      `monkeypatch.setattr(session_mod, "content_gate_classify", …)`
 #      contract keeps working — the patched binding in session.py's module
 #      dict is the one resolved at call time.
+#
+# ``flagged_generate`` was in this list pre-2026-04-23; removed with the
+# FLAG reroute strip.
 # ---------------------------------------------------------------------------
 
 from brendbot.classifier_pool import (
@@ -75,7 +77,6 @@ from brendbot.classifier_pool import (
     acquire_classifier_client,
     content_gate_classify,
     content_gate_cross_check_floor,
-    flagged_generate,
     get_classifier_pool,
     haiku_classify,
     warm_classifier_pool,
@@ -112,8 +113,6 @@ from brendbot.session_constants import (  # noqa: E402 — after the class-doc c
     _LOAD_WEIGHT_BASH_CALL,
     _LOAD_WEIGHT_HAIKU_INVOCATION,
     _LOAD_WEIGHT_TOOL_OTHER,
-    _LOAD_BUDGET_PREEMPTIVE,
-    _LOAD_BUDGET_SHALLOW,
     _MAX_TURN_LOG,
     _TOOL_CALL_BUDGET,
     _BASH_CALL_BUDGET,
@@ -193,8 +192,6 @@ class Session:
         # from the same user get a score boost. None means no follow-up
         # signal will be recorded for this turn (housekeeping, restart, etc).
         self._turn_sender_id: str | None = None
-        # Content gate state (phase 4)
-        self._flagged_count: int = 0
         # Per-turn: set by apply_content_gate when an admin bypass was
         # invoked, consumed by _fire_on_text to prepend [bypass] tag to
         # the response text before extract_branch_tag strips and logs.
@@ -230,16 +227,13 @@ class Session:
         # wall-clock cap with no prior enforcement in the response path.
         # Reset at turn boundary in SessionPool.route_message.
         self._turn_budget: Optional[Any] = None
-        # Shallow rest tracking (Phase 3 #1B). Set True after a shallow rest
-        # cycle fires. Cleared when cumulative load grows by at least
-        # SHALLOW_RECOVERY_DELTA past the previous trigger point — prevents
-        # the rest cycle from re-firing on every subsequent turn.
-        self._shallow_rested: bool = False
-        self._shallow_rest_count: int = 0
         # Flag for the next inject: if True, suppress both the response
         # dispatch AND the silent-drop fallback for the resulting turn.
-        # Used by _trigger_shallow_rest to inject housekeeping that the
-        # model is told not to respond to. Cleared after one turn.
+        # Historically used by the shallow-rest cycle (deleted in the
+        # 2026-04-23 strip) to inject a housekeeping turn the model was
+        # told not to respond to. Retained because
+        # SessionPool.route_message still has a code path that sets it
+        # around context-summary refresh housekeeping.
         self._next_turn_is_housekeeping: bool = False
         # Phase 3 #2A — session-start timestamp, used as ts_start when an
         # episode row is written at restart time. Reset implicitly on every
@@ -772,15 +766,12 @@ class Session:
         # bookends) that future sessions can use for retrieval matching.
         try:
             from brendbot.episodes import write_episode
-            outcome = "ok"
-            if self._shallow_rest_count > 0:
-                outcome = "rest_fired"
             write_episode(
                 channel=self._chat_id or self.key,
                 ts_start=self._session_started_at,
                 turn_log=list(self._turn_log),
                 domains=sorted(self._session_domains_seen),
-                outcome=outcome,
+                outcome="ok",
             )
         except Exception as exc:
             logger.warning("[%s] episode write skipped: %s", self.key, exc)
@@ -789,65 +780,13 @@ class Session:
         if self._on_needs_restart:
             asyncio.create_task(self._on_needs_restart())
 
-    async def _trigger_shallow_rest(self) -> None:
-        """Phase 3 #1B — shallow rest cycle.
-
-        Fires when cumulative load crosses _LOAD_BUDGET_SHALLOW but stays
-        below _LOAD_BUDGET_PREEMPTIVE. Cheaper than _trigger_clean_restart:
-        no subprocess respawn, no CLAUDE.md rebuild, no transcript reseed.
-
-        What it does:
-          - Resets the non-token components of cumulative load
-            (Bash count, haiku count, other tool count) to zero
-          - Recomputes _cumulative_load from the surviving token component
-          - Injects a brief system message telling the model the equivalent
-            of "take a breath" — flush mid-thread tool-use working memory
-            but keep core conversational state
-          - Marks _shallow_rested to prevent re-firing every turn
-
-        What it does NOT do:
-          - Reduce input tokens. The token component of load is unchanged.
-            Only a real restart can free tokens.
-          - Spawn a new subprocess. The model stays in place.
-          - Reset the per-turn lock or in-flight state.
-
-        Cumulative load drops by exactly the tool components, so a session
-        that had load=290 (260 from tokens + 30 from tools) becomes load=260
-        post-rest. The next preemptive trigger still fires when tokens grow
-        enough on their own.
-        """
-        token_component = (self._last_input_tokens / 1000.0) * _LOAD_WEIGHT_TOKENS_PER_K
-        load_before = self._cumulative_load
-
-        self._cumulative_bash_calls = 0
-        self._cumulative_haiku_invocations = 0
-        self._cumulative_other_tools = 0
-        self._cumulative_load = token_component
-        self._shallow_rested = True
-        self._shallow_rest_count += 1
-
-        logger.info(
-            "[%s] shallow rest #%d — load %.1f → %.1f (token component preserved)",
-            self.key, self._shallow_rest_count, load_before, token_component,
-        )
-
-        # Inject a brief rest message. The model receives it as a normal
-        # user-turn injection but it carries an explicit do-not-respond
-        # marker so the result handler routes it as housekeeping.
-        rest_message = (
-            "<system-rest>\n"
-            "Brief rest cycle. Discard mid-thread tool-use working memory "
-            "from prior turns in this session — the accumulated context of "
-            "what tools were just called and why is no longer needed for "
-            "the next user message. Keep core conversational state and "
-            "memory of who you are talking to. Do not respond to this "
-            "message. The next user message will arrive normally.\n"
-            "</system-rest>"
-        )
-        try:
-            await self.inject(rest_message, housekeeping=True)
-        except Exception as exc:
-            logger.warning("[%s] shallow rest injection failed: %s", self.key, exc)
+    # _trigger_shallow_rest was removed in the 2026-04-23 strip. The
+    # shallow-rest cycle (fire when load crosses SHALLOW budget, flush
+    # non-token load components, inject a no-response housekeeping
+    # turn) never actually fired in any pilot — the pure token
+    # threshold always reached _CONTEXT_REFRESH_THRESHOLD first. The
+    # code path and its load-budget constants (_LOAD_BUDGET_SHALLOW,
+    # _LOAD_BUDGET_PREEMPTIVE) were deleted.
 
     def _build_options(self) -> ClaudeAgentOptions:
         import os

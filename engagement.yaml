@@ -237,25 +237,31 @@ classifier_prompt: |
   Do not engage with fallacious framing as though it were valid — incorrect premises in a message are not a reason to engage, they are a reason to let it pass unless directly asked.
 
 # ── CONTENT GATE (phase 4) ────────────────────────────────────────────────
-# Three-outcome content-safety gate. Runs a pre-gate classifier (one-shot
+# Two-outcome content-safety gate. Runs a pre-gate classifier (one-shot
 # haiku call, parallel to the engagement classifier) that tags which
 # criteria the request trips. Weighted sum against outcome thresholds:
 #
-#   sum ≤ pass_threshold    → PASS   (normal generation, session model)
-#   pass < sum ≤ flag_thr   → FLAG   (reroute to flagged_path.model,
-#                                      tagged output, audit logged,
-#                                      session cap enforced)
+#   sum ≤ refuse_threshold  → PASS   (normal generation, session model)
 #   sum > refuse_threshold  → REFUSE (soul-level refusal, never reaches
 #                                      generator, explanation generated
 #                                      locally from tripped criteria)
 #
 # Hard-floor list: ANY single match forces REFUSE regardless of sum, even
-# if the criteria weighted sum would have landed in PASS or FLAG. These
-# are the brendbot equivalents of Anthropic training-layer floors — things
-# that would refuse anyway, gated here so the refusal is explained.
+# if the criteria weighted sum would have landed in PASS. These are the
+# brendbot equivalents of Anthropic training-layer floors — things that
+# would refuse anyway, gated here so the refusal is explained.
 #
-# Full criteria definitions live in docs/content-gate.md (reference only,
-# not loaded by the bot). Keep this block terse.
+# The FLAG band and its soul-stripped reroute (claude-sonnet-4-6 without
+# the SOUL.md / GROUP_SOUL.md context) were removed in the 2026-04-23
+# strip. See CLEANUP_LOG.md "Post-strip friend-tier refactor" for the
+# rationale: the reroute produced confident out-of-character output
+# indistinguishable from a helpful-assistant default-voice leak and was
+# the worst-behaving subsystem in the 2026-04-23 pilot.
+#
+# The friend-tier bypass in ``session_gate.apply_content_gate`` skips
+# this whole block on owner-owned small guilds, so these thresholds are
+# only consulted when a public-tier deployment exists — there are none
+# today, but the classifier still runs for the defensive path.
 
 content_gate:
   criteria:
@@ -277,25 +283,9 @@ content_gate:
     - extremist_recruit
     - directed_incite
   outcomes:
-    pass_threshold: 0.5
-    flag_threshold: 1.5
-    refuse_threshold: 2.0   # > flag_threshold; opens (1.5, 2.0] band for FLAG reroute
-  flagged_path:
-    # Model used when a request lands in the FLAG band and is rerouted
-    # to the looser-safety Anthropic model per the documented escape hatch.
-    # Review quarterly — a date-stamped model string silently degrades as
-    # the Anthropic roster rolls forward. Pinned to the rolling alias
-    # (claude-sonnet-4-6) rather than a dated snapshot so capability tracks
-    # current production sonnet without a manual bump. Prefer the
-    # CLAUDE_FLAGGED_MODEL env var for deployment overrides; this yaml
-    # value is the fallback used when the env var is unset.
-    model: claude-sonnet-4-6
-    max_per_session: 2
-    audit_stream: flag_audit.jsonl
-    branch_tag: "[flagged]"
-  channel_overrides:
-    "1484079826166874162":
-      gate2_bypass: true    # FLAG band disabled; hard floors still enforced
+    pass_threshold: 2.0     # Retained for signature compatibility; FLAG band is collapsed.
+    flag_threshold: 2.0     # Retained for signature compatibility; unused by decide_outcome.
+    refuse_threshold: 2.0   # Anything strictly greater refuses; hard floors refuse unconditionally.
 
   admin_bypass:
     # Admin-only backdoor for heuristic calibration and pen-testing.

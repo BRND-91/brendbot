@@ -221,9 +221,12 @@ The included `setup.sh` handles everything:
 | `DISCORD_TOKEN` | Yes | Your Discord bot token |
 | `BOT_NAME` | No | Bot's name for mention detection (default: `brendbot`) |
 | `ADMIN_DISCORD_ID` | Yes | Your Discord user ID (gets admin tier) |
-| `OWNER_GUILD_ID` | No | Guild snowflake for your own Discord server. When set, content gate and haiku prefilter are skipped on admin-tier messages originating there — the defensive guards designed for public deployments get out of the way on your own server. |
 | `TRUSTED_DISCORD_IDS` | No | Comma-separated user IDs for trusted tier |
 | `CLAUDE_MODEL` | No | Model to use (default: `sonnet`) |
+
+### Friend-tier servers
+
+If you own the Discord server the bot is connected to and the server has fewer than 25 members, brendbot auto-classifies it as **friend-tier** at startup: the content gate is skipped entirely and the haiku engagement prefilter is bypassed on any message the bot would have considered ambiguous. This replaces the earlier `OWNER_GUILD_ID` env var — auto-detection removes the "feature flag you have to remember to flip" failure mode. Large or not-owner-owned servers retain the full defensive gates.
 
 ### Access Tiers
 

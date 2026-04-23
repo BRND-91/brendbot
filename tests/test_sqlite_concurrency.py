@@ -224,20 +224,23 @@ def test_concurrent_asyncio_record_user(tmp_path, monkeypatch):
     assert count == 50
 
 
-def test_flagged_path_model_is_unpinned(tmp_path):
-    """Guardrail against re-pinning flagged_path.model to a date-stamped
-    snapshot. The rolling alias (claude-sonnet-X-Y) tracks current sonnet;
-    a dated string (claude-sonnet-4-20250514) silently degrades as the
-    roster rolls forward."""
-    import re
+def test_flagged_path_not_in_engagement_yaml(tmp_path):
+    """Post-2026-04-23 strip: ``content_gate.flagged_path`` must not
+    reappear in engagement.yaml. The FLAG reroute to a soul-stripped
+    sonnet-4-6 call produced confident out-of-character output and was
+    deleted entirely. This guard catches accidental reintroduction
+    (e.g. if someone copy-pastes the block back from the 2026-04-22
+    version of the yaml during a merge conflict resolution).
+
+    Previously ``test_flagged_path_model_is_unpinned`` checked that the
+    model wasn't pinned to a dated snapshot. That check is obsolete —
+    there's no flagged_path to pin."""
     import yaml
 
     cfg_path = Path(__file__).resolve().parent.parent / "engagement.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
-    model = cfg["content_gate"]["flagged_path"]["model"]
-
-    # Reject any model string ending in an 8-digit date snapshot.
-    assert not re.search(r"-\d{8}$", model), (
-        f"flagged_path.model is pinned to a dated snapshot ({model!r}); "
-        "use the rolling alias (e.g. claude-sonnet-4-6) instead."
+    assert "flagged_path" not in cfg.get("content_gate", {}), (
+        "flagged_path block reappeared in engagement.yaml — the FLAG "
+        "reroute was deleted in the 2026-04-23 strip and should not "
+        "come back. See CLEANUP_LOG.md."
     )

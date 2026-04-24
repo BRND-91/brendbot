@@ -1,0 +1,331 @@
+"""Tests for ``discord.classify_friend_guilds`` — the auto-classifier
+that decides which connected guilds get gate/prefilter bypass.
+
+Pins the two-rule classification (owner signal OR member-cache
+signal, both gated on a small-guild size cap) and the new diagnostic
+logging that names the specific reason each guild was or wasn't
+classified. The 2026-04-23 pilot produced a silent "0 friend-tier
+guild(s) of 1 total" with no indication of why — these tests make
+that class of silent failure impossible without surfacing to both
+the log and the test suite.
+"""
+from __future__ import annotations
+
+import logging
+
+import pytest
+
+from brendbot import config as cfg_mod
+from brendbot import discord as bb_discord
+
+
+class _FakeGuild:
+    """Minimal Discord.py Guild stub. Honors only the attributes
+    classify_friend_guilds actually reads."""
+
+    def __init__(
+        self,
+        guild_id: int,
+        name: str,
+        owner_id: int,
+        member_count: int | None,
+        cached_members: set[int] | None = None,
+    ) -> None:
+        self.id = guild_id
+        self.name = name
+        self.owner_id = owner_id
+        self.member_count = member_count
+        self._cached = cached_members or set()
+
+    def get_member(self, user_id: int):
+        """Return a truthy stub when the user_id is in our cached set,
+        None otherwise. Mirrors the discord.py semantics the classifier
+        relies on."""
+        if user_id in self._cached:
+            return object()  # just needs to be non-None
+        return None
+
+
+class _FakeClient:
+    """Stand-in for a discord.py Client — exposes ``guilds`` only."""
+
+    def __init__(self, guilds: list[_FakeGuild]) -> None:
+        self.guilds = guilds
+
+
+@pytest.fixture(autouse=True)
+def _reset_config(monkeypatch):
+    """Ensure each test starts with a clean config singleton and an
+    empty friend-guild set."""
+    monkeypatch.setattr(cfg_mod, "_config", None)
+    monkeypatch.setattr(cfg_mod, "_FRIEND_GUILDS", frozenset())
+    yield
+
+
+def _set_admin(monkeypatch, admin_id: str) -> None:
+    """Point the config singleton at a specific admin id for this test."""
+    monkeypatch.setenv("ADMIN_DISCORD_ID", admin_id)
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+
+# ── Owner signal (strong) ────────────────────────────────────────────────
+
+
+def test_owner_matched_small_guild_is_friend_tier(monkeypatch):
+    """Classic friend-tier case: admin owns a private server."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="Pizzacord",
+            owner_id=369485175329128448,
+            member_count=4,
+        ),
+    ])
+
+    result = bb_discord.classify_friend_guilds(client)
+
+    assert str(1277236474231787552) in result
+    assert len(result) == 1
+
+
+def test_owner_matched_but_guild_too_large_is_not_friend_tier(monkeypatch):
+    """Member cap is load-bearing — a giant server the admin owns
+    (e.g. a public community) does not get friend-tier treatment."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="BigCommunity",
+            owner_id=369485175329128448,
+            member_count=500,
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+# ── Member signal (fallback, new in this PR) ────────────────────────────
+
+
+def test_member_cached_small_guild_is_friend_tier(monkeypatch):
+    """New behaviour: admin doesn't own the guild but is a member of
+    a small one. The 2026-04-23 pilot probably fell into this shape —
+    the admin is present in Pizzacord but isn't the literal owner."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=777,
+            name="FriendServer",
+            owner_id=999999,  # someone else
+            member_count=6,
+            cached_members={369485175329128448},
+        ),
+    ])
+
+    result = bb_discord.classify_friend_guilds(client)
+
+    assert str(777) in result
+
+
+def test_non_owner_non_member_small_guild_is_not_friend_tier(monkeypatch):
+    """Admin isn't in the guild and doesn't own it — must NOT be
+    friend-tier just because it's small. Prevents random small
+    servers from silently getting gate/prefilter bypass."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=888,
+            name="SomeStrangerServer",
+            owner_id=111111,
+            member_count=4,
+            cached_members=set(),
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+# ── Size edge cases ──────────────────────────────────────────────────────
+
+
+def test_member_count_zero_is_not_friend_tier(monkeypatch):
+    """member_count=0 means Discord hasn't populated it yet (or the
+    guild literally has no members, which is a weird state). Either
+    way, don't classify — we can't tell if it's small."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="Unknown",
+            owner_id=369485175329128448,
+            member_count=0,
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+def test_member_count_none_is_not_friend_tier(monkeypatch):
+    """Same as above but for the None case — member_count attribute
+    missing entirely, e.g. on an unusual guild type."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="Unknown",
+            owner_id=369485175329128448,
+            member_count=None,
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+def test_guild_at_max_members_is_not_friend_tier(monkeypatch):
+    """Strict inequality: a guild at the cap is not small enough.
+    Prevents creep — 25 members is a firm upper bound, not a fuzzy one."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="Edge",
+            owner_id=369485175329128448,
+            member_count=bb_discord._FRIEND_GUILD_MAX_MEMBERS,
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+# ── Config / input edge cases ────────────────────────────────────────────
+
+
+def test_unset_admin_discord_id_skips_classification(monkeypatch):
+    """If ADMIN_DISCORD_ID isn't set, we can't classify — return empty
+    without inspecting guilds."""
+    monkeypatch.delenv("ADMIN_DISCORD_ID", raising=False)
+    monkeypatch.setattr(cfg_mod, "_config", None)
+    client = _FakeClient([
+        _FakeGuild(1, "Any", 1, 4),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+def test_non_integer_admin_id_falls_back_to_owner_only(monkeypatch):
+    """If ADMIN_DISCORD_ID is mis-typed (not a valid int snowflake),
+    the member-check path is disabled but owner-check still works.
+    Defensive against operator error in .env."""
+    _set_admin(monkeypatch, "not-a-number")
+    # Owner-match branch uses string comparison, so owner_id and
+    # admin_id as strings will still compare correctly even if the
+    # admin_id isn't parseable as int.
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="FriendServer",
+            owner_id=123,
+            member_count=4,
+            cached_members={123},
+        ),
+    ])
+    # admin_id is "not-a-number"; owner_id stringifies to "123";
+    # they don't match. Member cache path is disabled. Not friend-tier.
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+def test_multiple_guilds_mixed_classification(monkeypatch):
+    """End-to-end: three guilds, only the two that qualify get flagged."""
+    _set_admin(monkeypatch, "369485175329128448")
+    admin_int = 369485175329128448
+    client = _FakeClient([
+        _FakeGuild(guild_id=1, name="OwnedSmall",
+                   owner_id=admin_int, member_count=4),
+        _FakeGuild(guild_id=2, name="FriendInvite",
+                   owner_id=999,
+                   member_count=8,
+                   cached_members={admin_int}),
+        _FakeGuild(guild_id=3, name="BigCommunity",
+                   owner_id=admin_int, member_count=300),
+    ])
+
+    result = bb_discord.classify_friend_guilds(client)
+
+    assert "1" in result
+    assert "2" in result
+    assert "3" not in result
+
+
+# ── Diagnostic logging ───────────────────────────────────────────────────
+
+
+def test_skip_reason_logged_for_non_small_guild(monkeypatch, caplog):
+    """When a guild is skipped because it's too large, the startup log
+    must say so explicitly — not just the aggregate 'N of M total'
+    count. This is the fix for the 2026-04-23 pilot's silent failure."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="Big",
+            owner_id=369485175329128448,
+            member_count=500,
+        ),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="brendbot.discord"):
+        bb_discord.classify_friend_guilds(client)
+
+    relevant = [r for r in caplog.records if "Friend-tier skipped" in r.getMessage()]
+    assert len(relevant) == 1
+    msg = relevant[0].getMessage()
+    assert "not small" in msg
+    assert "members=500" in msg
+
+
+def test_skip_reason_logged_for_owner_and_member_miss(monkeypatch, caplog):
+    """The killer diagnostic: a guild where the admin isn't owner AND
+    isn't in the member cache. Pre-fix this produced silent zero;
+    now it logs both failures."""
+    _set_admin(monkeypatch, "369485175329128448")
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="Mystery",
+            owner_id=999,
+            member_count=5,
+            cached_members=set(),
+        ),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="brendbot.discord"):
+        bb_discord.classify_friend_guilds(client)
+
+    skipped = [r for r in caplog.records if "Friend-tier skipped" in r.getMessage()]
+    assert len(skipped) == 1
+    msg = skipped[0].getMessage()
+    assert "owner_id='999'" in msg
+    assert "admin_id='369485175329128448'" in msg
+    assert "admin not in member cache" in msg
+
+
+def test_detection_reason_logged_for_successful_classification(monkeypatch, caplog):
+    """When a guild IS classified, the log line must show which signal
+    fired (owner_match=True, admin_cached=True, or both) so operators
+    can see the decision path."""
+    _set_admin(monkeypatch, "369485175329128448")
+    admin_int = 369485175329128448
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=777,
+            name="FriendServer",
+            owner_id=999,
+            member_count=8,
+            cached_members={admin_int},
+        ),
+    ])
+
+    with caplog.at_level(logging.INFO, logger="brendbot.discord"):
+        bb_discord.classify_friend_guilds(client)
+
+    detected = [r for r in caplog.records if "Friend-tier guild detected" in r.getMessage()]
+    assert len(detected) == 1
+    msg = detected[0].getMessage()
+    assert "owner_match=False" in msg
+    assert "admin_cached=True" in msg
+    assert "members=8" in msg

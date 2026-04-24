@@ -221,12 +221,35 @@ The included `setup.sh` handles everything:
 | `DISCORD_TOKEN` | Yes | Your Discord bot token |
 | `BOT_NAME` | No | Bot's name for mention detection (default: `brendbot`) |
 | `ADMIN_DISCORD_ID` | Yes | Your Discord user ID (gets admin tier) |
-| `TRUSTED_DISCORD_IDS` | No | Comma-separated user IDs for trusted tier |
+| `TRUSTED_DISCORD_IDS` | No | Comma-separated user IDs for trusted tier. Used for permissions AND as an extended owner-trust signal for friend-tier classification — a server whose Discord owner is in this list counts as friend-tier. |
+| `FRIEND_GUILD_IDS` | No | Comma-separated guild snowflakes. Any guild listed here is unconditionally classified as friend-tier, bypassing the auto-detection. Escape hatch for cases where the auto-classifier can't see the trust signal. |
 | `CLAUDE_MODEL` | No | Model to use (default: `sonnet`) |
+| `FRIEND_TIER_DISABLE_MEMBERS_INTENT` | No | Set to any value to skip requesting the `members` privileged Discord intent. Use only if you haven't enabled that intent in the Developer Portal — otherwise the bot will fail to log in. |
 
 ### Friend-tier servers
 
-If you own the Discord server the bot is connected to and the server has fewer than 25 members, brendbot auto-classifies it as **friend-tier** at startup: the content gate is skipped entirely and the haiku engagement prefilter is bypassed on any message the bot would have considered ambiguous. This replaces the earlier `OWNER_GUILD_ID` env var — auto-detection removes the "feature flag you have to remember to flip" failure mode. Large or not-owner-owned servers retain the full defensive gates.
+A server is classified as **friend-tier** if the bot is in it AND at least one of these is true:
+
+1. The guild id is listed in `FRIEND_GUILD_IDS` (unconditional, bypasses size cap).
+2. You own the server AND it has under 25 members.
+3. The server owner's id is in `TRUSTED_DISCORD_IDS` AND it has under 25 members.
+4. You are a cached member of the server (requires the `members` privileged intent enabled in the Discord Developer Portal) AND it has under 25 members.
+
+Friend-tier servers skip the content gate entirely and bypass the haiku engagement prefilter on ambiguous messages. The bot starts up logging a line per guild with the classification result and reasoning so you can see what fired and what didn't.
+
+**If your server isn't auto-classifying:** The startup log will tell you why. Most common fix is one of:
+
+```
+# Option A — add the actual Discord server owner's id to the trust list
+TRUSTED_DISCORD_IDS=976170794013044746
+
+# Option B — just list the guild id as a direct override
+FRIEND_GUILD_IDS=1277236474231787552
+
+# Option C — enable the members intent in Discord Developer Portal
+# (Bot settings → Privileged Gateway Intents → SERVER MEMBERS INTENT)
+# then restart. No env var change needed.
+```
 
 ### Access Tiers
 

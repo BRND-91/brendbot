@@ -1057,3 +1057,192 @@ just tells the bot what the tags mean.
 
 - 290 → 295 passed (5 new log-helper tests).
 - No regressions in the surviving suite.
+
+
+## Structural honesty — 2026-04-24 (PR #23)
+
+Six-point structural change to make the bot architecturally incapable
+of lying about its own runtime. The 2026-04-23 pilots demonstrated
+that each prior soul-rule patch (PR #22 anti-fabrication rule, PR #21
+friend-tier gate bypass, PR #20 owner-guild bypass) addressed the
+specific surface that had just burned and missed the next one. The
+pattern itself was the bug: we were treating a structural failure as
+a tuning problem.
+
+The literature converged on this in 2025: OpenAI's September 2025
+"Why language models hallucinate" paper shows that training and
+evaluation incentives actively reward confident guessing over
+calibrated uncertainty; CoT-faithfulness work (Arcuschin et al.
+2503.08679, "Lie to Me" 2603.22582) demonstrates that models
+produce post-hoc rationalizations that do not reflect their actual
+reasoning, at measurable rates; the abstention literature
+(AbstentionBench 2506.09038, "Know Your Limits" TACL 2025) finds
+that training LLMs to say "I don't know" reliably is unsolved and
+that scaling does not fix it — reasoning fine-tuning actually
+*degrades* abstention by 24%. Soul rules cannot substitute for
+external grounding.
+
+The naming choice in this PR tracks the literature's split between
+"hallucination" (unintentional falsehood, obscures mechanism) and
+"lying" (functionally false output regardless of intent). We use
+the functional definition throughout the code and docs — a
+statement that implies between-turn continuity is a lie, regardless
+of whether the model "intended" to mislead, because the user impact
+is identical.
+
+### The six points
+
+**1. Externalized state — ``brendbot/obs.py``.** Every category of
+self-report now has a logs/*.jsonl file as the source of truth:
+tool_calls, image_prompts (existing from PR #22), music_gens,
+turn_events, gate_events, errors. A single ``append_jsonl`` primitive
+handles parent-dir creation, size-based rotation (10MB, 10 files,
+oldest dropped), unicode preservation, and exception swallowing.
+Observability must never block the operation it's observing. 19
+unit tests pin the semantics; 6 integration tests pin that the
+actual instrumented sites reach the log files with the right schema.
+
+**2. Heartbeat framing in the soul — RUNTIME section.** Added to
+both ``GROUP_SOUL.md`` and ``SOUL.md`` above BEHAVIOR. Explicitly
+tells the model it does not persist between turns and that any
+continuity construction — "I was working on it," "I've been
+thinking," "still going," "about to send," "while I was" — is a
+lie when applied across turns. Gives the model the concept needed
+to refuse those shapes. Also instructs on the warm-decline pattern:
+"no, sorry, I don't have a record of that" beats "yeah, got it."
+
+**3. Read-before-speak — SELF-REPORT RULES section.** Added under
+PROCESS in GROUP_SOUL.md (with a compact version in SOUL.md).
+Category-by-category table of question classes with the canonical
+``tac … | grep`` lookup commands. The bot is explicitly directed
+to read the log before answering any self-narrative question, and
+to say "no record" when a log has no matching entry rather than
+reconstruct. Reading is not optional on these questions.
+
+**4. Infrastructure-level event surfacing — ``brendbot/runtime_events.py``.**
+The runtime speaks to Discord independent of the model. Four
+primitives:
+
+- ``mark_long_turn`` / ``clear_long_turn`` — attach/remove a ``🔄``
+  reaction on the triggering message while a turn exceeds a
+  threshold.
+- ``LongTurnTimer`` — async timer wrapping the above with
+  cancellation and idempotent stop.
+- ``signal_runtime_error`` — post ``⚠️ [runtime] category: detail``
+  to the channel on infra failures (API 529, subprocess crash,
+  classifier error). Visibly distinct from model output.
+- ``signal_thinking_typing`` — context manager wrapping Discord's
+  native ``channel.typing()`` for "bot is typing…" indication on
+  genuine work.
+
+Gate refusals now prefix with ``🚧 [gate]`` so the user can tell
+an external-decision message from a model response. The clean
+refusal text still goes to ``gate_events.jsonl`` without the
+prefix so bot readback returns substantive content.
+
+Wire points: ``session._receive_loop`` ProcessError and generic
+Exception handlers dispatch ``signal_runtime_error`` to the
+channel. Gate refusal sites in ``session_gate.py`` apply the
+``GATE_PREFIX``.
+
+**5. Phantom-turn discriminator tightened.** Added Case D: a
+thinking-only + stop_reason=end_turn turn is NOT an intentional
+silent drop when the user's message was a task request. The
+``_looks_like_task_request`` heuristic regexes over imperative
+verbs (``make``, ``send``, ``run``, ``generate``, ``check``,
+``fix``, ``build``, ``write``, ``edit``, and ~40 others) at or
+near the start of the user message, allowing an optional @mention
+and name-address preamble. When the heuristic matches and the
+turn produced no text and no tool calls, the fallback fires
+instead of being suppressed, and an ``errors.jsonl`` entry is
+written as ``PhantomTurnStall``. 40 heuristic unit tests plus 4
+discriminator-level integration tests.
+
+Direct pilot regression: at 22:33 on 2026-04-23 Brendan asked for
+"two changes" on a song, the bot ended the turn with thinking
+only, and the discriminator suppressed the fallback. He had to
+re-prompt. Under the new discriminator, that same shape fires a
+fallback and logs the stall.
+
+**6. Gate refusal visibility + readback.** Already covered by (1)
+and (4): gate refusals write to ``gate_events.jsonl`` keyed by
+``message_id``, and the Discord-visible refusal carries the
+``🚧 [gate]`` prefix. The soul's SELF-REPORT RULES direct the bot
+to answer "why did you refuse" / "what are you responding to" by
+grepping the log — an explicit substitute for the prior
+reconstruct-from-memory approach that produced wrong answers.
+
+### Why this is not another whack-a-mole
+
+The 2026-04-23 pilots showed a pattern: soul rule → works on
+named surface → next pilot exposes a new surface → new soul rule.
+The literature's framing is clearer: models are structurally
+incapable of reliable self-narration, and attempting to train this
+in (reasoning fine-tuning) makes abstention *worse*. The only
+durable response is to remove the model's license to self-narrate
+from memory and force it through external grounding. The logs are
+the ground; the soul rules tell the model how to consult the
+ground; the infrastructure surfaces events the model never saw so
+the user isn't dependent on the model's self-account.
+
+This PR ships all six points together because each depends on the
+others. Logs alone are inert without rules that direct reading
+from them. Rules alone are whack-a-mole without logs to read.
+Runtime signalling alone is visible-but-uninterpretable without
+the model knowing to consult the log for context. Shipping in
+isolation would reproduce the fix-one-expose-next pattern.
+
+### Size impact
+
+- New modules: ``brendbot/obs.py`` (~250 lines),
+  ``brendbot/runtime_events.py`` (~230 lines).
+- New tests: ``tests/test_obs.py`` (19 cases),
+  ``tests/test_obs_integration.py`` (6 cases),
+  ``tests/test_runtime_events.py`` (13 cases),
+  ``tests/test_task_request_heuristic.py`` (40 cases),
+  ``tests/test_phantom_discriminator.py::TestCaseD_TaskRequestStall``
+  (4 cases).
+- Soul additions: ``GROUP_SOUL.md`` +40 lines, ``SOUL.md`` +20 lines.
+- Code instrumentation: ``session.py``, ``session_handler.py``,
+  ``session_gate.py``, ``classifier_pool.py`` — additive log
+  writes at existing fire points, GATE_PREFIX applied at refusal
+  sites, phantom-turn Case D branch.
+
+Net: ~1,500 lines added (including 1,000+ of test coverage).
+
+### Post-stage pytest
+
+- 295 → 377 passed (+82 new tests).
+- No regressions in the surviving suite.
+
+### Literature cited in inline comments and module docstrings
+
+- Why language models hallucinate (OpenAI, Sept 2025)
+- Can LLMs Lie? Investigation beyond Hallucination (arXiv 2509.03518)
+- Chain-of-Thought Reasoning In The Wild Is Not Always Faithful
+  (arXiv 2503.08679)
+- Lie to Me: How Faithful Is Chain-of-Thought Reasoning in Open-
+  Weight Reasoning Models? (arXiv 2603.22582)
+- ELEPHANT: Measuring social sycophancy (arXiv 2505.13995)
+- AbstentionBench: Reasoning LLMs Fail on Unanswerable Questions
+  (arXiv 2506.09038)
+- Know Your Limits: Survey of Abstention in LLMs (TACL 2025)
+- VIGIL: Reflective Runtime for Self-Healing LLM Agents
+  (arXiv 2512.07094)
+- LLM Agents for Interactive Workflow Provenance (arXiv 2509.13978)
+
+### What this PR does NOT address
+
+- Friend-tier auto-classification debug. The 2026-04-23 pilots
+  showed ``Friend-tier classification complete: 0 friend-tier
+  guild(s) of 1 total`` on a guild Brendan owns with 4 members;
+  the auto-detection isn't matching. Probable cause: ``owner_id``
+  mismatch or Discord not populating ``member_count`` at startup.
+  Separate fix — should log the actual values being checked.
+- Episodes-table regression from the music-knowledge migration.
+  ``_ensure_migrated``'s ``_migrated_paths`` cache defeats the
+  hotfix when the migration drops or replaces the table. Needs a
+  cache-invalidation signal tied to migration steps.
+- The cron-replay bug Brendan's local session already patched
+  (``load_persisted_crons`` expiry filter). That fix lives on his
+  local master; will merge cleanly on pull.

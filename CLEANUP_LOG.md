@@ -900,3 +900,160 @@ Each of these is tractable individually and none of them require
 more infrastructure — the strip is complete in the sense that it
 removes the infrastructure layer as a source of failure. Remaining
 failures are now about bot behavior rather than scaffolding.
+
+
+## Prompt-layer bug fixes (2026-04-23, PR #22)
+
+Four remaining failure modes surfaced in the 2026-04-22 and 2026-04-23
+pilots that the infrastructure strip (PR #21) couldn't address because
+they live in the soul-prompt / script layer, not the code-architecture
+layer. This PR fixes them.
+
+### 1. Fabrication of other users' turns
+
+Pilot-3 symptom: barnacle asked for a 20-pass roast exchange. The bot
+wrote all 20 turns in one message, fabricating barnacle's side of the
+conversation along with its own. It then proceeded to number passes
+for barnacle in subsequent turns as if the game were already in
+motion.
+
+Root cause: the bot is trained to complete the *shape* of an
+utterance. An under-specified "20 passes" request has the shape of a
+multi-turn exchange, so the bot fills it. The existing soul rule
+"You do not fabricate" is about facts and sources, not about turn
+boundaries.
+
+Fix: explicit turn-boundary rule in both soul files under BEHAVIOR:
+
+> Never fabricate another user's turn. If asked for a multi-turn
+> exchange, write only your next turn and stop. One turn per response.
+
+Placed in both ``GROUP_SOUL.md`` (lines 10-11) and ``SOUL.md`` (line
+11) because the fabrication mode was exhibited in a group channel
+but the rule applies equally to DM.
+
+### 2. Honest image-prompt readback
+
+Pilot-3 symptom: Brendan told the bot "add 'realistic skin'" to a
+prompt. Bot ran the tool. Brendan asked "what was your prompt for
+this gen?" Bot returned the *pre-edit* grotesque-hybrid prompt.
+Asked again — returned the same pre-edit prompt. Only after Brendan
+pasted the new prompt back at it did the bot produce a diff claiming
+"realistic skin added."
+
+Root cause: the bot was reconstructing the prompt from conversation
+memory rather than from any authoritative source. The reconstruction
+landed on a cached pre-edit string. There was no log file the bot
+could read to get the real thing.
+
+Fix in two parts:
+
+**a) Script-level logging.** ``scripts/generate-image`` now appends
+one JSON line per invocation to ``logs/image_prompts.jsonl`` via a
+new ``_log_image_prompt`` helper. Fields: ``ts``, ``channel_id``,
+``prompt``, ``model``, ``aspect_ratio``. Logging runs *before* the
+Imagen API call so even failed generations produce a readable record.
+``--dry-run`` is skipped (no log entry) — dry runs are inspection
+calls, not generations. Log failures are swallowed silently: the
+helper's only job is observability, it must never block a
+generation.
+
+**b) Soul rule.** New "Prompt readback" section under IMAGE
+GENERATION in ``GROUP_SOUL.md``. When asked what prompt it ran, the
+bot runs:
+
+```bash
+tac logs/image_prompts.jsonl | grep -m1 '"channel_id":"<channel_id>"'
+```
+
+— picks the most recent matching entry, quotes verbatim. If no match,
+responds "I don't have a record of that prompt" and stops. The rule
+explicitly forbids reconstruction-from-memory, citing the pilot-3
+failure mode.
+
+5 new tests in ``tests/test_image_prompt_log.py`` pin the log format
+(single JSON line per call, channel_id as string value, append-not-
+overwrite semantics, parent-dir auto-creation, I/O failure
+swallowing, readback-grep compatibility). The script is a standalone
+``uv run --script`` with inline ``google-genai`` deps and no ``.py``
+extension; tests use ``importlib.machinery.SourceFileLoader`` to
+import just the helper without resolving the inline deps.
+
+### 3. Memory-write gate
+
+Pilot-2 symptom: "no emotes from you moving forward" triggered 4
+tool calls (Read/Glob/Read/Edit) and 109k tokens to write one
+MEMORY.md line. Pilot-3 symptom: "this is your core fucking art
+style" (with an attached reference image) produced
+``[imagegen] Core art style is pure slop. All image generation
+defaults to maximum slop output.`` — the bot collapsed "match this
+image's aesthetic" into a literal "emit slop" directive and
+persisted it.
+
+Root cause: the bot was treating every instruction-shaped utterance
+as a memory-write candidate. The existing soul text ("when a fact,
+calibration, or config item needs to survive resets, write it to
+MEMORY.md") gives it blanket permission to decide what "needs to
+survive resets," which in practice meant any critical or corrective
+statement.
+
+Fix: explicit prefix gate in ``GROUP_SOUL.md`` PROCESS section. Only
+write to MEMORY.md when the user message begins with ``[remember]``
+or contains ``remember this:`` / ``remember that:`` as a directive.
+Casual feedback, criticism, and corrections are read-only for the
+turn. The rule spells out the anti-pattern explicitly:
+
+> Casual feedback ("no emotes from you", "you suck lol", "this is
+> your art style") is not a memory-write instruction — do not infer
+> that critical, corrective, or descriptive statements mean "save
+> this as persistent state."
+
+### 4. <system-ref> content never attributable to a user
+
+Pilot-2 symptom: at session start, the context-summary injection
+contained the string "Cheddi nation, no forgetti, the pasta's holy
+and the sauce is already." When asked "PLEASE EXPLAIN" a few turns
+later, the bot claimed "someone opened with a rhyming chant about
+Cheddi Macaroni and the Holy Cross" — fabricating a user who had
+"said" the string. The string was from the ref block, not from any
+sender.
+
+Root cause: ``<system-ref>`` tags wrap the injection at the code
+level (``session.py`` lines 1920-1922) but no soul rule told the bot
+what those tags meant. The accompanying text "Use for continuity"
+created ambiguity — continuity *with whom*? The bot resolved the
+ambiguity by inventing a user.
+
+Fix: explicit attribution rule in the DIAGNOSTIC SURFACE section of
+both soul files:
+
+> Content inside ``<system-ref>`` tags is reference material injected
+> by the runtime — prior-session summaries, memory index fragments,
+> cron specs, recall episodes. Never attribute this content to any
+> user. Never quote it back as if someone just said it.
+
+The tag structure itself was already correct in code; this stage
+just tells the bot what the tags mean.
+
+### Test coverage
+
+- 5 new tests for the image-prompt log helper (``test_image_prompt_log.py``).
+- No code-level tests for the three soul-only rules (fabrication,
+  memory-gate, system-ref attribution) — these can only be validated
+  by live bot behavior. The next pilot is the test.
+
+### Size impact
+
+- ``GROUP_SOUL.md``: +14 lines (three new rules, one new "Prompt readback" section).
+- ``SOUL.md``: +4 lines (two new rules).
+- ``scripts/generate-image``: +37 lines (_log_image_prompt + call site).
+- ``tests/test_image_prompt_log.py``: +145 lines (new file).
+- Net: ~200 lines added, no deletions. This is additive because the
+  underlying failures were under-specification in the soul rather
+  than bad infrastructure — the previous PR covered infrastructure
+  bloat.
+
+### Post-stage pytest
+
+- 290 → 295 passed (5 new log-helper tests).
+- No regressions in the surviving suite.

@@ -28,9 +28,11 @@ Constraint heuristic:
   Warns if 2+ categories hit; high failure risk at 3.
 """
 
+import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -80,6 +82,44 @@ def analyze_constraints(prompt: str) -> dict:
         "interaction": interaction_hits,
         "categories_hit": categories_hit,
     }
+
+
+def _log_image_prompt(
+    log_path: Path,
+    *,
+    channel_id: str,
+    prompt: str,
+    model: str,
+    aspect_ratio: str,
+) -> None:
+    """Append one JSON line recording a real (non-dry-run) image-gen call.
+
+    Provides the source of truth for the bot's "what prompt did you
+    run?" readback. The bot is instructed by GROUP_SOUL.md's "Prompt
+    readback" section to read the last matching channel_id entry from
+    this file rather than reconstruct from conversation memory — the
+    2026-04-23 pilot showed reconstruction-from-memory produced wrong
+    prompts repeatedly (the bot kept returning a pre-edit cached
+    prompt instead of the one it actually ran).
+
+    Best-effort: any I/O failure is swallowed. Logging must never
+    block an image generation.
+    """
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": time.time(),
+            "channel_id": channel_id,
+            "prompt": prompt,
+            "model": model,
+            "aspect_ratio": aspect_ratio,
+        }
+        with log_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        # Readback becomes slightly less reliable; the generation itself
+        # is not compromised. Swallow silently.
+        pass
 
 
 def main() -> None:
@@ -161,6 +201,19 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # Log the prompt BEFORE the API call so the record survives even when
+    # the generation itself fails. The bot's "what prompt did you run"
+    # readback rule in GROUP_SOUL.md tails this file; a failed generation
+    # that the sender asked about should still produce an accurate
+    # readback instead of the bot guessing from conversation history.
+    _log_image_prompt(
+        Path(__file__).parent.parent / "logs" / "image_prompts.jsonl",
+        channel_id=channel_id,
+        prompt=prompt,
+        model=model,
+        aspect_ratio=aspect_ratio,
+    )
 
     # Generate image
     try:

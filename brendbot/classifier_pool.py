@@ -458,11 +458,37 @@ async def content_gate_classify(user_text: str) -> "ContentGateResult":
                     "content_gate_classify retry still parse_error; failing conservative. raw=%r",
                     retry_raw[:200],
                 )
+                # Two parse failures in a row is structural, not
+                # transient. Log it so the bot can honestly tell the
+                # user "the classifier gave up" if asked.
+                try:
+                    from brendbot.obs import log_error
+                    log_error(
+                        session_key="classifier_pool",
+                        error_class="ClassifierParseError",
+                        error_msg=f"retry also unparseable. raw={retry_raw[:200]!r}",
+                        recoverable=False,
+                        detail={"path": "content_gate_classify",
+                                "first_raw": raw_text[:200]},
+                    )
+                except Exception:
+                    pass
 
         content_cache.put(prompt, result, semantic_key=user_text)
         return result
     except Exception as e:
         logger.warning("content_gate_classify SDK error: %s", e)
+        try:
+            from brendbot.obs import log_error
+            log_error(
+                session_key="classifier_pool",
+                error_class=f"ClassifierSDKError:{type(e).__name__}",
+                error_msg=str(e),
+                recoverable=True,
+                detail={"path": "content_gate_classify"},
+            )
+        except Exception:
+            pass
         return ClassifierResult(
             criteria={"_parse_error": 10.0},
             reasoning=f"classifier SDK error: {type(e).__name__}",

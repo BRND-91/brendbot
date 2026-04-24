@@ -1,0 +1,127 @@
+{
+  "name": "dnb",
+  "display_name": "Drum & Bass / Jungle",
+  "tempo_range": [165, 180],
+  "default_tempo": 174,
+  "default_mode": "minor",
+  "common_modes": ["minor", "dorian", "phrygian"],
+  "chord_progressions": [
+    {
+      "id": "dnb_minor_static",
+      "roman": ["i", "i", "VI", "VII"],
+      "mode": "minor",
+      "role": "drop",
+      "extensions": [],
+      "description": "Minor static loop — dnb signature, root + bVI/bVII bass"
+    },
+    {
+      "id": "dnb_liquid_jazzy",
+      "roman": ["i", "VI", "III", "VII"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["maj7", "9"],
+      "description": "Liquid dnb — extended chords for atmospheric drop"
+    },
+    {
+      "id": "dnb_neurofunk_dark",
+      "roman": ["i", "bII", "i", "bV"],
+      "mode": "phrygian",
+      "role": "drop",
+      "extensions": [],
+      "description": "Neurofunk dark — phrygian flat-2 with tritone"
+    },
+    {
+      "id": "dnb_jungle_2chord",
+      "roman": ["i", "VII"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": [],
+      "description": "Classic jungle two-chord loop — root oscillation"
+    },
+    {
+      "id": "dnb_breakbeat_chill",
+      "roman": ["i", "iv", "VI", "v"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": ["m7"],
+      "description": "Chill dnb — dorian, minor v preserves modal feel"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "dnb_amen_break",
+      "tempo_range": [170, 180],
+      "kick_pattern": "1.0,2.5",
+      "snare_pattern": "2.0,4.0,4.5",
+      "hat_pattern": "16ths_amen",
+      "ghost_snare": true,
+      "description": "Amen break feel — broken syncopated snare, ghost notes"
+    },
+    {
+      "id": "dnb_two_step",
+      "tempo_range": [170, 178],
+      "kick_pattern": "1.0,3.5",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "16ths",
+      "ghost_snare": true,
+      "description": "Two-step dnb — kick on 1 and offbeat 3.5, snare on backbeat"
+    },
+    {
+      "id": "dnb_neuro_tight",
+      "tempo_range": [170, 180],
+      "kick_pattern": "1.0,2.5",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "16ths_closed",
+      "ghost_snare": false,
+      "description": "Neurofunk tight grid — clean drum programming"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "dnb_classic",
+      "sections": [
+        {"name": "intro", "bars": 16, "density": "sparse"},
+        {"name": "build_a", "bars": 16, "density": "rising"},
+        {"name": "drop_a", "bars": 32, "density": "full"},
+        {"name": "breakdown", "bars": 16, "density": "medium"},
+        {"name": "build_b", "bars": 8, "density": "rising"},
+        {"name": "drop_b", "bars": 32, "density": "full"},
+        {"name": "outro", "bars": 16, "density": "fading"}
+      ],
+      "description": "Classic dnb — two drops, mid-track breakdown"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "dnb_reese_bass",
+      "role": "bass",
+      "abc": "L:1/4\nK:Am\n\"Am\"A,2 A, A | \"F\"F,2 F, F | \"G\"G,2 G, G | \"Am\"A,4",
+      "description": "Reese-style detuned saw bass — quarter notes with rhythmic variation"
+    },
+    {
+      "id": "dnb_liquid_pad",
+      "role": "drop_lead",
+      "abc": "L:1/2\nK:Am\n\"Am9\"[ACEG] | \"Fmaj7\"[FACE] | \"Cmaj7\"[CEGB] | \"G\"[GBD]",
+      "description": "Liquid pad chord stabs — long sustained extended chords"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "tempo_165_to_180",
+      "syncopated_snare_pattern",
+      "active_bass_with_subgroove",
+      "16th_note_grid"
+    ],
+    "must_avoid": [
+      "tempo_below_160",
+      "four_on_floor_kick_sustained",
+      "swung_8ths_grooves"
+    ],
+    "instrumentation_hints": [
+      "amen_break_or_synthesized_drums",
+      "reese_or_neuro_bass",
+      "filtered_pad_or_chord_stabs",
+      "vocal_chops_optional"
+    ]
+  }
+}

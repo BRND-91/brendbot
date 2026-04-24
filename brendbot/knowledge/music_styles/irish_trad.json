@@ -1,0 +1,146 @@
+{
+  "name": "irish_trad",
+  "display_name": "Irish Traditional",
+  "tempo_range": [100, 130],
+  "default_tempo": 116,
+  "default_mode": "dorian",
+  "common_modes": ["dorian", "mixolydian", "minor", "major"],
+  "chord_progressions": [
+    {
+      "id": "trad_dorian_basic",
+      "roman": ["i", "VII", "i", "VII"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": [],
+      "description": "Dorian shuttle — i-VII alternation, common in reels"
+    },
+    {
+      "id": "trad_mixolydian_drone",
+      "roman": ["I", "VII", "I", "VII"],
+      "mode": "mixolydian",
+      "role": "verse",
+      "extensions": [],
+      "description": "Mixolydian — major-feel with bVII, jig-friendly"
+    },
+    {
+      "id": "trad_dorian_4_chord",
+      "roman": ["i", "VII", "iv", "i"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": [],
+      "description": "Dorian with iv color — sad reel feel"
+    },
+    {
+      "id": "trad_mixolydian_lift",
+      "roman": ["I", "v", "VII", "I"],
+      "mode": "mixolydian",
+      "role": "B_section",
+      "extensions": [],
+      "description": "Lift to v then back — common B section"
+    },
+    {
+      "id": "trad_minor_air",
+      "roman": ["i", "iv", "VII", "III"],
+      "mode": "minor",
+      "role": "slow_air",
+      "extensions": [],
+      "description": "Slow air — natural minor with gentler harmonic motion"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "trad_reel",
+      "tempo_range": [100, 124],
+      "meter": "4/4",
+      "kick_pattern": "bodhrán_dotted",
+      "snare_pattern": "rim_back",
+      "hat_pattern": "16ths_implied",
+      "description": "4/4 reel — bodhrán plays dotted rhythms, 16th-note implication"
+    },
+    {
+      "id": "trad_jig",
+      "tempo_range": [110, 130],
+      "meter": "6/8",
+      "kick_pattern": "1,4_per_beat_group",
+      "description": "6/8 jig — two beat groups per bar, kick on 1 and 4"
+    },
+    {
+      "id": "trad_slip_jig",
+      "tempo_range": [110, 130],
+      "meter": "9/8",
+      "kick_pattern": "1,4,7",
+      "description": "9/8 slip jig — three beat groups per bar"
+    },
+    {
+      "id": "trad_air_rubato",
+      "tempo_range": [60, 90],
+      "meter": "free",
+      "description": "Slow air — rubato, no fixed tempo, breath-driven phrasing"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "trad_aabb_reel",
+      "sections": [
+        {"name": "A1", "bars": 8, "density": "melody"},
+        {"name": "A2", "bars": 8, "density": "melody"},
+        {"name": "B1", "bars": 8, "density": "melody"},
+        {"name": "B2", "bars": 8, "density": "melody"}
+      ],
+      "description": "Standard AABB form for reel/jig — 32 bars total, repeat twice"
+    },
+    {
+      "id": "trad_set_three_tunes",
+      "sections": [
+        {"name": "tune1_AABB", "bars": 32, "density": "melody"},
+        {"name": "tune1_AABB_repeat", "bars": 32, "density": "melody"},
+        {"name": "tune2_AABB", "bars": 32, "density": "melody"},
+        {"name": "tune2_AABB_repeat", "bars": 32, "density": "melody"},
+        {"name": "tune3_AABB", "bars": 32, "density": "melody"},
+        {"name": "tune3_AABB_repeat", "bars": 32, "density": "melody"}
+      ],
+      "description": "A set of three tunes — common live performance arrangement"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "trad_dorian_reel_phrase",
+      "role": "verse_melody",
+      "abc": "L:1/8\nM:4/4\nK:Edor\n\"Em\"E2 BE GE BE | \"D\"FA dF AF dF | \"Em\"E2 BE GE BE | \"D\"FAdf gfed",
+      "description": "E dorian reel phrase — running 8ths with returning tonic"
+    },
+    {
+      "id": "trad_jig_phrase",
+      "role": "verse_melody",
+      "abc": "L:1/8\nM:6/8\nK:Dmaj\n\"D\"DFA AFD | \"G\"GBd dBG | \"A\"ceA Ace | \"D\"d2A FED",
+      "description": "D major jig in 6/8 — arpeggiated chord movement"
+    },
+    {
+      "id": "trad_air_melody",
+      "role": "slow_air",
+      "abc": "L:1/4\nK:Am\n\"Am\"A2 c | B2 A | \"G\"G2 E | A2 z | \"F\"c2 e | \"E\"e2 d | \"Am\"A4",
+      "description": "Slow air — sustained notes, breath phrasing"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "dorian_or_mixolydian_or_natural_minor",
+      "stepwise_or_arpeggiated_melody",
+      "raised_6th_in_dorian_OR_flat_7th_in_mixolydian",
+      "AABB_or_AABB_form"
+    ],
+    "must_avoid": [
+      "leading_tone_in_dorian_mode",
+      "harmonic_minor_in_reel",
+      "four_on_floor_kick",
+      "tempo_above_135"
+    ],
+    "instrumentation_hints": [
+      "fiddle",
+      "tin_whistle_or_low_whistle",
+      "uilleann_pipes",
+      "bouzouki_or_guitar_dadgad",
+      "bodhrán"
+    ]
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "name": "jpop",
+  "display_name": "J-Pop / Japanese Pop",
+  "tempo_range": [110, 165],
+  "default_tempo": 130,
+  "default_mode": "major",
+  "common_modes": ["major", "minor", "mixolydian"],
+  "chord_progressions": [
+    {
+      "id": "jpop_royal_road",
+      "roman": ["IVmaj7", "V7", "iii7", "vi"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["maj7", "7", "m7"],
+      "description": "Royal Road progression — IV-V-iii-vi, J-pop signature, Doraemon ending"
+    },
+    {
+      "id": "jpop_descending_4",
+      "roman": ["I", "V", "vi", "iii"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["maj7", "m7"],
+      "description": "Descending bass under sustained tonic — emotional"
+    },
+    {
+      "id": "jpop_4641",
+      "roman": ["IV", "VI", "IV", "I"],
+      "mode": "major",
+      "role": "chorus",
+      "extensions": [],
+      "description": "Chorus lift — IV-VI plagal motion to tonic"
+    },
+    {
+      "id": "jpop_minor_descent",
+      "roman": ["vi", "V", "IV", "iii"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["m7"],
+      "description": "Minor-feel descending — vi as tonal center over major key"
+    },
+    {
+      "id": "jpop_modulation_pivot",
+      "roman": ["I", "VI7", "ii", "V7"],
+      "mode": "major",
+      "role": "bridge",
+      "extensions": ["7", "m7"],
+      "description": "Bridge with secondary dominant — pivots to relative or up a step"
+    },
+    {
+      "id": "jpop_anime_drop",
+      "roman": ["I", "V", "vi", "IV"],
+      "mode": "major",
+      "role": "chorus",
+      "extensions": ["maj7"],
+      "description": "Axis of awesome — I-V-vi-IV, anime opening standard"
+    },
+    {
+      "id": "jpop_minor_ballad",
+      "roman": ["i", "VI", "VII", "i"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m7", "maj7"],
+      "description": "Minor ballad loop — sad J-pop"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "jpop_basic_4_4",
+      "tempo_range": [110, 140],
+      "kick_pattern": "1.0,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "16ths_closed",
+      "description": "Standard pop 4/4 — kick 1 and 3, snare 2 and 4, busy hats"
+    },
+    {
+      "id": "jpop_uptempo_4_4",
+      "tempo_range": [140, 165],
+      "kick_pattern": "1.0,2.5,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "16ths_open_closed",
+      "description": "Up-tempo pop with skip on beat 2 — anime opening energy"
+    },
+    {
+      "id": "jpop_ballad_halftime",
+      "tempo_range": [70, 90],
+      "kick_pattern": "1.0,3.0",
+      "snare_pattern": "3.0",
+      "hat_pattern": "8ths_swung_slight",
+      "description": "Ballad half-time — snare on 3 only, slight swing"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "jpop_standard",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "medium"},
+        {"name": "verse_a", "bars": 16, "density": "medium"},
+        {"name": "pre_chorus", "bars": 8, "density": "rising"},
+        {"name": "chorus_a", "bars": 16, "density": "full"},
+        {"name": "verse_b", "bars": 16, "density": "medium"},
+        {"name": "pre_chorus", "bars": 8, "density": "rising"},
+        {"name": "chorus_b", "bars": 16, "density": "full"},
+        {"name": "bridge", "bars": 16, "density": "shifting"},
+        {"name": "chorus_c", "bars": 32, "density": "full_extended"},
+        {"name": "outro", "bars": 8, "density": "fading"}
+      ],
+      "description": "Standard J-pop arrangement with double-chorus outro"
+    },
+    {
+      "id": "jpop_anime_op",
+      "sections": [
+        {"name": "intro_hook", "bars": 4, "density": "full"},
+        {"name": "verse", "bars": 8, "density": "medium"},
+        {"name": "pre_chorus", "bars": 4, "density": "rising"},
+        {"name": "chorus", "bars": 16, "density": "full"},
+        {"name": "outro_hook", "bars": 8, "density": "full"}
+      ],
+      "description": "Anime opening compact form — 90 seconds total"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "jpop_arp_lead",
+      "role": "verse_melody",
+      "abc": "L:1/8\nK:G\n\"G\"d2 B2 G2 B2 | \"D\"A2 F2 D2 F2 | \"Em\"e2 B2 G2 B2 | \"C\"c2 G2 E2 G2",
+      "description": "Arpeggiated J-pop melody, descending phrases"
+    },
+    {
+      "id": "jpop_chorus_hook",
+      "role": "chorus",
+      "abc": "L:1/4\nK:G\n\"C\"e2 d2 | \"G\"d2 B2 | \"Am\"A2 c2 | \"D\"d2 z2",
+      "description": "Chorus melodic hook — long notes for vocal"
+    },
+    {
+      "id": "jpop_bass_line",
+      "role": "bass",
+      "abc": "L:1/8\nK:G\n\"G\"G,2 D, G,2 D, B,2 G, | \"D\"D,2 A, D,2 F D2 A, | \"Em\"E,2 B, E,2 G B,2 E, | \"C\"C,2 G, C,2 E, G,2 C,",
+      "description": "Active bass line with chord-tone targeting"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "tempo_110_to_165",
+      "active_bass_line",
+      "extended_chords_at_least_maj7_or_m7",
+      "form_with_distinct_pre_chorus"
+    ],
+    "must_avoid": [
+      "phrygian_mode",
+      "swung_grooves_in_uptempo",
+      "tempo_below_100"
+    ],
+    "instrumentation_hints": [
+      "piano",
+      "synth_pad",
+      "electric_guitar_clean",
+      "synth_bass_or_electric_bass",
+      "synth_strings",
+      "vocal_doubling"
+    ]
+  }
+}

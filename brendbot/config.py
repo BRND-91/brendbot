@@ -22,6 +22,16 @@ class Config:
         default_factory=lambda: os.getenv("ADMIN_DISCORD_ID", "")
     )
     trusted_discord_ids: set[str] = field(default_factory=set)
+    # Manual friend-tier override. Comma-separated guild snowflakes
+    # from ``FRIEND_GUILD_IDS``. Any guild listed here is classified
+    # as friend-tier unconditionally, bypassing the owner-match and
+    # member-cache checks. Pragmatic escape hatch for cases where the
+    # automatic classifier can't see the signal — e.g. the admin
+    # isn't the Discord owner of the server (someone else created it)
+    # AND the MEMBERS privileged intent isn't enabled, so the
+    # member-cache fallback is also empty at ``on_ready``. Pilot
+    # 2026-04-24 revealed Pizzacord in exactly this shape.
+    friend_guild_ids: set[str] = field(default_factory=set)
     claude_model: str = field(
         default_factory=lambda: os.getenv("CLAUDE_MODEL", "sonnet")
     )
@@ -57,6 +67,11 @@ class Config:
         if raw:
             self.trusted_discord_ids = {
                 x.strip() for x in raw.split(",") if x.strip()
+            }
+        raw_friend = os.getenv("FRIEND_GUILD_IDS", "")
+        if raw_friend:
+            self.friend_guild_ids = {
+                x.strip() for x in raw_friend.split(",") if x.strip()
             }
 
     def tier_for(self, user_id: str) -> str:

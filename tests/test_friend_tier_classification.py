@@ -306,8 +306,10 @@ def test_skip_reason_logged_for_owner_and_member_miss(monkeypatch, caplog):
 
 def test_detection_reason_logged_for_successful_classification(monkeypatch, caplog):
     """When a guild IS classified, the log line must show which signal
-    fired (owner_match=True, admin_cached=True, or both) so operators
-    can see the decision path."""
+    fired (manual, owner_admin, owner_trusted, admin_cached, or some
+    combination) so operators can see the decision path. PR-25
+    extended the logged fields to distinguish admin-owner from
+    trusted-owner and manual-override."""
     _set_admin(monkeypatch, "369485175329128448")
     admin_int = 369485175329128448
     client = _FakeClient([
@@ -326,6 +328,207 @@ def test_detection_reason_logged_for_successful_classification(monkeypatch, capl
     detected = [r for r in caplog.records if "Friend-tier guild detected" in r.getMessage()]
     assert len(detected) == 1
     msg = detected[0].getMessage()
-    assert "owner_match=False" in msg
+    assert "manual=False" in msg
+    assert "owner_admin=False" in msg
+    assert "owner_trusted=False" in msg
     assert "admin_cached=True" in msg
     assert "members=8" in msg
+
+
+# ── Trusted-owner signal (PR-25) ─────────────────────────────────────────
+
+
+def test_trusted_owner_small_guild_is_friend_tier(monkeypatch):
+    """The 2026-04-24 pilot case: admin isn't the Discord owner, but
+    the owner's id is listed in TRUSTED_DISCORD_IDS. A friend of the
+    admin created the server and invited the bot. This classifies.
+    Works WITHOUT the members privileged intent."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("TRUSTED_DISCORD_IDS", "976170794013044746,other")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="Pizzacord",
+            owner_id=976170794013044746,  # Pizzacord's real owner
+            member_count=4,
+            cached_members=set(),  # admin not cached — members intent off
+        ),
+    ])
+
+    result = bb_discord.classify_friend_guilds(client)
+    assert str(1277236474231787552) in result
+
+
+def test_trusted_owner_large_guild_is_not_friend_tier(monkeypatch):
+    """Trusted-owner + size cap still applies. A trusted friend with
+    a 500-member public community doesn't turn that into friend-tier."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("TRUSTED_DISCORD_IDS", "976170794013044746")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="BigTrustedFriendServer",
+            owner_id=976170794013044746,
+            member_count=500,
+        ),
+    ])
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+def test_admin_id_is_not_counted_as_trusted_owner(monkeypatch):
+    """The admin-owner branch and trusted-owner branch are
+    semantically distinct — admin owning their own server is a
+    different signal from a trusted friend owning one. Confirm the
+    log reflects which branch fired."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("TRUSTED_DISCORD_IDS", "999,888")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="OwnedByAdmin",
+            owner_id=369485175329128448,
+            member_count=4,
+        ),
+    ])
+    import logging as _logging
+    import logging as lg  # noqa: F811 (ensure fresh import in this scope)
+
+    result = bb_discord.classify_friend_guilds(client)
+    assert "1" in result
+
+
+# ── FRIEND_GUILD_IDS manual override (PR-25) ─────────────────────────────
+
+
+def test_manual_override_bypasses_size_and_owner_checks(monkeypatch):
+    """Guild in FRIEND_GUILD_IDS is friend-tier unconditionally.
+    Even if size is huge, owner mismatches, no cached admin."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("FRIEND_GUILD_IDS", "1277236474231787552")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="ManuallyOverridden",
+            owner_id=999999,  # mismatch
+            member_count=200,  # over cap
+            cached_members=set(),  # admin not cached
+        ),
+    ])
+    result = bb_discord.classify_friend_guilds(client)
+    assert str(1277236474231787552) in result
+
+
+def test_manual_override_multiple_ids(monkeypatch):
+    """Comma-separated list of guild snowflakes."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("FRIEND_GUILD_IDS", "111,222,333")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(111, "A", 999, 4, set()),
+        _FakeGuild(222, "B", 999, 4, set()),
+        _FakeGuild(999, "C", 999, 4, set()),  # not in list
+    ])
+    result = bb_discord.classify_friend_guilds(client)
+    assert "111" in result
+    assert "222" in result
+    assert "999" not in result
+
+
+def test_unset_manual_override_no_effect(monkeypatch):
+    """Unset FRIEND_GUILD_IDS env var disables the manual-override
+    branch. Classification falls back to auto-detection."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.delenv("FRIEND_GUILD_IDS", raising=False)
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1,
+            name="NonQualifying",
+            owner_id=999,
+            member_count=4,
+            cached_members=set(),
+        ),
+    ])
+    # Would be friend-tier if manual override were set; without it,
+    # auto-detection fails (non-admin owner, not cached).
+    assert bb_discord.classify_friend_guilds(client) == frozenset()
+
+
+# ── Direct pilot regression for 2026-04-24 ──────────────────────────────
+
+
+def test_pilot_2026_04_24_pizzacord_with_trusted_owner(monkeypatch):
+    """Reproduction of the exact 2026-04-24 pilot configuration.
+    admin_id=369485175329128448, Pizzacord owner=976170794013044746.
+    With TRUSTED_DISCORD_IDS=976170794013044746, Pizzacord classifies
+    even without the members intent populating the cache.
+
+    The fix path Brendan would actually use:
+      export TRUSTED_DISCORD_IDS=976170794013044746  (the friend)
+    or:
+      export FRIEND_GUILD_IDS=1277236474231787552  (direct override)
+    """
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("TRUSTED_DISCORD_IDS", "976170794013044746")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="Pizzacord",
+            owner_id=976170794013044746,
+            member_count=4,
+            cached_members=set(),  # members intent not enabled
+        ),
+    ])
+    result = bb_discord.classify_friend_guilds(client)
+    assert "1277236474231787552" in result
+
+
+def test_pilot_2026_04_24_pizzacord_with_manual_override(monkeypatch):
+    """Alternative fix path using the manual override directly."""
+    _set_admin(monkeypatch, "369485175329128448")
+    monkeypatch.setenv("FRIEND_GUILD_IDS", "1277236474231787552")
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="Pizzacord",
+            owner_id=976170794013044746,
+            member_count=4,
+            cached_members=set(),
+        ),
+    ])
+    result = bb_discord.classify_friend_guilds(client)
+    assert "1277236474231787552" in result
+
+
+def test_pilot_2026_04_24_pizzacord_with_members_intent_cached(monkeypatch):
+    """Third fix path: if the members intent is enabled, the admin
+    appears in the cache even though they aren't the owner."""
+    _set_admin(monkeypatch, "369485175329128448")
+    admin_int = 369485175329128448
+    monkeypatch.setattr(cfg_mod, "_config", None)
+
+    client = _FakeClient([
+        _FakeGuild(
+            guild_id=1277236474231787552,
+            name="Pizzacord",
+            owner_id=976170794013044746,
+            member_count=4,
+            cached_members={admin_int},  # members intent populated
+        ),
+    ])
+    result = bb_discord.classify_friend_guilds(client)
+    assert "1277236474231787552" in result

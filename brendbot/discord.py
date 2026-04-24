@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -649,30 +650,40 @@ _FRIEND_GUILD_MAX_MEMBERS = 25
 def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
     """Classify connected guilds and stash the friend-tier set in config.
 
-    Called from ``on_ready`` with the Discord client. Two-rule gate:
+    Called from ``on_ready`` with the Discord client. Four signals,
+    any one of which is sufficient when combined with the small-
+    guild size cap:
 
-    1. **Owner signal** — ``owner_id == admin_id`` AND
-       ``0 < member_count < _FRIEND_GUILD_MAX_MEMBERS``. Strongest
-       case: the admin runs this server.
-    2. **Member signal (fallback)** — admin is a cached member AND
-       ``0 < member_count < _FRIEND_GUILD_MAX_MEMBERS``. Covers
-       servers the admin was invited into. Depends on the member
-       cache being populated, which works out of the box without
-       the privileged MEMBERS intent for members who have recently
-       sent messages the bot has seen.
+    1. **Manual override** — guild id listed in ``FRIEND_GUILD_IDS``.
+       Unconditional, bypasses the size cap and all other checks.
+       Belt-and-suspenders escape hatch for pathological cases.
+    2. **Owner signal (admin)** — ``owner_id == admin_id``. The
+       admin runs this server.
+    3. **Owner signal (trusted)** — ``owner_id`` is in
+       ``TRUSTED_DISCORD_IDS``. A trusted user runs this server;
+       assumed safe to extend friend-tier treatment. Covers the
+       common case where the admin was invited to a friend's server.
+    4. **Member signal** — admin is a cached guild member. Works if
+       the ``members`` privileged intent is enabled OR if the admin
+       has recently interacted in the current session.
 
-    Either signal classifies the guild as friend-tier; both are
-    logged when applicable so operators can see which rule fired.
-    Guilds that fail both get a specific "skipped because …" line
-    in the log at INFO level so the reason is in the startup record.
+    Signals 2, 3, 4 all require the size cap
+    ``0 < member_count < _FRIEND_GUILD_MAX_MEMBERS`` to also pass.
+    Signal 1 (manual override) ignores the cap.
 
-    Returns the classified set (for tests / programmatic access).
-    Stores the set in :func:`brendbot.config.set_friend_guilds` so
-    ``session_gate`` and ``on_message`` can query it.
+    Every guild — classified or skipped — logs the specific reason
+    so the startup log is diagnostic rather than silent.
+
+    Returns the classified set. Stores it in
+    :func:`brendbot.config.set_friend_guilds`.
     """
     from brendbot import config as cfg
 
-    admin_id = get_config().admin_discord_id
+    config = get_config()
+    admin_id = config.admin_discord_id
+    trusted_ids = config.trusted_discord_ids
+    friend_guild_ids = config.friend_guild_ids
+
     if not admin_id:
         logger.info(
             "Friend-tier classification skipped — ADMIN_DISCORD_ID unset"
@@ -680,23 +691,26 @@ def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
         cfg.set_friend_guilds(frozenset())
         return frozenset()
 
-    # Normalise admin_id to string for comparison. Env vars are always
-    # strings; Discord's attributes can be int or str depending on
-    # library version — normalise one side once.
+    # Normalise to string for comparison. Env vars are always strings;
+    # Discord attributes can be int or str depending on library
+    # version — normalise one side once.
     admin_id = str(admin_id)
 
-    # Admin tries to parse int for member-lookup (Discord.py's
-    # ``guild.get_member`` expects an int snowflake). Fall back to
-    # owner-only checking if the env var isn't a valid int.
+    # Admin parsed as int for member-lookup (discord.py's
+    # ``guild.get_member`` expects an int snowflake).
     try:
         admin_id_int: int | None = int(admin_id)
     except (ValueError, TypeError):
         admin_id_int = None
         logger.warning(
             "ADMIN_DISCORD_ID=%r is not a valid integer snowflake — "
-            "friend-tier classification will fall back to owner-only rule",
+            "friend-tier classification will fall back to owner-only rules",
             admin_id,
         )
+
+    # Trusted ids as the extended-owner set. Including admin_id lets
+    # the owner-check expression read uniformly.
+    trusted_owner_set = {admin_id} | {str(t) for t in trusted_ids}
 
     friend: set[str] = set()
     for g in client.guilds:
@@ -705,13 +719,18 @@ def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
             member_count_raw = getattr(g, "member_count", None)
             member_count = int(member_count_raw) if member_count_raw else 0
             is_small = 0 < member_count < _FRIEND_GUILD_MAX_MEMBERS
+            guild_id_str = str(g.id)
 
-            # Owner check — strong signal.
-            owner_match = (owner_id == admin_id)
+            # Signal 1: manual allow-list. Ignores size cap.
+            in_manual_override = guild_id_str in friend_guild_ids
 
-            # Member check — weaker signal, depends on cache. Skipped
-            # if admin_id_int is None (bad env var) or get_member isn't
-            # available (mocked/test clients).
+            # Signal 2+3: owner is admin OR trusted id.
+            owner_is_admin = (owner_id == admin_id)
+            owner_is_trusted = (
+                owner_id in trusted_owner_set and owner_id != admin_id
+            )
+
+            # Signal 4: admin in member cache.
             admin_cached = False
             if admin_id_int is not None and hasattr(g, "get_member"):
                 try:
@@ -719,18 +738,23 @@ def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
                 except Exception:
                     admin_cached = False
 
-            if is_small and (owner_match or admin_cached):
-                friend.add(str(g.id))
+            any_auto_signal = owner_is_admin or owner_is_trusted or admin_cached
+            qualifies = in_manual_override or (is_small and any_auto_signal)
+
+            if qualifies:
+                friend.add(guild_id_str)
                 logger.info(
                     "Friend-tier guild detected: %s (id=%s, members=%d, "
-                    "owner_match=%s, admin_cached=%s)",
+                    "manual=%s, owner_admin=%s, owner_trusted=%s, "
+                    "admin_cached=%s)",
                     getattr(g, "name", "?"), g.id, member_count,
-                    owner_match, admin_cached,
+                    in_manual_override, owner_is_admin, owner_is_trusted,
+                    admin_cached,
                 )
             else:
                 # Log the specific reason. This line is the diagnostic
-                # that would have told us what was wrong in the
-                # 2026-04-23 pilot instead of the silent "0 friend-tier".
+                # that would have told us what was wrong in earlier
+                # pilots instead of the silent "0 friend-tier".
                 reasons = []
                 if not is_small:
                     reasons.append(
@@ -738,12 +762,26 @@ def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
                         f"raw={member_count_raw!r}, "
                         f"cap={_FRIEND_GUILD_MAX_MEMBERS})"
                     )
-                if not owner_match:
+                if not owner_is_admin:
                     reasons.append(
                         f"owner_id={owner_id!r} != admin_id={admin_id!r}"
                     )
+                if not owner_is_trusted:
+                    reasons.append(
+                        f"owner_id={owner_id!r} not in "
+                        f"TRUSTED_DISCORD_IDS ({sorted(trusted_ids)})"
+                    )
                 if not admin_cached:
-                    reasons.append("admin not in member cache")
+                    reasons.append(
+                        "admin not in member cache "
+                        "(enable members intent in Developer Portal "
+                        "to populate at startup)"
+                    )
+                if not in_manual_override and friend_guild_ids:
+                    reasons.append(
+                        f"guild_id={guild_id_str!r} not in "
+                        f"FRIEND_GUILD_IDS ({sorted(friend_guild_ids)})"
+                    )
                 logger.info(
                     "Friend-tier skipped: %s (id=%s) — %s",
                     getattr(g, "name", "?"), g.id,
@@ -818,6 +856,28 @@ class DiscordListener:
         intents.message_content = True
         intents.guilds = True
         intents.reactions = True  # admin feedback emote handler in on_raw_reaction_add
+        # MEMBERS is a privileged intent — it requires an explicit opt-in
+        # in the Discord Developer Portal (Bot → Privileged Gateway
+        # Intents → SERVER MEMBERS INTENT) AND, for bots in 100+ guilds,
+        # Anthropic-style bot verification. Brendbot runs in 1-2 private
+        # guilds, well under that cap, so only the portal toggle is
+        # needed.
+        #
+        # The intent is load-bearing for friend-tier classification:
+        # without it, ``guild.get_member(admin_id)`` returns None at
+        # ``on_ready`` because the member cache is populated only from
+        # interactions the bot has directly observed, and the admin may
+        # not have sent a message in this session yet.
+        #
+        # If the portal toggle is OFF, Discord returns a login error
+        # ("Privileged intents provided…"), which would prevent the bot
+        # from starting entirely. As a defensive measure, the
+        # ``FRIEND_TIER_DISABLE_MEMBERS_INTENT`` env var disables the
+        # request — falls back to the pre-intent classifier behaviour,
+        # where friend-tier works only via owner match or
+        # FRIEND_GUILD_IDS manual override.
+        if not os.getenv("FRIEND_TIER_DISABLE_MEMBERS_INTENT"):
+            intents.members = True
 
         client = discord.Client(intents=intents)
         self._client = client

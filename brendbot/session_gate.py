@@ -113,6 +113,8 @@ async def apply_content_gate(
             "[%s] friend-tier guild — content gate skipped",
             session.key,
         )
+        _log_gate("FRIEND_TIER_SKIP", session, message_id, raw_user_text,
+                  weighted_sum=None, criteria=None, refusal_text=None)
         return "inject"
 
     gate_cfg = _load_gate_cfg()
@@ -133,6 +135,19 @@ async def apply_content_gate(
             "[%s] content_gate_classify unexpected error: %s",
             session.key, exc,
         )
+        # Record the classifier crash as an error event so the bot
+        # can honestly answer "what happened" without guessing.
+        try:
+            from brendbot.obs import log_error
+            log_error(
+                session_key=session.key,
+                error_class=f"ClassifierError:{type(exc).__name__}",
+                error_msg=str(exc),
+                recoverable=True,
+                detail={"path": "content_gate_classify"},
+            )
+        except Exception:
+            pass
         from brendbot.content_gate import ClassifierResult
         classifier_result = ClassifierResult(
             criteria={"_parse_error": 10.0},
@@ -146,6 +161,10 @@ async def apply_content_gate(
     )
 
     if is_bypass:
+        _log_gate("BYPASS", session, message_id, raw_user_text,
+                  weighted_sum=classifier_result.weighted_sum,
+                  criteria=dict(classifier_result.criteria),
+                  refusal_text=None)
         return await _handle_bypass(
             session,
             classifier_result=classifier_result,
@@ -160,6 +179,10 @@ async def apply_content_gate(
         )
 
     if shadow_outcome == Outcome.PASS:
+        _log_gate("PASS", session, message_id, raw_user_text,
+                  weighted_sum=classifier_result.weighted_sum,
+                  criteria=dict(classifier_result.criteria),
+                  refusal_text=None)
         return "inject"
 
     # The FLAG outcome was removed in the 2026-04-23 strip; decide_outcome
@@ -342,5 +365,53 @@ async def _handle_refuse_or_floor(
         classifier_result.weighted_sum,
         classifier_result.hard_floor,
     )
+    # Log the refusal to gate_events.jsonl so that when the user later
+    # asks "what was that refusal about" / "what are you responding to,"
+    # the bot can grep for this message_id and quote the criteria and
+    # refusal text verbatim rather than having to guess. Before this
+    # log existed, the model in subsequent turns genuinely had no
+    # visibility into what had fired the refusal — the gate dispatch
+    # is a separate code path from the model.
+    _log_gate(
+        shadow_outcome.value.upper() if hasattr(shadow_outcome, "value") else str(shadow_outcome),
+        session,
+        message_id,
+        raw_user_text,
+        weighted_sum=classifier_result.weighted_sum,
+        criteria=dict(classifier_result.criteria),
+        refusal_text=refusal,
+    )
     asyncio.create_task(session._fire_on_text(refusal))
     return "handled"
+
+
+def _log_gate(
+    outcome: str,
+    session: "Session",
+    message_id: str,
+    user_text: str,
+    *,
+    weighted_sum: float | None,
+    criteria: dict[str, float] | None,
+    refusal_text: str | None,
+) -> None:
+    """Record a gate outcome to logs/gate_events.jsonl.
+
+    Called from every gate-decision point (friend-tier skip, BYPASS,
+    PASS, REFUSE, FLOOR_HIT). Best-effort — a failed log write never
+    blocks the gate's actual decision.
+    """
+    try:
+        from brendbot.obs import log_gate_event
+        log_gate_event(
+            session_key=session.key,
+            channel_id=getattr(session, "_chat_id", "") or "",
+            message_id=message_id,
+            outcome=outcome,
+            weighted_sum=weighted_sum,
+            criteria=criteria,
+            refusal_text=refusal_text,
+            user_text_preview=user_text,
+        )
+    except Exception as exc:
+        logger.debug("[%s] _log_gate failed: %s", session.key, exc)

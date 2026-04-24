@@ -138,6 +138,36 @@ def _handle_text_block(session: "Session", block: TextBlock) -> None:
 def _handle_tool_use_block(session: "Session", block: ToolUseBlock) -> None:
     logger.info("[%s] tool: %s", session.key, block.name)
     session._turn_tool_called = True  # mark that tool use occurred this turn
+
+    # Append to the tool_calls log so the bot can answer
+    # "what did you just run" by reading from disk instead of
+    # recalling from memory. Best-effort — a failed log write
+    # must not disturb the tool-handling path.
+    try:
+        from brendbot.obs import log_tool_call
+
+        _input = block.input or {}
+        # For Bash, the "command" field is the canonical input summary.
+        # For everything else, stringify the input dict compactly.
+        if block.name == "Bash":
+            _input_summary = str(_input.get("command", ""))
+        else:
+            _input_summary = str(_input)
+
+        log_tool_call(
+            session_key=session.key,
+            turn_id=f"{session.key}-turn-{session._completed_turn_count + 1}",
+            tool=block.name,
+            input_summary=_input_summary,
+            # output_shape is unknown at dispatch time; ToolResultBlock
+            # would carry it but we aren't threading that back here.
+            # Leaving None is honest — the log records what was called,
+            # not what came back.
+            output_shape=None,
+        )
+    except Exception as exc:
+        logger.debug("[%s] log_tool_call failed: %s", session.key, exc)
+
     if block.name == "Bash":
         session._turn_bash_calls += 1
         tool_cmd = (block.input or {}).get("command", "")
@@ -222,6 +252,11 @@ def _handle_result_message(session: "Session", message: ResultMessage) -> None:
                 "[%s] record_tool_turn failed: %s", session.key, exc
             )
 
+    # Capture turn summary fields BEFORE _reset_per_turn_state clears
+    # them — the obs log below needs them.
+    _text_emitted = bool(session._turn_text_buffer) or session._turn_used_send_discord
+    _tool_call_count = session._turn_bash_calls + session._turn_other_tool_calls
+
     _reset_per_turn_state(session)
 
     cost = f" (${message.total_cost_usd:.4f})" if message.total_cost_usd else ""
@@ -232,6 +267,34 @@ def _handle_result_message(session: "Session", message: ResultMessage) -> None:
         "[%s] turn complete%s (context_tokens=%d, load=%.1f)",
         session.key, cost, session._last_input_tokens, current_load,
     )
+
+    # Structured record of this turn for the bot's "what did you do /
+    # how long did that take / what was the result" self-report path.
+    # Logged with best-effort semantics — failure here must never
+    # disturb the turn completion.
+    try:
+        from brendbot.obs import log_turn_event
+        import time as _time
+
+        _duration_ms: int = 0
+        if session._turn_t_received is not None:
+            _duration_ms = int((_time.monotonic() - session._turn_t_received) * 1000)
+
+        log_turn_event(
+            session_key=session.key,
+            channel_id=getattr(session, "_chat_id", "") or "",
+            turn_id=f"{session.key}-turn-{session._completed_turn_count + 1}",
+            model=getattr(session, "_model", "unknown"),
+            context_tokens=session._last_input_tokens,
+            cost_usd=float(message.total_cost_usd or 0.0),
+            duration_ms=_duration_ms,
+            text_emitted=_text_emitted,
+            tool_call_count=_tool_call_count,
+            stop_reason=stop_reason,
+        )
+    except Exception as exc:
+        logger.debug("[%s] log_turn_event failed: %s", session.key, exc)
+
     _write_context_status(session)
     _clear_reactions(session)
 

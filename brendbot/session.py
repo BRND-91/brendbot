@@ -644,9 +644,37 @@ class Session:
                 logger.debug("Session %s subprocess exited via signal (exit %d) — clean shutdown", self.key, e.exit_code)
             else:
                 logger.error("Session %s subprocess error (exit %s): %s", self.key, getattr(e, "exit_code", "?"), e)
+                # Record non-signal subprocess exits as runtime errors
+                # so the bot can honestly answer "what happened" after
+                # a crash. Signal exits (137/143) are clean shutdowns
+                # and intentionally skipped.
+                try:
+                    from brendbot.obs import log_error
+                    log_error(
+                        session_key=self.key,
+                        error_class=f"SubprocessError:exit_{getattr(e, 'exit_code', '?')}",
+                        error_msg=str(e),
+                        context_tokens=self._last_input_tokens,
+                        recoverable=False,
+                        detail={"path": "receive_loop"},
+                    )
+                except Exception:
+                    pass
             self.running = False
         except Exception as e:
             logger.error("Session %s receiver error: %s", self.key, e)
+            try:
+                from brendbot.obs import log_error
+                log_error(
+                    session_key=self.key,
+                    error_class=f"ReceiverError:{type(e).__name__}",
+                    error_msg=str(e),
+                    context_tokens=self._last_input_tokens,
+                    recoverable=False,
+                    detail={"path": "receive_loop"},
+                )
+            except Exception:
+                pass
             self.running = False
 
     def _handle(self, message: Any) -> None:

@@ -293,3 +293,65 @@ class TestNormalTextResponse:
         s._handle(_assistant_message([_text_block("done, result is hi")]))
         spy = _run_handle(s, _result_message(stop_reason="end_turn"))
         assert spy.calls == ["done, result is hi"]
+
+
+class TestCaseD_TaskRequestStall:
+    """2026-04-24 refinement: thinking-only + end_turn is NOT an
+    intentional silent drop when the user message was a task request.
+
+    Pre-refinement, the discriminator would suppress the fallback on
+    any thinking-only end_turn turn, regardless of what the user had
+    asked for. That caused the 2026-04-23 pilot bug at 22:33 where
+    'two changes' got silent-dropped and the user had to re-prompt.
+
+    Post-refinement: if ``_turn_user_text`` looks like an imperative
+    (``_looks_like_task_request`` returns True), the silent-drop
+    branch is disabled and a fallback fires instead."""
+
+    def test_task_request_thinking_only_fires_fallback(self, tmp_path) -> None:
+        """User said 'make me a song', bot ran thinking only, ended
+        with end_turn, no output. Pre-refinement this suppressed the
+        fallback. Post-refinement it fires."""
+        s = _make_session(tmp_path)
+        s._turn_user_text = "make me a song"
+        s._handle(_assistant_message([_thinking_block("composing...")]))
+        spy = _run_handle(s, _result_message(stop_reason="end_turn"))
+        assert len(spy.calls) == 1
+        assert "no response generated" in spy.calls[0]
+
+    def test_non_task_thinking_only_still_suppresses_fallback(
+        self, tmp_path,
+    ) -> None:
+        """User said 'lmao ok' — ambient chatter, no task. Bot
+        thinking-drops. The fallback stays suppressed because this is
+        a legitimate Case A drop."""
+        s = _make_session(tmp_path)
+        s._turn_user_text = "lmao ok"
+        s._handle(_assistant_message([_thinking_block("not addressed to me")]))
+        spy = _run_handle(s, _result_message(stop_reason="end_turn"))
+        assert spy.calls == []
+
+    def test_task_request_with_mention_preamble_fires_fallback(
+        self, tmp_path,
+    ) -> None:
+        """@mention preamble plus imperative — still a task request,
+        still must fire on no-output."""
+        s = _make_session(tmp_path)
+        s._turn_user_text = "<@1490829355214049451> generate an image"
+        s._handle(_assistant_message([_thinking_block("...")]))
+        spy = _run_handle(s, _result_message(stop_reason="end_turn"))
+        assert len(spy.calls) == 1
+
+    def test_empty_user_text_falls_back_to_pre_refinement_behavior(
+        self, tmp_path,
+    ) -> None:
+        """If _turn_user_text is empty (edge case: session state not
+        fully populated), the is_task heuristic returns False, so the
+        discriminator behaves as it did pre-refinement."""
+        s = _make_session(tmp_path)
+        s._turn_user_text = ""
+        s._handle(_assistant_message([_thinking_block("...")]))
+        spy = _run_handle(s, _result_message(stop_reason="end_turn"))
+        # Pre-refinement behavior: thinking-only + end_turn + no task
+        # suppresses the fallback.
+        assert spy.calls == []

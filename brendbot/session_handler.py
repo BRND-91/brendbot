@@ -366,61 +366,139 @@ def _dispatch_turn_output(
           and session._on_text
           and session._chat_id):
         # ── Phantom-turn discriminator (Phase 3 phantom-fix-v2) ──
-        # Three cases to distinguish, previously all collapsed into
-        # "fire fallback":
+        # Four cases, refined 2026-04-24 to add the task-request
+        # gate:
         #
         # Case A: Intentional silent drop. The model received a
-        #   message, ran thinking tokens, and correctly decided
-        #   not to respond per the soul's silent-drop rule (e.g.
+        #   message, ran thinking tokens, and correctly decided not
+        #   to respond per the soul's silent-drop rule (e.g. ambient
         #   cross-talk addressed to another user). Shape:
         #     - AssistantMessage arrived (any_assistant_msg_seen=True)
         #     - ContentBlock(s) inside it (any_content_block_seen=True)
-        #       — typically ThinkingBlock only, no TextBlock
-        #     - stop_reason == 'end_turn' (clean completion)
+        #     - stop_reason == 'end_turn'
+        #     - AND the user message was NOT a task request
         #   Correct handling: SUPPRESS fallback. The silence is
         #   the response.
         #
         # Case B: True broken turn. Something structurally failed —
-        #   no AssistantMessage at all, or an empty content list
-        #   with no blocks, or an error stop_reason. The user is
-        #   waiting and nothing's coming. Shape:
-        #     - any_assistant_msg_seen=False OR
-        #       any_content_block_seen=False
-        #     - stop_reason None or indicates error
-        #   Correct handling: FIRE fallback so user knows it broke.
+        #   no AssistantMessage, empty content, or error stop_reason.
+        #   Correct handling: FIRE fallback + signal_runtime_error.
         #
-        # Case C: Housekeeping turn (context injection, shallow rest).
-        #   Handled above by is_housekeeping check — already suppressed.
+        # Case C: Housekeeping turn (context injection). Handled
+        #   above by is_housekeeping check — already suppressed.
         #
-        # Decision rule: if the model got as far as emitting an
-        # AssistantMessage with at least one content block AND the
-        # stop_reason is 'end_turn', treat it as Case A and suppress.
-        # Anything else falls through to the fallback path.
+        # Case D (2026-04-24): Stall on a task request. The user
+        #   message was an imperative ("make me X", "run Y", "send
+        #   Z"), but the turn completed with no text and no tool
+        #   call. This is NOT an intentional drop — a task request
+        #   demands output. Before this refinement, the discriminator
+        #   treated these as Case A and silently swallowed the
+        #   user's ask. Observed in the 2026-04-23 pilot at 22:33
+        #   (two-changes request, turn ended with thinking only,
+        #   silently dropped — the bot only responded after Brendan
+        #   re-prompted). Correct handling: FIRE fallback + signal
+        #   runtime error so the user sees the stall explicitly.
+        is_task_request = _looks_like_task_request(session._turn_user_text)
         is_intentional_silent_drop = (
             session._turn_any_assistant_msg_seen
             and session._turn_any_content_block_seen
             and stop_reason == "end_turn"
+            and not is_task_request
         )
         if is_intentional_silent_drop:
             logger.info(
                 "[%s] intentional silent drop — model declined to respond "
-                "(thinking-only, stop_reason=end_turn) — suppressing fallback",
+                "(thinking-only, stop_reason=end_turn, non-task) — suppressing fallback",
                 session.key,
             )
         else:
             logger.warning(
                 "[%s] phantom turn — no output blocks "
-                "(assistant_msg=%s, content_block=%s, stop_reason=%s) — "
-                "sending fallback",
+                "(assistant_msg=%s, content_block=%s, stop_reason=%s, "
+                "task_request=%s) — sending fallback",
                 session.key,
                 session._turn_any_assistant_msg_seen,
                 session._turn_any_content_block_seen,
                 stop_reason,
+                is_task_request,
             )
+            # Log this as a runtime error so the bot can truthfully
+            # answer "what happened" if asked, rather than have to
+            # reconstruct the failure from conversation memory.
+            try:
+                from brendbot.obs import log_error
+                log_error(
+                    session_key=session.key,
+                    error_class="PhantomTurnStall",
+                    error_msg=(
+                        f"no output blocks (assistant_msg="
+                        f"{session._turn_any_assistant_msg_seen}, "
+                        f"content_block="
+                        f"{session._turn_any_content_block_seen}, "
+                        f"stop_reason={stop_reason}, "
+                        f"task_request={is_task_request})"
+                    ),
+                    context_tokens=session._last_input_tokens,
+                    recoverable=True,
+                    detail={"path": "phantom_turn_discriminator"},
+                )
+            except Exception:
+                pass
             fallback_text = (
                 "(no response generated — try rephrasing or asking again)"
             )
             asyncio.create_task(session._fire_on_text(fallback_text))
+
+
+_TASK_REQUEST_VERBS = (
+    "make", "do", "send", "run", "create", "write", "generate", "check",
+    "look", "find", "get", "render", "fix", "build", "post", "add",
+    "remove", "show", "list", "read", "edit", "update", "explain",
+    "describe", "summarize", "translate", "analyze", "compute", "tell",
+    "give", "draw", "compose", "produce", "change", "replace", "delete",
+    "open", "close", "start", "stop", "try", "help", "test", "debug",
+    "refactor", "commit", "push", "pull", "deploy",
+)
+
+# Compile once. Matches a verb as the first word of the user message
+# (case-insensitive, allowing an optional leading @mention or ``brend``
+# name), or a verb after a comma/colon that splits a name-address
+# preamble from the actual ask ("Brendan, make me X").
+import re as _re
+_TASK_REQUEST_RE = _re.compile(
+    r"^\s*(?:<@!?\d+>[,:\s]*)?"      # optional @mention + optional punctuation
+    r"(?:brend(?:an|bot)?[,:\s]+)?"  # optional name-address preamble
+    r"(?:" + "|".join(_TASK_REQUEST_VERBS) + r")\b",
+    _re.IGNORECASE,
+)
+
+
+def _looks_like_task_request(user_text: str) -> bool:
+    """Heuristic: does the user message begin with an imperative verb?
+
+    Used by the phantom-turn discriminator to decide whether a no-output
+    turn is an intentional silent drop (safe to suppress) or a stall on
+    a task request (must surface as a fallback).
+
+    Examples:
+    - "make me a song"                      → True
+    - "Brendan, send barnacle the file"     → True
+    - "@brendbot, run the migration"        → True
+    - "lol ok"                              → False
+    - "thanks brend"                        → False
+    - "you're sooooo off-beat"              → False
+
+    Heuristic rather than a classifier call because:
+    (a) we're already in a failure path (no output from the main turn);
+        adding another subprocess spawn is slow and fragile
+    (b) false positives (ambient chatter misread as tasks) just produce
+        an extra "no response generated" fallback, which is survivable
+    (c) false negatives (missed tasks read as ambient) reproduce the
+        pre-fix silent-drop bug, so we bias toward including more verbs
+    """
+    if not user_text:
+        return False
+    return bool(_TASK_REQUEST_RE.search(user_text))
 
 
 def _reset_per_turn_state(session: "Session") -> None:

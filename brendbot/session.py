@@ -660,6 +660,21 @@ class Session:
                     )
                 except Exception:
                     pass
+                # Surface the crash to Discord so the user sees
+                # "⚠️ [runtime] subprocess_crash: ..." instead of
+                # unexplained silence. Best-effort — if the channel
+                # isn't reachable (DM closed, bot kicked, etc.) we
+                # just log and move on.
+                if self._chat_id:
+                    try:
+                        from brendbot.runtime_events import signal_runtime_error
+                        asyncio.create_task(signal_runtime_error(
+                            self._chat_id,
+                            "subprocess_crash",
+                            f"exit {getattr(e, 'exit_code', '?')} — session restarting",
+                        ))
+                    except Exception:
+                        pass
             self.running = False
         except Exception as e:
             logger.error("Session %s receiver error: %s", self.key, e)
@@ -675,6 +690,16 @@ class Session:
                 )
             except Exception:
                 pass
+            if self._chat_id:
+                try:
+                    from brendbot.runtime_events import signal_runtime_error
+                    asyncio.create_task(signal_runtime_error(
+                        self._chat_id,
+                        "receiver_error",
+                        f"{type(e).__name__}: {str(e)[:200]}",
+                    ))
+                except Exception:
+                    pass
             self.running = False
 
     def _handle(self, message: Any) -> None:

@@ -273,7 +273,8 @@ async def _handle_bypass(
             "[%s] admin bypass + hard floor hit (%s) — refusing",
             session.key, hard_floor_hit,
         )
-        asyncio.create_task(session._fire_on_text(refusal))
+        from brendbot.runtime_events import GATE_PREFIX
+        asyncio.create_task(session._fire_on_text(f"{GATE_PREFIX} {refusal}"))
         log_bypass_event(
             channel_id=session._chat_id,
             user_message_id=message_id,
@@ -381,7 +382,14 @@ async def _handle_refuse_or_floor(
         criteria=dict(classifier_result.criteria),
         refusal_text=refusal,
     )
-    asyncio.create_task(session._fire_on_text(refusal))
+    # Prefix the user-facing refusal with the infra marker so the user
+    # can tell this was an external (gate) decision, not the model
+    # speaking in character. The bare refusal_text goes into
+    # gate_events.jsonl above without the prefix, so bot readback
+    # queries return the clean content.
+    from brendbot.runtime_events import GATE_PREFIX
+    visible_refusal = f"{GATE_PREFIX} {refusal}"
+    asyncio.create_task(session._fire_on_text(visible_refusal))
     return "handled"
 
 

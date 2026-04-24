@@ -626,24 +626,49 @@ def record_tool_turn(channel_id: str, user_id: str) -> None:
 
 # ── Friend-tier guild classification (startup) ───────────────────────────
 
-# A guild is "friend-tier" if the admin owns it AND it has fewer members
-# than this cap. Tuned for private owner-run servers (the deployment
-# pattern that motivates this classification); raise in an .env override
-# if anyone ever needs to.
+# A guild is "friend-tier" if it's small (under the member cap) AND
+# either the admin owns it OR the admin is a known member. Tuned for
+# private owner-run servers and private friend servers the owner has
+# been invited to; raise the cap via ``_FRIEND_GUILD_MAX_MEMBERS`` if
+# anyone ever needs to.
+#
+# Classification is auto-detected at bot startup (see
+# :func:`classify_friend_guilds`). The 2026-04-23 pilot discovered
+# that the prior strict rule (``owner_id == admin_id AND small``)
+# silently produced zero friend-tier guilds on a guild the admin was
+# clearly present in — probable causes include the admin not being
+# the literal server owner (someone else created the server and
+# invited the admin) or Discord not populating ``member_count`` on
+# ``on_ready``. The refined rule below accepts either signal,
+# and critically logs the *reason* each guild was or wasn't
+# classified so the next pilot's startup log tells us exactly what
+# the decision path looked like.
 _FRIEND_GUILD_MAX_MEMBERS = 25
 
 
 def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
     """Classify connected guilds and stash the friend-tier set in config.
 
-    Called from ``on_ready`` with the Discord client. Each guild is
-    checked against the rule ``admin_id == owner_id AND member_count
-    in (0, MAX_MEMBERS)``. The result is written to
-    :func:`brendbot.config.set_friend_guilds` so the rest of the code
-    (session_gate, on_message haiku branch) can read the classification
-    via :func:`brendbot.config.is_friend_guild`.
+    Called from ``on_ready`` with the Discord client. Two-rule gate:
 
-    Returns the classified set (mostly for tests).
+    1. **Owner signal** — ``owner_id == admin_id`` AND
+       ``0 < member_count < _FRIEND_GUILD_MAX_MEMBERS``. Strongest
+       case: the admin runs this server.
+    2. **Member signal (fallback)** — admin is a cached member AND
+       ``0 < member_count < _FRIEND_GUILD_MAX_MEMBERS``. Covers
+       servers the admin was invited into. Depends on the member
+       cache being populated, which works out of the box without
+       the privileged MEMBERS intent for members who have recently
+       sent messages the bot has seen.
+
+    Either signal classifies the guild as friend-tier; both are
+    logged when applicable so operators can see which rule fired.
+    Guilds that fail both get a specific "skipped because …" line
+    in the log at INFO level so the reason is in the startup record.
+
+    Returns the classified set (for tests / programmatic access).
+    Stores the set in :func:`brendbot.config.set_friend_guilds` so
+    ``session_gate`` and ``on_message`` can query it.
     """
     from brendbot import config as cfg
 
@@ -655,17 +680,74 @@ def classify_friend_guilds(client: discord.Client) -> frozenset[str]:
         cfg.set_friend_guilds(frozenset())
         return frozenset()
 
+    # Normalise admin_id to string for comparison. Env vars are always
+    # strings; Discord's attributes can be int or str depending on
+    # library version — normalise one side once.
+    admin_id = str(admin_id)
+
+    # Admin tries to parse int for member-lookup (Discord.py's
+    # ``guild.get_member`` expects an int snowflake). Fall back to
+    # owner-only checking if the env var isn't a valid int.
+    try:
+        admin_id_int: int | None = int(admin_id)
+    except (ValueError, TypeError):
+        admin_id_int = None
+        logger.warning(
+            "ADMIN_DISCORD_ID=%r is not a valid integer snowflake — "
+            "friend-tier classification will fall back to owner-only rule",
+            admin_id,
+        )
+
     friend: set[str] = set()
     for g in client.guilds:
         try:
             owner_id = str(getattr(g, "owner_id", "") or "")
-            member_count = getattr(g, "member_count", None) or 0
+            member_count_raw = getattr(g, "member_count", None)
+            member_count = int(member_count_raw) if member_count_raw else 0
             is_small = 0 < member_count < _FRIEND_GUILD_MAX_MEMBERS
-            if owner_id == admin_id and is_small:
+
+            # Owner check — strong signal.
+            owner_match = (owner_id == admin_id)
+
+            # Member check — weaker signal, depends on cache. Skipped
+            # if admin_id_int is None (bad env var) or get_member isn't
+            # available (mocked/test clients).
+            admin_cached = False
+            if admin_id_int is not None and hasattr(g, "get_member"):
+                try:
+                    admin_cached = g.get_member(admin_id_int) is not None
+                except Exception:
+                    admin_cached = False
+
+            if is_small and (owner_match or admin_cached):
                 friend.add(str(g.id))
                 logger.info(
-                    "Friend-tier guild detected: %s (id=%s, members=%d)",
-                    g.name, g.id, member_count,
+                    "Friend-tier guild detected: %s (id=%s, members=%d, "
+                    "owner_match=%s, admin_cached=%s)",
+                    getattr(g, "name", "?"), g.id, member_count,
+                    owner_match, admin_cached,
+                )
+            else:
+                # Log the specific reason. This line is the diagnostic
+                # that would have told us what was wrong in the
+                # 2026-04-23 pilot instead of the silent "0 friend-tier".
+                reasons = []
+                if not is_small:
+                    reasons.append(
+                        f"not small (members={member_count}, "
+                        f"raw={member_count_raw!r}, "
+                        f"cap={_FRIEND_GUILD_MAX_MEMBERS})"
+                    )
+                if not owner_match:
+                    reasons.append(
+                        f"owner_id={owner_id!r} != admin_id={admin_id!r}"
+                    )
+                if not admin_cached:
+                    reasons.append("admin not in member cache")
+                logger.info(
+                    "Friend-tier skipped: %s (id=%s) — %s",
+                    getattr(g, "name", "?"), g.id,
+                    "; ".join(reasons) or "no reason captured",
                 )
         except Exception as exc:
             logger.warning(

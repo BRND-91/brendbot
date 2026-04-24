@@ -48,11 +48,25 @@ _RERANK_PREFETCH = 4
 # still excludes unrelated same-channel episodes.
 _COSINE_MIN = 0.35
 
-# Track migrated DB paths so we migrate each distinct database exactly
-# once per process. A plain bool would stick on the first-seen DB and
-# starve tests (or sidecar tools) that open fresh databases in the same
-# process. Dropping down to resolve() handles symlinks / relative paths
-# producing the same canonical key.
+# The ``_migrated_paths`` per-process cache was removed in the
+# 2026-04-24 music-migration regression fix. The cache's job was to
+# skip redundant CREATE TABLE IF NOT EXISTS + CREATE INDEX calls on
+# subsequent writes, but it caused a silent failure when the
+# ``migrate_to_sqlite.py`` tool dropped or replaced ``knowledge.db``
+# to add music tables: the episodes table was gone, the cache said
+# "already migrated," so ``_ensure_migrated`` skipped the
+# recreate-if-missing path and every subsequent ``write_episode``
+# failed with ``no such table: episodes``.
+#
+# The per-call cost of re-running the migration (one PRAGMA, three
+# IF-NOT-EXISTS DDL statements, one conditional ALTER) is microseconds
+# on a local SQLite file — negligible compared to the actual INSERT —
+# so running it every call is the robust default. The cache was a
+# premature optimization.
+#
+# A sentinel for compatibility: kept at module level so tests that
+# explicitly reset it (``episodes._migrated_paths.discard(...)``)
+# still import cleanly. The set exists but is no longer consulted.
 _migrated_paths: set[str] = set()
 
 
@@ -74,28 +88,24 @@ def _open(db: Path) -> sqlite3.Connection:
 
 
 def _ensure_migrated(conn: sqlite3.Connection, db_key: str) -> None:
-    """Bootstrap the `episodes` table and migrate the `embedding` column.
+    """Bootstrap the ``episodes`` table and migrate the ``embedding``
+    column. Runs every call — the per-process cache was removed
+    in the 2026-04-24 music-migration regression fix (see comment on
+    ``_migrated_paths`` above).
 
-    Idempotent per ``db_key``. Never raises — failed migration just
-    means episodic memory won't be readable/writable and the cosine
-    re-rank will degrade to lexical order.
+    Never raises. A failed migration means episodic memory won't be
+    readable/writable and the cosine re-rank degrades to lexical
+    order — survivable. Blocking a write_episode on a schema-check
+    failure is not.
 
-    Historically this function only handled the ``ALTER TABLE ADD COLUMN
-    embedding`` migration because the ``episodes`` table itself came
-    pre-seeded in the tracked ``brendbot/knowledge/knowledge.db``. The
-    hotfix after Stage 2 (which untracked that binary) adds
-    ``CREATE TABLE IF NOT EXISTS`` + the two indexes so a fresh
-    ``knowledge.db`` bootstraps correctly without the pre-seeded
-    schema carrier. Schema mirrors the test fixture in
-    ``tests/test_episodes.py``.
+    The ``db_key`` argument is retained for log-message context; it
+    no longer gates re-execution.
     """
-    if db_key in _migrated_paths:
-        return
     try:
         cur = conn.cursor()
         # Bootstrap: create the table and its indexes if they don't
-        # exist. IF NOT EXISTS makes this idempotent per-database; the
-        # _migrated_paths set guards against redundant per-process calls.
+        # exist. IF NOT EXISTS makes every call safe even if the
+        # schema was wiped by an external migration between calls.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,10 +135,8 @@ def _ensure_migrated(conn: sqlite3.Connection, db_key: str) -> None:
             cur.execute("ALTER TABLE episodes ADD COLUMN embedding BLOB")
             logger.info("episodes: added embedding BLOB column (%s)", db_key)
         conn.commit()
-        _migrated_paths.add(db_key)
     except Exception as exc:
         logger.warning("episodes: migration check failed for %s: %s", db_key, exc)
-        # Do not add to _migrated_paths — retry next call.
 
 # Entity extraction: pull capitalized words and quoted strings from turn
 # log text. Cheap, no LLM. Tuned for Discord chat — common nouns slip

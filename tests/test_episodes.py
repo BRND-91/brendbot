@@ -345,3 +345,121 @@ def test_query_episodes_empty_on_fresh_db(tmp_path):
 
     hits = query_episodes("ch1", domains=["BUILDSCI"], db_path=db)
     assert hits == []
+
+
+# ── Table-wipe resilience (post-music-migration regression, 2026-04-24) ──
+#
+# On 2026-04-23 Brendan's music-knowledge migration ran migrate_to_sqlite
+# in a way that destroyed the episodes table. The PR #19 hotfix to
+# _ensure_migrated should have recreated the table on the next
+# write_episode call, but the module-level `_migrated_paths` cache had
+# already recorded the db as migrated — so the CREATE-IF-NOT-EXISTS path
+# was skipped and every subsequent write failed with "no such table:
+# episodes" for the remainder of the runtime.
+#
+# PR-24 dropped the cache; these tests pin that _ensure_migrated now
+# re-runs on every call and recovers from an externally-dropped table
+# transparently.
+
+
+def test_write_episode_recovers_after_external_table_drop(tmp_path):
+    """Write one episode, drop the table from underneath (simulating a
+    third-party migration tool), then write another. Second write must
+    succeed because _ensure_migrated no longer trusts a cache."""
+    db = _fresh_db(tmp_path)
+
+    # First write succeeds normally
+    ok1 = write_episode(
+        channel="ch1",
+        ts_start="2026-04-24T10:00:00",
+        turn_log=[{"role": "user", "text": "before drop"}],
+        domains=["BUILDSCI"],
+        db_path=db,
+    )
+    assert ok1 is True
+
+    # Simulate an external migration dropping the table
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE episodes")
+    conn.commit()
+    conn.close()
+
+    # Second write must succeed — _ensure_migrated should recreate
+    ok2 = write_episode(
+        channel="ch1",
+        ts_start="2026-04-24T10:05:00",
+        turn_log=[{"role": "user", "text": "after drop"}],
+        domains=["BUILDSCI"],
+        db_path=db,
+    )
+    assert ok2 is True, (
+        "_ensure_migrated failed to recreate the table after external "
+        "drop. The _migrated_paths cache was re-enabled or the "
+        "CREATE TABLE IF NOT EXISTS path regressed."
+    )
+
+    # Confirm the table actually got recreated and the second write
+    # is retrievable (the first write is gone, that's expected — drop
+    # is destructive)
+    hits = query_episodes("ch1", domains=["BUILDSCI"], db_path=db)
+    assert len(hits) == 1
+    assert "after drop" in hits[0]["summary"]
+
+
+def test_query_episodes_recovers_after_external_table_drop(tmp_path):
+    """The read-side (query_episodes) must also self-heal. After an
+    external drop, query_episodes should return [] gracefully (because
+    the recreated table is empty), not raise 'no such table.'"""
+    db = _fresh_db(tmp_path)
+
+    # Populate, drop, query
+    write_episode(
+        channel="ch1",
+        ts_start="2026-04-24T10:00:00",
+        turn_log=[{"role": "user", "text": "x"}],
+        domains=["BUILDSCI"],
+        db_path=db,
+    )
+    conn = sqlite3.connect(db)
+    conn.execute("DROP TABLE episodes")
+    conn.commit()
+    conn.close()
+
+    hits = query_episodes("ch1", domains=["BUILDSCI"], db_path=db)
+    assert hits == []
+
+
+def test_ensure_migrated_is_idempotent_across_many_calls(tmp_path):
+    """With the cache removed, _ensure_migrated now runs on every call.
+    Confirm this is genuinely idempotent — repeated calls don't error,
+    don't duplicate indexes, don't accumulate state."""
+    db = _fresh_db(tmp_path)
+
+    # Hammer the migration path
+    for i in range(20):
+        write_episode(
+            channel="ch1",
+            ts_start=f"2026-04-24T10:{i:02d}:00",
+            turn_log=[{"role": "user", "text": f"msg {i}"}],
+            domains=["BUILDSCI"],
+            db_path=db,
+        )
+
+    # Should have 20 rows, no migration errors, no index duplication
+    hits = query_episodes(
+        "ch1", domains=["BUILDSCI"], limit=100, db_path=db,
+    )
+    assert len(hits) == 20
+
+    # Confirm no extra indexes got created
+    conn = sqlite3.connect(db)
+    index_names = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND tbl_name='episodes' "
+            "AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    conn.close()
+    # Exactly the two indexes we create
+    assert index_names == {"idx_episodes_channel_ts", "idx_episodes_domains"}

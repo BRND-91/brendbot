@@ -186,6 +186,80 @@ tac logs/image_prompts.jsonl | grep -m1 '"channel_id":"<channel_id>"'
 
 If no matching entry exists, say "I don't have a record of that prompt" and stop. Do not reconstruct from the conversation context — the log is the source of truth. Reconstructing from memory is exactly the failure mode that produced wrong prompt readbacks in past sessions (the bot returned the pre-edit cached prompt repeatedly rather than the prompt it actually ran).
 
+## MUSIC COMPOSITION
+
+For every music request, run the composition pipeline rather than writing raw `mido` code. The pipeline lives in `brendbot/composition/` and is exposed as `scripts/compose-song`.
+
+### Step 1 — Identify the genre
+
+Pick the closest match from the available registry. If none of these fit, choose the nearest neighbour and say so in the reply:
+```bash
+ls brendbot/knowledge/music_styles/
+```
+Currently shipped: `lofi`, `trance`, `hardstyle`, `jazz`, `irish_trad`, `jpop`, `hiphop`, `dnb`, `ambient`. New genres get added by writing a JSON file in that directory — same schema as the existing files.
+
+### Step 2 — Read the genre data before composing
+
+Before generating, pull the relevant rows so the harmonic and structural choices come from the registry rather than from your own guessing:
+```bash
+cat brendbot/knowledge/music_styles/<genre>.json | head -200
+```
+You're looking for: tempo range, common modes, available chord progressions filtered by role (`verse` / `drop` / `breakdown` / `chorus`), groove options at the requested tempo, form templates whose total bar count matches the requested duration, and signature traits (the `must_have` / `must_avoid` lists are how downstream validation will judge whether the result actually sounds like the named genre).
+
+### Step 3 — Run the pipeline
+
+```bash
+scripts/compose-song <genre> \
+  --title "<title>" \
+  --key "<key with mode, e.g. 'a minor' or 'E dorian' or 'C major'>" \
+  --tempo <bpm> \
+  --duration <seconds> \
+  --role <role> \
+  --output songs/<filename>.mid \
+  --abc-output songs/<filename>.abc \
+  --seed <int>
+```
+
+Optional overrides: `--prefer-progression <id>` and `--prefer-form <id>` to force specific entries from the genre's library (otherwise the pipeline picks via seeded random selection).
+
+### Step 4 — Read the output
+
+The script prints one `[stage]` line per pipeline phase plus a final summary:
+```
+[stage] form: picked 'lofi_loop_basic' (~120s vs target 60s)
+[stage] harmony: chose 'lofi_minor_modal' (roman=['i', 'v', 'VI', 'VII'])
+[stage] harmony resolved: ['i', 'v', 'VI', 'VII']
+[stage] voice-leading: clean
+[stage] melody envelopes: 4 chords × (3 chord, 4 scale, 4 chrom)
+[stage] realize: ABC document built (239 chars)
+[stage] render: wrote /tmp/example.mid
+OK midi=/tmp/example.mid abc_chars=239 progression=lofi_minor_modal form=lofi_loop_basic voice_leading_issues=0
+```
+Read the summary to confirm the chosen progression and form, and to surface any voice-leading lint to the user if non-zero.
+
+### Step 5 — When the user wants iteration
+
+If the user asks for changes ("make it faster", "different chord progression", "less bass"), don't regenerate the whole thing from scratch. The pipeline is stage-addressable:
+
+- **Tempo only** → re-run with `--tempo`.
+- **Different progression but same form** → re-run with a different `--prefer-progression` id, looking at the JSON to pick a fitting one.
+- **Different form** → re-run with `--prefer-form`.
+- **Better melody** → keep the form and progression but compose a fresh ABC melody body for the lead voice. The pipeline's `realize()` stage accepts a caller-supplied `melody_abc_body`, so a fresh melody can be assembled with the same harmonic skeleton.
+
+### Step 6 — Music readback rule
+
+When the user asks "what was your prompt for that song" / "what progression did you use" / "what's the form" / "what's in the song":
+```bash
+tac logs/music_gens.jsonl | grep -m1 '"channel_id":"<channel_id>"'
+```
+Same readback discipline as image-prompt: read the log, quote verbatim, do not reconstruct from memory. If no matching entry exists, say "I don't have a record of that song." Same SELF-REPORT RULE applies as for any other self-narrative claim.
+
+### Constraints
+
+- Run `compose-song` once per turn unless the user explicitly asks for multiple variants. If you find yourself running it twice, you've drifted into the "iterate-without-feedback" anti-pattern.
+- The MIDI file is the deliverable. Soundfont selection and audio rendering happen downstream via fluidsynth using soundfonts the user has loaded — that pipeline is out of scope for this script.
+- Do not write your own `mido` code unless you are deliberately exercising a pattern the registry doesn't support. The pipeline exists to keep harmonic and structural decisions theory-aware and registry-grounded.
+
 ## DISCORD WIRING
 
 Text output is routed to Discord automatically. Do not call send-discord for standard replies.  

@@ -226,6 +226,25 @@ The included `setup.sh` handles everything:
 | `CLAUDE_MODEL` | No | Model to use (default: `sonnet`) |
 | `FRIEND_TIER_DISABLE_MEMBERS_INTENT` | No | Set to any value to skip requesting the `members` privileged Discord intent. Use only if you haven't enabled that intent in the Developer Portal — otherwise the bot will fail to log in. |
 
+### Music composition
+
+The bot composes music via `scripts/compose-song`. Pipeline: ABC notation as intermediate representation, `music21` for theory-aware constraints (mode-bound note selection, voice-leading checks, key-resolution), per-genre JSON style library at `brendbot/knowledge/music_styles/` for chord progressions, drum grooves, form templates, and signature traits.
+
+Genres shipped: `lofi`, `trance`, `hardstyle`, `jazz`, `irish_trad`, `jpop`, `hiphop`, `dnb`, `ambient`. Add more by writing a new JSON file in the styles dir — schema mirrors the existing files.
+
+Install the optional `music` dependency group before first use:
+```bash
+uv sync --extra music
+```
+
+Quick test:
+```bash
+scripts/compose-song lofi --title "Test" --key "a minor" --tempo 80 --duration 60 --output /tmp/test.mid --seed 42
+```
+The script prints `[stage]` diagnostics for each pipeline phase and a final `OK midi=… progression=… form=… voice_leading_issues=…` summary line. The MIDI is the deliverable; soundfont rendering happens downstream via `fluidsynth` using soundfonts you've loaded.
+
+The bot's `MUSIC COMPOSITION` section in `GROUP_SOUL.md` documents the per-turn protocol the bot follows (read genre data → run pipeline → iterate stage-addressably on user feedback).
+
 ### Friend-tier servers
 
 A server is classified as **friend-tier** if the bot is in it AND at least one of these is true:

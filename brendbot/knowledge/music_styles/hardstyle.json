@@ -1,0 +1,134 @@
+{
+  "name": "hardstyle",
+  "display_name": "Hardstyle / Hardcore",
+  "tempo_range": [150, 180],
+  "default_tempo": 150,
+  "default_mode": "minor",
+  "common_modes": ["minor", "phrygian", "harmonic_minor"],
+  "chord_progressions": [
+    {
+      "id": "hardstyle_phrygian_drop",
+      "roman": ["i", "bII", "VII", "i"],
+      "mode": "phrygian",
+      "role": "drop",
+      "extensions": [],
+      "description": "Phrygian darkness — flat-2 hits hard against tonic"
+    },
+    {
+      "id": "hardstyle_aggressive_4",
+      "roman": ["i", "VI", "VII", "i"],
+      "mode": "minor",
+      "role": "drop",
+      "extensions": [],
+      "description": "Aggressive minor loop, anthem-friendly"
+    },
+    {
+      "id": "hardstyle_uplift",
+      "roman": ["VI", "VII", "i", "v"],
+      "mode": "minor",
+      "role": "build",
+      "extensions": [],
+      "description": "Uplifting build progression — VI-VII-i resolves"
+    },
+    {
+      "id": "hardstyle_minor_pop",
+      "roman": ["i", "iv", "VI", "V"],
+      "mode": "harmonic_minor",
+      "role": "drop",
+      "extensions": [],
+      "description": "Harmonic minor with raised 7th leading tone — dark anthem"
+    },
+    {
+      "id": "hardstyle_breakdown_emotional",
+      "roman": ["i", "VI", "III", "VII"],
+      "mode": "minor",
+      "role": "breakdown",
+      "extensions": [],
+      "description": "Emotional breakdown — same shape as trance uplift but slower delivery"
+    },
+    {
+      "id": "hardstyle_dark_descent",
+      "roman": ["i", "VII", "VI", "v"],
+      "mode": "phrygian",
+      "role": "drop",
+      "extensions": [],
+      "description": "Descending phrygian, no resolution to V"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "hardstyle_kick_4",
+      "tempo_range": [150, 165],
+      "kick_pattern": "1.0,2.0,3.0,4.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "off_8ths",
+      "reverse_bass": "1.5,2.5,3.5,4.5",
+      "description": "Four-on-floor with reverse bass on offbeats — hardstyle signature"
+    },
+    {
+      "id": "hardstyle_kick_4_dense",
+      "tempo_range": [150, 180],
+      "kick_pattern": "1.0,2.0,3.0,4.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "16ths_closed",
+      "reverse_bass": "1.5,2.5,3.5,4.5",
+      "description": "Denser hat layer, drives intensity"
+    },
+    {
+      "id": "hardstyle_breakdown",
+      "tempo_range": [150, 180],
+      "kick_pattern": "1.0,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "off_8ths",
+      "reverse_bass": "",
+      "description": "Half-density breakdown groove, no reverse bass"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "hardstyle_anthem",
+      "sections": [
+        {"name": "intro", "bars": 16, "density": "sparse"},
+        {"name": "drop_a", "bars": 32, "density": "full"},
+        {"name": "breakdown", "bars": 32, "density": "medium"},
+        {"name": "build", "bars": 16, "density": "rising"},
+        {"name": "drop_b", "bars": 32, "density": "full"},
+        {"name": "outro", "bars": 16, "density": "fading"}
+      ],
+      "description": "Classic hardstyle anthem arrangement"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "hardstyle_screech_lead",
+      "role": "drop_lead",
+      "abc": "L:1/8\nK:Am\n\"Am\"a4 g4 | \"F\"f4 e4 | \"E\"e4 d4 | \"Am\"a8",
+      "description": "Distorted screech lead — long resolving notes"
+    },
+    {
+      "id": "hardstyle_anthem_melody",
+      "role": "breakdown",
+      "abc": "L:1/4\nK:Am\n\"Am\"A2 c2 | \"F\"f2 a2 | \"C\"c2 e2 | \"G\"d2 G2",
+      "description": "Slower anthemic melody for breakdown"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "four_on_floor_kick",
+      "reverse_bass_or_offbeat_screech",
+      "tempo_150_to_180",
+      "phrygian_or_minor_mode"
+    ],
+    "must_avoid": [
+      "swung_grooves",
+      "major_mode_unless_breakdown",
+      "tempo_below_148"
+    ],
+    "instrumentation_hints": [
+      "distorted_kick",
+      "screech_lead",
+      "reverse_bass",
+      "anthemic_pad"
+    ]
+  }
+}

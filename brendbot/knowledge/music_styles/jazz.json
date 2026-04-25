@@ -1,0 +1,173 @@
+{
+  "name": "jazz",
+  "display_name": "Jazz / Modern Mainstream",
+  "tempo_range": [80, 240],
+  "default_tempo": 140,
+  "default_mode": "major",
+  "common_modes": ["major", "minor", "dorian", "mixolydian", "lydian"],
+  "chord_progressions": [
+    {
+      "id": "jazz_2_5_1",
+      "roman": ["ii", "V", "I"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["m7", "7", "maj7"],
+      "description": "The fundamental ii-V-I — most common jazz cadence"
+    },
+    {
+      "id": "jazz_2_5_1_minor",
+      "roman": ["iiø", "V7b9", "i"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m7b5", "7b9", "m6", "mMaj7"],
+      "description": "Minor ii-V-i — half-diminished ii, altered V"
+    },
+    {
+      "id": "jazz_rhythm_changes_a",
+      "roman": ["I", "vi", "ii", "V"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["maj7", "m7", "7"],
+      "description": "Rhythm Changes A section — Gershwin standard"
+    },
+    {
+      "id": "jazz_blues_12bar",
+      "roman": ["I7", "IV7", "I7", "I7", "IV7", "IV7", "I7", "VI7", "ii7", "V7", "I7", "V7"],
+      "mode": "major",
+      "role": "form",
+      "extensions": ["7", "9", "13"],
+      "description": "Standard 12-bar jazz blues with turnaround"
+    },
+    {
+      "id": "jazz_modal_so_what",
+      "roman": ["i7", "i7", "bii7", "i7"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": ["m7", "m9"],
+      "description": "Modal jazz — So What — long static dorian, half-step shift"
+    },
+    {
+      "id": "jazz_giant_steps",
+      "roman": ["IM7", "bIIIM7", "VM7", "VIIm7"],
+      "mode": "modulating",
+      "role": "form",
+      "extensions": ["maj7", "7"],
+      "description": "Coltrane changes — major-third tonic cycle"
+    },
+    {
+      "id": "jazz_ballad_turnaround",
+      "roman": ["IM7", "VI7", "ii7", "V7"],
+      "mode": "major",
+      "role": "outro",
+      "extensions": ["maj7", "7", "m7"],
+      "description": "Ballad turnaround — chromatic descending bass"
+    },
+    {
+      "id": "jazz_modal_kind_of_blue",
+      "roman": ["IM7", "ii7", "iii7", "IM7"],
+      "mode": "lydian",
+      "role": "verse",
+      "extensions": ["maj7"],
+      "description": "Lydian modal stasis — Kind of Blue era"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "jazz_swing_medium",
+      "tempo_range": [120, 180],
+      "kick_pattern": "feathered",
+      "snare_pattern": "comp",
+      "hat_pattern": "swung_8ths_ride",
+      "ride_pattern": "ding_dingada",
+      "description": "Medium swing — feathered kick, ride-led, comping snare"
+    },
+    {
+      "id": "jazz_brushes_ballad",
+      "tempo_range": [60, 90],
+      "kick_pattern": "feathered",
+      "snare_pattern": "swept",
+      "hat_pattern": "soft",
+      "description": "Ballad brushes — circular sweep on snare, no ride"
+    },
+    {
+      "id": "jazz_uptempo_swing",
+      "tempo_range": [180, 240],
+      "kick_pattern": "comp",
+      "snare_pattern": "comp",
+      "hat_pattern": "swung_8ths_ride",
+      "description": "Up-tempo swing — drums comp around the soloist"
+    },
+    {
+      "id": "jazz_bossa",
+      "tempo_range": [100, 140],
+      "kick_pattern": "1.0,2.5,3.0",
+      "snare_pattern": "rim_clave",
+      "hat_pattern": "straight_8ths",
+      "description": "Bossa nova feel — straight 8ths, clave on rim"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "jazz_aaba_32",
+      "sections": [
+        {"name": "head_a1", "bars": 8, "density": "melody"},
+        {"name": "head_a2", "bars": 8, "density": "melody"},
+        {"name": "bridge_b", "bars": 8, "density": "melody"},
+        {"name": "head_a3", "bars": 8, "density": "melody"},
+        {"name": "solo_chorus_1", "bars": 32, "density": "improv"},
+        {"name": "solo_chorus_2", "bars": 32, "density": "improv"},
+        {"name": "head_out", "bars": 32, "density": "melody"}
+      ],
+      "description": "Standard AABA jazz form, 32-bar choruses"
+    },
+    {
+      "id": "jazz_blues_form",
+      "sections": [
+        {"name": "head_in", "bars": 24, "density": "melody"},
+        {"name": "solo_1", "bars": 24, "density": "improv"},
+        {"name": "solo_2", "bars": 24, "density": "improv"},
+        {"name": "head_out", "bars": 24, "density": "melody"}
+      ],
+      "description": "12-bar blues, two chorus head + 2 solo choruses"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "jazz_bebop_line",
+      "role": "verse_melody",
+      "abc": "L:1/8\nK:F\n\"F\"FA cd ed cB | \"Bb\"AB cA Bc dB | \"F\"c2 A2 c2 A2 | \"C7\"GA Bc dc BG",
+      "description": "Bebop-style 8th-note line over F-Bb-F-C7"
+    },
+    {
+      "id": "jazz_walking_bass",
+      "role": "bass",
+      "abc": "L:1/4\nK:F\n\"F\"F, A, c c, | \"Bb\"B,, D F E | \"F\"F, A, c, F, | \"C7\"C, E G B,",
+      "description": "Walking quarter-note bass line, scalar with chromatic approach"
+    },
+    {
+      "id": "jazz_ballad_melody",
+      "role": "ballad",
+      "abc": "L:1/4\nK:Eb\n\"Ebmaj7\"B G | \"Cm7\"E2 G | \"Fm7\"F2 A | \"Bb7\"B2 A | \"Ebmaj7\"G2 z2",
+      "description": "Slow ballad melody with rhythmic space"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "swung_8ths_or_4_4_with_comp",
+      "extended_chords_7th_9th_13th_or_altered",
+      "dominant_7_with_b9_or_alt"
+    ],
+    "must_avoid": [
+      "block_triads_only",
+      "four_on_floor_kick",
+      "supersaw_lead"
+    ],
+    "instrumentation_hints": [
+      "piano_or_rhodes",
+      "upright_bass",
+      "ride_cymbal",
+      "tenor_or_alto_sax",
+      "trumpet_or_flugelhorn"
+    ]
+  }
+}

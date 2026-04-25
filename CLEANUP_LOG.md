@@ -1246,3 +1246,148 @@ Net: ~1,500 lines added (including 1,000+ of test coverage).
 - The cron-replay bug Brendan's local session already patched
   (``load_persisted_crons`` expiry filter). That fix lives on his
   local master; will merge cleanly on pull.
+
+
+## Composition pipeline (PR #26, 2026-04-24)
+
+Per the recommendations in the literature pass: switched the bot's
+music workflow from raw mido-code generation to a structured ABC-
+first pipeline backed by music21 theory checks and a per-genre
+JSON style library. Implements items 1, 2, and 4 from the research-
+review recommendations.
+
+### What lands
+
+**`brendbot/composition/`** — new package with four modules:
+
+- `style_library.py` (231 lines): JSON-backed registry of per-genre
+  composition data. Loads `brendbot/knowledge/music_styles/*.json`
+  at import (cached via `lru_cache`), exposes typed accessors:
+  `get_progressions`, `get_grooves`, `get_form_templates`,
+  `get_motifs`, `get_signature_traits`. Filtered queries by role,
+  mode, tempo. Idempotent reload.
+
+- `abc_grammar.py` (~250 lines): pure-string ABC notation builders.
+  `AbcHeader`, `AbcVoice`, `AbcScore` dataclasses; free-function
+  helpers `note`, `rest`, `chord_stack`, `chord_label`, `bar`;
+  convenience constructor `build_abc()`.
+
+- `music21_layer.py` (~200 lines): theory layer over music21.
+  `progression_in_key()` resolves roman numerals to concrete chords
+  (accepts flexible key strings — "a minor", "E dorian", "F#
+  lydian"). `check_voice_leading()` flags parallel fifths and
+  octaves. `melody_constraints()` returns chord-tones / scale-tones
+  / chromatic-neighbors per chord for melody-generation envelopes.
+  `abc_to_midi()` and `transpose_score()` handle conversion.
+
+- `pipeline.py` (~280 lines): six-stage orchestrator.
+  `plan_form` → `plan_harmony` → `lint_harmony` → `plan_melody` →
+  `realize` → `render`. Each stage mutates a `PipelineState`
+  dataclass. `compose()` runs all six. Robust to bad data —
+  unknown genres get fallback templates and progressions; chord
+  figures with sus2/sus4/add9 get cleaned before music21 sees
+  them; progressions whose roman numerals music21 can't parse
+  fall back to i-VI-III-VII automatically.
+
+**`brendbot/knowledge/music_styles/*.json`** — 9 genre files:
+lofi, trance, hardstyle, jazz, irish_trad, jpop, hiphop, dnb,
+ambient. Each declares tempo range, default tempo, common modes,
+3-10 chord progressions tagged by mode + role + voicing
+extensions, 1-4 grooves with tempo-range filters, 1-2 form
+templates with bar-count breakdowns, 1-3 motif ABC fragments, and
+a signature_traits block with must_have / must_avoid /
+instrumentation_hints lists for downstream validation.
+
+**`scripts/compose-song`** — uv-script entry point. Wraps
+`pipeline.compose()` with argparse. Prints `[stage]` diagnostic
+lines + a parseable `OK midi=… abc_chars=… progression=… form=…
+voice_leading_issues=…` summary. The bot will call this rather
+than write raw `mido` code.
+
+**`GROUP_SOUL.md`** — new MUSIC COMPOSITION section under the
+existing IMAGE GENERATION block. Six-step protocol mirroring the
+image-gen pattern: identify genre → read genre data → run
+pipeline → read output → iterate stage-addressably →
+music_gens.jsonl readback rule. The section explicitly forbids
+writing raw mido code unless the registry doesn't cover the
+desired pattern.
+
+### Why this shape
+
+OpenAI September 2025 hallucination paper: training incentives
+reward confident guessing over calibrated uncertainty. ChatMusician
+(arXiv 2402.16153) and NotaGen (IJCAI 2025): ABC notation is
+both more compact and more pretrained-LLM-native than raw MIDI as
+intermediate representation. Chord-Transformer (OpenReview 2025)
+and MusicGen-Chord (arXiv 2412.00325): chord-progression as
+high-level constraint significantly improves long-sequence
+musical coherence. AbstentionBench (arXiv 2506.09038): models do
+not learn to abstain reliably even with reasoning fine-tuning, so
+the registry-as-source-of-truth + structural-suppression pattern
+is more durable than "tell the LLM to be more careful."
+
+These map cleanly onto the architecture: ABC as the bot's working
+representation (compact, compositional), music21 as the theory
+substrate (so the bot doesn't have to reason about voice leading
+or mode constraints in code it writes by hand), the JSON style
+library as the genre-specific source of truth (so "make me
+hardstyle" pulls hardstyle conventions from disk rather than
+inventing them per-prompt).
+
+### Test coverage
+
+114 new tests across four files:
+
+- `test_style_library.py` (42): genre inventory, schema sanity per
+  genre, filtered queries, reload semantics, error handling.
+- `test_abc_grammar.py` (29): note tokens with octave/accidental/
+  duration handling, rest, chord stack, chord label, bar lines,
+  header / voice / score rendering, end-to-end realistic 4-bar
+  phrase.
+- `test_music21_layer.py` (18): roman→concrete in major + modal
+  keys, voice-leading return shape, melody constraints with dorian
+  raised-6 verification, ABC↔MIDI roundtrip, transpose_score +
+  score_to_midi, error messages on bad input.
+- `test_composition_pipeline.py` (25): each stage in isolation,
+  three fallback paths (unknown genre / role / prefer_id),
+  end-to-end compose() runs for lofi and trance, rng-determinism
+  for reproducibility.
+
+### Known limitations and deferred items
+
+- music21 9.9.1's ABC writer is broken (writes Score's `repr()`
+  instead of valid ABC). `transpose_abc` and `midi_to_abc` are
+  deferred until a fix lands upstream or we ship our own simple
+  ABC emitter. `transpose_score` returns a music21 Score directly
+  as a workaround.
+- Music progression library could be larger. Current depth (3-10
+  progressions per genre) is enough to seed; extending the JSON
+  files in subsequent commits is the natural growth path.
+- Item 4-extended ("genre-signature validation" — automatic
+  must_have / must_avoid checks against generated MIDI) is not
+  yet wired. `signature_traits` ships in every genre file, but
+  the validator that compares generated output against them is
+  not built. Future commit.
+- Items 5-8 from the research recommendations (reference-track
+  ingestion, in-context exemplar matching, persistent motif
+  memory, multi-pass composition with separate
+  form/harmony/melody/rhythm/arrangement passes done by the LLM
+  inside the pipeline rather than just orchestrated by it) are
+  not in this PR. The pipeline is stage-addressable, so adding
+  them is additive — each new pass plugs in between existing
+  stages.
+
+### Size impact
+
+- 9 new JSON files: 1,388 lines of music data.
+- 4 new Python modules: ~960 lines of code + ~50 of init/exports.
+- 1 new script: 130 lines.
+- 4 new test files: ~720 lines covering 114 tests.
+- 1 new soul section: ~70 lines.
+- 1 new pyproject extra: 8 lines.
+
+Net: ~3,250 lines added; nothing removed.
+
+### Post-stage pytest
+
+516 passed (was 402; +114 new across the four test files).

@@ -1,0 +1,134 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["music21>=9.1"]
+# ///
+"""Compose a song via the brendbot composition pipeline.
+
+The command-line surface the bot uses when Brendan asks for music.
+Wraps :mod:`brendbot.composition.pipeline` with argparse + structured
+stdout for the bot to read back. Intended invocation pattern:
+
+  scripts/compose-song "lofi" \\
+    --title "Untitled Lofi" \\
+    --key "a minor" \\
+    --tempo 80 \\
+    --duration 90 \\
+    --role verse \\
+    --output songs/lofi_untitled.mid
+
+Output (stdout):
+  - Each pipeline-stage diagnostic on its own line, prefixed with
+    "[stage]" so the bot can grep it back when asked what
+    happened.
+  - Final line: "OK midi=<path> abc_chars=N progression=<id>" on
+    success, or "ERR <message>" on failure.
+
+The bot's MUSIC GENERATION soul section will be updated to point at
+this script as the canonical composition entry point.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+# uv's PEP-723 script runner doesn't put the project root on
+# sys.path, so the ``brendbot`` package isn't directly importable
+# without help. Resolve the project root relative to this script's
+# location and insert it.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Compose a song via the brendbot pipeline.",
+    )
+    parser.add_argument("genre", help="Genre tag (lofi, trance, hardstyle, jazz, etc.)")
+    parser.add_argument("--title", default="Untitled", help="Title for ABC header")
+    parser.add_argument(
+        "--key", default="C major",
+        help="Key + mode, e.g. 'a minor', 'C major', 'E dorian'",
+    )
+    parser.add_argument("--tempo", type=int, default=None, help="BPM (defaults from genre)")
+    parser.add_argument(
+        "--duration", type=float, default=120.0,
+        help="Target duration in seconds (form template picked closest)",
+    )
+    parser.add_argument(
+        "--role", default="verse",
+        help="Progression role tag (verse, drop, breakdown, etc.)",
+    )
+    parser.add_argument(
+        "--prefer-progression",
+        help="Optional progression id to use instead of random selection",
+    )
+    parser.add_argument(
+        "--prefer-form",
+        help="Optional form template id to use instead of duration match",
+    )
+    parser.add_argument(
+        "--output", required=True,
+        help="Path to write the MIDI file",
+    )
+    parser.add_argument(
+        "--abc-output",
+        help="Optional path to also write the ABC source",
+    )
+    parser.add_argument(
+        "--seed", type=int,
+        help="RNG seed for deterministic progression selection",
+    )
+    args = parser.parse_args()
+
+    # Imports inside main so a --help invocation doesn't pull music21
+    import random
+    from brendbot.composition import pipeline as pl
+
+    rng = random.Random(args.seed) if args.seed is not None else None
+
+    try:
+        # Stage-by-stage so we can pass prefer_id at the right point
+        state = pl.PipelineState(
+            genre=args.genre,
+            title=args.title,
+            key=args.key,
+            tempo_bpm=args.tempo,
+            target_duration_s=args.duration,
+        )
+        pl.plan_form(state, prefer_id=args.prefer_form)
+        pl.plan_harmony(
+            state, role=args.role,
+            prefer_id=args.prefer_progression, rng=rng,
+        )
+        pl.lint_harmony(state)
+        pl.plan_melody(state)
+        pl.realize(state)
+        pl.render(state, args.output)
+
+        # Optionally also dump the ABC source for the bot's readback
+        if args.abc_output:
+            Path(args.abc_output).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.abc_output).write_text(state.abc_score or "", encoding="utf-8")
+
+        # Stage diagnostics — one per line, prefixed for grepability
+        for note in state.notes:
+            print(f"[stage] {note}")
+
+        # Final summary line
+        print(
+            f"OK midi={state.midi_path} "
+            f"abc_chars={len(state.abc_score or '')} "
+            f"progression={state.progression_record.get('id') if state.progression_record else 'none'} "
+            f"form={state.form_template.get('id') if state.form_template else 'none'} "
+            f"voice_leading_issues={len(state.voice_leading_issues)}"
+        )
+        return 0
+    except Exception as exc:
+        print(f"ERR {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

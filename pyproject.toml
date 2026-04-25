@@ -21,6 +21,15 @@ embeddings = [
   "numpy>=1.26",
 ]
 
+# Music composition pipeline (PR #26). music21 provides the
+# theory-aware constraint layer; pretty_midi is a thin wrapper for
+# ABC-to-MIDI realisation. Optional because the bot is fully
+# functional without composition; install via `uv sync --extra music`.
+music = [
+  "music21>=9.1",
+  "pretty_midi>=0.2.10",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",

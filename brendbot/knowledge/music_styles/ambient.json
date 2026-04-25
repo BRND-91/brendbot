@@ -1,0 +1,127 @@
+{
+  "name": "ambient",
+  "display_name": "Ambient / Drone",
+  "tempo_range": [40, 90],
+  "default_tempo": 60,
+  "default_mode": "modal",
+  "common_modes": ["lydian", "dorian", "minor", "major", "phrygian"],
+  "chord_progressions": [
+    {
+      "id": "ambient_drone_static",
+      "roman": ["I", "I", "I", "I"],
+      "mode": "any",
+      "role": "verse",
+      "extensions": ["sus2", "sus4", "add9", "maj7"],
+      "description": "Tonic drone — minimal harmonic motion, color via extensions"
+    },
+    {
+      "id": "ambient_lydian_float",
+      "roman": ["I", "II", "I", "II"],
+      "mode": "lydian",
+      "role": "verse",
+      "extensions": ["maj7", "9"],
+      "description": "Lydian floating quality — major II is the lydian #4 chord"
+    },
+    {
+      "id": "ambient_slow_descent",
+      "roman": ["i", "VII", "VI", "V"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["maj7", "sus2"],
+      "description": "Slow descending — each chord held 8+ bars"
+    },
+    {
+      "id": "ambient_modal_shift",
+      "roman": ["I", "bVII", "IV", "I"],
+      "mode": "mixolydian",
+      "role": "verse",
+      "extensions": ["sus2"],
+      "description": "Mixolydian modal motion — open sus chords"
+    },
+    {
+      "id": "ambient_minor_drift",
+      "roman": ["i", "iv", "i", "v"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": ["m9", "msus2"],
+      "description": "Dorian drift — minor iv preserves dorian color"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "ambient_no_drums",
+      "tempo_range": [40, 90],
+      "description": "No percussion — pure pad/drone texture"
+    },
+    {
+      "id": "ambient_slow_pulse",
+      "tempo_range": [60, 80],
+      "kick_pattern": "1.0",
+      "snare_pattern": "",
+      "hat_pattern": "soft_brush_or_shaker_8ths",
+      "description": "Minimal pulse — kick on 1 only, soft texture for movement"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "ambient_extended_drone",
+      "sections": [
+        {"name": "fade_in", "bars": 16, "density": "rising"},
+        {"name": "drone_a", "bars": 32, "density": "sustained"},
+        {"name": "evolution", "bars": 32, "density": "shifting"},
+        {"name": "drone_b", "bars": 32, "density": "sustained"},
+        {"name": "fade_out", "bars": 16, "density": "fading"}
+      ],
+      "description": "Long-form ambient — slow evolutions of texture"
+    },
+    {
+      "id": "ambient_short_piece",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "rising"},
+        {"name": "main", "bars": 32, "density": "sustained"},
+        {"name": "outro", "bars": 8, "density": "fading"}
+      ],
+      "description": "Short ambient piece — single texture with intro/outro"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "ambient_lydian_pad",
+      "role": "verse_melody",
+      "abc": "L:1/2\nK:F\n\"Fmaj7\"[F=BDE] | [F=BDE] | \"Gsus2\"[GAd] | [GAd]",
+      "description": "Lydian pad chords — held whole notes with extensions"
+    },
+    {
+      "id": "ambient_drone_pedal",
+      "role": "bass",
+      "abc": "L:1\nK:C\nC, | C, | C, | C,",
+      "description": "Pedal tonic drone — held whole-bars"
+    },
+    {
+      "id": "ambient_glissando",
+      "role": "texture",
+      "abc": "L:1/4\nK:Am\n\"Am\"A z C E | A z2 G | F z2 D | A4",
+      "description": "Sparse melodic line — wide intervals, lots of rest"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "tempo_below_90",
+      "low_density_texture",
+      "long_sustains_or_no_clear_pulse"
+    ],
+    "must_avoid": [
+      "four_on_floor_kick",
+      "trap_rolls",
+      "tempo_above_100",
+      "bright_sawtooth_lead"
+    ],
+    "instrumentation_hints": [
+      "synth_pad_or_string_section",
+      "field_recordings_optional",
+      "reverb_heavy",
+      "no_drums_or_minimal_percussion",
+      "subtle_evolving_textures"
+    ]
+  }
+}

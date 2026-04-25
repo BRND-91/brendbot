@@ -1,0 +1,183 @@
+{
+  "name": "lofi",
+  "display_name": "Lo-fi Hip Hop",
+  "tempo_range": [70, 95],
+  "default_tempo": 80,
+  "default_mode": "minor",
+  "common_modes": ["minor", "dorian", "aeolian"],
+  "chord_progressions": [
+    {
+      "id": "lofi_sad_4",
+      "roman": ["i", "VI", "III", "VII"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["maj7", "9"],
+      "description": "Classic melancholy lofi loop, jazz-extended"
+    },
+    {
+      "id": "lofi_dorian_groove",
+      "roman": ["i", "IV", "VII", "i"],
+      "mode": "dorian",
+      "role": "verse",
+      "extensions": ["m7", "7"],
+      "description": "Dorian color, slightly brighter than aeolian"
+    },
+    {
+      "id": "lofi_2_5_1",
+      "roman": ["ii", "V", "I", "vi"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["m7", "9", "maj7"],
+      "description": "Jazz turnaround, rhodes-friendly"
+    },
+    {
+      "id": "lofi_descending",
+      "roman": ["i", "VII", "VI", "V"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m9"],
+      "description": "Andalusian-style descending bass, hip-hop loop common"
+    },
+    {
+      "id": "lofi_chillhop_4",
+      "roman": ["I", "vi", "IV", "V"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["maj7", "m9"],
+      "description": "50s-style I-vi-IV-V with extensions for warmth"
+    },
+    {
+      "id": "lofi_hook_lift",
+      "roman": ["IV", "I", "V", "vi"],
+      "mode": "major",
+      "role": "hook",
+      "extensions": ["maj7"],
+      "description": "Lifted variation, common as the chorus turnaround"
+    },
+    {
+      "id": "lofi_minor_modal",
+      "roman": ["i", "v", "VI", "VII"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m7", "maj7", "7"],
+      "description": "Modal with minor v (no leading tone) — softer pull"
+    },
+    {
+      "id": "lofi_sus_groove",
+      "roman": ["Isus2", "vi9", "IVadd9", "Vsus4"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["sus2", "sus4", "add9"],
+      "description": "Sus chords for openness, no clear major/minor commitment"
+    },
+    {
+      "id": "lofi_bridge_lift",
+      "roman": ["bVI", "bVII", "i", "V"],
+      "mode": "minor",
+      "role": "bridge",
+      "extensions": ["maj7"],
+      "description": "Borrowed-chord lift for the bridge section"
+    },
+    {
+      "id": "lofi_outro_resolve",
+      "roman": ["iv", "i", "v", "i"],
+      "mode": "minor",
+      "role": "outro",
+      "extensions": ["m9", "maj7"],
+      "description": "Plagal cadence variation for outro fade"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "lofi_swing_basic",
+      "tempo_range": [70, 90],
+      "kick_pattern": "1.0,2.5,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "swung_8ths",
+      "ghost_snare": true,
+      "description": "Boom-bap with swung hats and ghost snares on 16ths"
+    },
+    {
+      "id": "lofi_chillhop_straight",
+      "tempo_range": [80, 95],
+      "kick_pattern": "1.0,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "straight_8ths",
+      "ghost_snare": false,
+      "description": "Cleaner straight-8th feel, less swing"
+    },
+    {
+      "id": "lofi_halftime",
+      "tempo_range": [70, 85],
+      "kick_pattern": "1.0,2.75",
+      "snare_pattern": "3.0",
+      "hat_pattern": "swung_8ths",
+      "ghost_snare": true,
+      "description": "Half-time feel — snare on beat 3 only, lazy pocket"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "lofi_loop_basic",
+      "sections": [
+        {"name": "intro", "bars": 4, "density": "sparse"},
+        {"name": "loop_a", "bars": 16, "density": "full"},
+        {"name": "loop_b", "bars": 16, "density": "full"},
+        {"name": "outro", "bars": 4, "density": "sparse"}
+      ],
+      "description": "Single-loop arrangement with intro and outro"
+    },
+    {
+      "id": "lofi_extended",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "sparse"},
+        {"name": "verse_a", "bars": 16, "density": "medium"},
+        {"name": "verse_b", "bars": 16, "density": "full"},
+        {"name": "bridge", "bars": 8, "density": "medium"},
+        {"name": "verse_c", "bars": 16, "density": "full"},
+        {"name": "outro", "bars": 8, "density": "sparse"}
+      ],
+      "description": "Three-verse arrangement with bridge lift"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "lofi_rhodes_call",
+      "role": "hook",
+      "abc": "L:1/8\nK:Am\n\"Am\"A2 c2 e2 c2 | \"Fmaj7\"f4 e4",
+      "description": "Rhodes-style 8th-note call with sustained answer"
+    },
+    {
+      "id": "lofi_descending_lead",
+      "role": "verse_melody",
+      "abc": "L:1/8\nK:Cm\n\"Cm\"g2 f2 e2 d2 | \"Bb\"B2 A2 G2 F2",
+      "description": "Stepwise descending melody over minor groove"
+    },
+    {
+      "id": "lofi_pentatonic_riff",
+      "role": "verse_melody",
+      "abc": "L:1/8\nK:Am\n\"Am\"A2 c d e2 d2 | \"G\"G2 e d c2 A2",
+      "description": "Pentatonic minor riff, blue-note feel"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "swung_hats_or_relaxed_groove",
+      "extended_chords_7th_or_9th",
+      "tempo_70_to_95"
+    ],
+    "must_avoid": [
+      "four_on_floor_kick",
+      "harsh_synth_lead",
+      "heavy_distortion",
+      "tempo_above_100"
+    ],
+    "instrumentation_hints": [
+      "rhodes_or_wurlitzer",
+      "muted_guitar",
+      "upright_bass_or_synth_sub",
+      "tape_saturation",
+      "vinyl_crackle_optional"
+    ]
+  }
+}

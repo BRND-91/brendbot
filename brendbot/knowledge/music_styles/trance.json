@@ -1,0 +1,172 @@
+{
+  "name": "trance",
+  "display_name": "Trance / Progressive",
+  "tempo_range": [128, 140],
+  "default_tempo": 132,
+  "default_mode": "minor",
+  "common_modes": ["minor", "aeolian", "phrygian"],
+  "chord_progressions": [
+    {
+      "id": "trance_uplift_4",
+      "roman": ["i", "VI", "III", "VII"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["sus2", "sus4"],
+      "description": "Classic trance uplift loop, supersaw-friendly"
+    },
+    {
+      "id": "trance_minor_pop",
+      "roman": ["vi", "IV", "I", "V"],
+      "mode": "major",
+      "role": "drop",
+      "extensions": ["sus4"],
+      "description": "Minor-leaning pop progression, drop-ready"
+    },
+    {
+      "id": "trance_descending",
+      "roman": ["i", "VII", "VI", "V"],
+      "mode": "minor",
+      "role": "drop",
+      "extensions": ["sus2"],
+      "description": "Descending bass — Andalusian, drives to dominant"
+    },
+    {
+      "id": "trance_phrygian_dark",
+      "roman": ["i", "bII", "VII", "i"],
+      "mode": "phrygian",
+      "role": "build",
+      "extensions": [],
+      "description": "Phrygian flat-2 darkness, common in dark trance"
+    },
+    {
+      "id": "trance_emotional_lift",
+      "roman": ["IV", "vi", "I", "V"],
+      "mode": "major",
+      "role": "drop",
+      "extensions": ["sus4"],
+      "description": "Emotional lift, classic Tiesto / Above & Beyond shape"
+    },
+    {
+      "id": "trance_breakdown",
+      "roman": ["i", "iv", "VI", "V"],
+      "mode": "minor",
+      "role": "breakdown",
+      "extensions": ["sus2"],
+      "description": "Breakdown progression with leading tone resolution"
+    },
+    {
+      "id": "trance_modulating",
+      "roman": ["vi", "IV", "I", "iii"],
+      "mode": "major",
+      "role": "bridge",
+      "extensions": [],
+      "description": "Pivot to relative major, builds anticipation"
+    },
+    {
+      "id": "trance_intro_pad",
+      "roman": ["i", "v", "VI", "iv"],
+      "mode": "minor",
+      "role": "intro",
+      "extensions": ["sus2", "sus4"],
+      "description": "Slow intro chord movement, pad-only"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "trance_4_on_floor",
+      "tempo_range": [128, 140],
+      "kick_pattern": "1.0,2.0,3.0,4.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "off_8ths",
+      "ghost_snare": false,
+      "description": "Four-on-floor kick + offbeat hats — trance signature"
+    },
+    {
+      "id": "trance_open_break",
+      "tempo_range": [128, 140],
+      "kick_pattern": "1.0",
+      "snare_pattern": "1.5,3.5",
+      "hat_pattern": "16ths_open",
+      "ghost_snare": false,
+      "description": "Breakdown groove — sparse kick, busy hats"
+    },
+    {
+      "id": "trance_drop_full",
+      "tempo_range": [128, 140],
+      "kick_pattern": "1.0,2.0,3.0,4.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "off_16ths",
+      "ghost_snare": false,
+      "clap": "2.0,4.0",
+      "description": "Full drop — kick + offbeat 16th hats + clap doubling snare"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "trance_classic",
+      "sections": [
+        {"name": "intro", "bars": 16, "density": "sparse"},
+        {"name": "verse", "bars": 16, "density": "medium"},
+        {"name": "build_a", "bars": 16, "density": "rising"},
+        {"name": "drop_a", "bars": 32, "density": "full"},
+        {"name": "breakdown", "bars": 32, "density": "sparse"},
+        {"name": "build_b", "bars": 16, "density": "rising"},
+        {"name": "drop_b", "bars": 32, "density": "full"},
+        {"name": "outro", "bars": 16, "density": "fading"}
+      ],
+      "description": "Classic two-drop trance arrangement"
+    },
+    {
+      "id": "trance_short_radio",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "sparse"},
+        {"name": "verse", "bars": 16, "density": "medium"},
+        {"name": "build", "bars": 8, "density": "rising"},
+        {"name": "drop", "bars": 16, "density": "full"},
+        {"name": "breakdown", "bars": 16, "density": "sparse"},
+        {"name": "drop_b", "bars": 16, "density": "full"},
+        {"name": "outro", "bars": 8, "density": "fading"}
+      ],
+      "description": "Radio-edit length — single full-length drop"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "trance_supersaw_lead",
+      "role": "drop_lead",
+      "abc": "L:1/8\nK:Am\n\"Am\"a4 e4 | \"F\"f4 c4 | \"C\"e4 G4 | \"G\"d4 B4",
+      "description": "Long-note supersaw lead, anthemic"
+    },
+    {
+      "id": "trance_arp_8ths",
+      "role": "arp",
+      "abc": "L:1/16\nK:Am\n\"Am\"a c e a c e a c | \"F\"f a c f a c f a",
+      "description": "Ascending broken-chord arp, 16th-note grid"
+    },
+    {
+      "id": "trance_breakdown_pad",
+      "role": "breakdown",
+      "abc": "L:1/2\nK:Am\n\"Am\"A | \"F\"F | \"C\"C | \"G\"G",
+      "description": "Slow whole-note pad chords for breakdown"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "four_on_floor_kick",
+      "offbeat_bass_or_offbeat_hats",
+      "tempo_128_to_140",
+      "build_to_drop_dynamic"
+    ],
+    "must_avoid": [
+      "swung_grooves",
+      "tempo_below_125",
+      "tempo_above_145"
+    ],
+    "instrumentation_hints": [
+      "supersaw_lead",
+      "side_chained_pad",
+      "plucked_synth_arp",
+      "808_or_synth_sub_bass"
+    ]
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "name": "hiphop",
+  "display_name": "Hip Hop / Trap",
+  "tempo_range": [60, 180],
+  "default_tempo": 90,
+  "default_mode": "minor",
+  "common_modes": ["minor", "dorian", "phrygian", "major"],
+  "chord_progressions": [
+    {
+      "id": "hiphop_minor_2chord",
+      "roman": ["i", "VI"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m9", "maj7"],
+      "description": "Two-chord loop — most common hip-hop harmonic foundation"
+    },
+    {
+      "id": "hiphop_minor_4",
+      "roman": ["i", "iv", "VII", "VI"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": ["m7"],
+      "description": "Classic minor 4-chord — boom-bap era"
+    },
+    {
+      "id": "hiphop_phrygian_drop",
+      "roman": ["i", "bII", "i", "bII"],
+      "mode": "phrygian",
+      "role": "drop",
+      "extensions": [],
+      "description": "Phrygian drop — dark trap, flat-2 hits hard"
+    },
+    {
+      "id": "hiphop_drill_3",
+      "roman": ["i", "v", "VI"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": [],
+      "description": "Drill three-chord loop — Brooklyn / UK drill staple"
+    },
+    {
+      "id": "hiphop_jazzy_2_5_1",
+      "roman": ["ii", "V", "I", "vi"],
+      "mode": "major",
+      "role": "verse",
+      "extensions": ["m7", "9", "maj7"],
+      "description": "Jazz turnaround sampled — A Tribe Called Quest era"
+    },
+    {
+      "id": "hiphop_g_funk",
+      "roman": ["i", "V", "i", "V"],
+      "mode": "minor",
+      "role": "verse",
+      "extensions": [],
+      "description": "G-funk shuttle — synth-led west coast"
+    }
+  ],
+  "grooves": [
+    {
+      "id": "hiphop_boom_bap",
+      "tempo_range": [85, 100],
+      "kick_pattern": "1.0,2.5,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "swung_8ths",
+      "ghost_snare": true,
+      "description": "Classic boom-bap — DJ Premier style swung 8ths"
+    },
+    {
+      "id": "hiphop_trap_140",
+      "tempo_range": [130, 150],
+      "kick_pattern": "1.0,2.75,3.0",
+      "snare_pattern": "3.0",
+      "hat_pattern": "trap_rolls",
+      "description": "Trap groove — half-time snare on 3, hat rolls 16th to 32nd"
+    },
+    {
+      "id": "hiphop_drill",
+      "tempo_range": [140, 150],
+      "kick_pattern": "1.0,2.5,3.0,4.5",
+      "snare_pattern": "3.0",
+      "hat_pattern": "trap_rolls_offset",
+      "description": "Drill — sliding 808, hi-hats with offset rolls"
+    },
+    {
+      "id": "hiphop_lofi_85",
+      "tempo_range": [80, 95],
+      "kick_pattern": "1.0,3.0",
+      "snare_pattern": "2.0,4.0",
+      "hat_pattern": "swung_8ths",
+      "description": "Lofi-leaning hip-hop — straighter than boom-bap"
+    }
+  ],
+  "form_templates": [
+    {
+      "id": "hiphop_verse_chorus_16",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "medium"},
+        {"name": "verse_a", "bars": 16, "density": "vocal"},
+        {"name": "hook", "bars": 8, "density": "full"},
+        {"name": "verse_b", "bars": 16, "density": "vocal"},
+        {"name": "hook", "bars": 8, "density": "full"},
+        {"name": "verse_c", "bars": 16, "density": "vocal"},
+        {"name": "hook_outro", "bars": 8, "density": "full"}
+      ],
+      "description": "Standard 16-bar verse + 8-bar hook arrangement"
+    },
+    {
+      "id": "hiphop_trap_compact",
+      "sections": [
+        {"name": "intro", "bars": 8, "density": "rising"},
+        {"name": "verse", "bars": 16, "density": "vocal"},
+        {"name": "hook", "bars": 16, "density": "full"},
+        {"name": "verse", "bars": 16, "density": "vocal"},
+        {"name": "hook", "bars": 16, "density": "full"},
+        {"name": "outro", "bars": 8, "density": "fading"}
+      ],
+      "description": "Modern trap — 16-bar verse + 16-bar hook"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "hiphop_minor_lead",
+      "role": "verse_melody",
+      "abc": "L:1/8\nK:Cm\n\"Cm\"c2 G2 E2 G2 | \"Ab\"A2 c2 e2 c2 | \"Bb\"d2 B2 G2 B2 | \"Cm\"c4 G4",
+      "description": "Minor-key lead — chord-tone-anchored with passing tones"
+    },
+    {
+      "id": "hiphop_808_pattern",
+      "role": "bass",
+      "abc": "L:1/8\nK:Cm\n\"Cm\"C,4 z C,2 z2 | \"Ab\"A,,4 z A,,2 z2 | \"Bb\"B,,4 z B,,2 z2 | \"Cm\"C,8",
+      "description": "808 sub-bass — long sustains with sliding pitch"
+    },
+    {
+      "id": "hiphop_jazzy_chord_stab",
+      "role": "verse_chord",
+      "abc": "L:1/8\nK:Am\n\"Am9\"[A,EGB] z [A,EGB] z | \"Dm9\"[D,FAC] z [D,FAC] z",
+      "description": "Jazzy stabbed chord rhythms"
+    }
+  ],
+  "signature_traits": {
+    "must_have": [
+      "drum_loop_with_kick_snare_pattern",
+      "bass_line_emphasizing_root_or_root_5th",
+      "tempo_in_declared_range_for_subgenre"
+    ],
+    "must_avoid": [
+      "four_on_floor_kick_sustained",
+      "supersaw_lead",
+      "tempo_above_180"
+    ],
+    "instrumentation_hints": [
+      "808_or_sub_bass",
+      "drum_machine_or_sampled_breaks",
+      "rhodes_or_sampled_keys",
+      "horn_stabs_optional",
+      "vinyl_crackle_for_lofi_subgenre"
+    ]
+  }
+}

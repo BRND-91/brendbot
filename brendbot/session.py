@@ -235,6 +235,12 @@ class Session:
         # SessionPool.route_message still has a code path that sets it
         # around context-summary refresh housekeeping.
         self._next_turn_is_housekeeping: bool = False
+        # Long-turn visibility timer (PR #27). Started in _run_loop
+        # immediately before client.query() for non-housekeeping
+        # turns; stopped by the ResultMessage handler in
+        # _receive_loop. None when no turn is in flight. The actual
+        # timer object lives in brendbot.runtime_events.LongTurnTimer.
+        self._long_turn_timer: Any = None
         # Phase 3 #2A — session-start timestamp, used as ts_start when an
         # episode row is written at restart time. Reset implicitly on every
         # restart because SessionPool._restart_session creates a fresh
@@ -602,6 +608,37 @@ class Session:
                         # this turn arrives.
                         if housekeeping:
                             self._next_turn_is_housekeeping = True
+
+                        # Start the long-turn visibility timer for
+                        # user-facing turns. After
+                        # runtime_events.LONG_TURN_THRESHOLD_S (30s)
+                        # without the turn completing, this attaches
+                        # a 🔄 reaction to the triggering message so
+                        # the user knows work is in progress and the
+                        # bot hasn't simply gone silent. Stopped by
+                        # the ResultMessage handler in _receive_loop.
+                        # Skipped on housekeeping (no user-visible
+                        # message to react to) and when chat_id /
+                        # message_id aren't populated yet (early
+                        # startup injection of memory blocks).
+                        if (
+                            not housekeeping
+                            and self._chat_id
+                            and self._turn_user_message_id
+                        ):
+                            try:
+                                from brendbot.runtime_events import LongTurnTimer
+                                self._long_turn_timer = LongTurnTimer(
+                                    self._chat_id,
+                                    self._turn_user_message_id,
+                                )
+                                self._long_turn_timer.start()
+                            except Exception as exc:
+                                logger.debug(
+                                    "[%s] long-turn timer start failed: %s",
+                                    self.key, exc,
+                                )
+
                         await self._client.query(msg)
                 except asyncio.CancelledError:
                     raise
@@ -631,6 +668,20 @@ class Session:
                 except Exception as e:
                     logger.exception("Error handling message: %s", e)
                 if isinstance(message, ResultMessage):
+                    # Stop the long-turn visibility timer. If the
+                    # 🔄 reaction had already been placed (turn
+                    # exceeded the threshold), this also clears it.
+                    # Idempotent — safe even if the timer was never
+                    # started (housekeeping turns, missing chat_id).
+                    if getattr(self, "_long_turn_timer", None) is not None:
+                        try:
+                            asyncio.create_task(self._long_turn_timer.stop())
+                        except Exception as exc:
+                            logger.debug(
+                                "[%s] long-turn timer stop failed: %s",
+                                self.key, exc,
+                            )
+                        self._long_turn_timer = None
                     self._error_count = 0
                     self._completed_turn_count += 1
                     if self._completed_turn_count == 1 or self._completed_turn_count % _CHECKPOINT_INTERVAL == 0:

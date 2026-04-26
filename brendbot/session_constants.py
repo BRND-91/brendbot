@@ -21,13 +21,29 @@ from __future__ import annotations
 
 # ── Context-threshold restart triggers ────────────────────────────────────
 
-# Hard restart when input tokens exceed this value.
+# Hard restart when input tokens exceed this value. Acts as the
+# upper safety bound — if the soft warning below somehow misses,
+# this catches it.
 _CONTEXT_REFRESH_THRESHOLD = 400_000
 
 # Soft warning threshold — promotes to threshold_hit so the receiver
-# loop fires a clean restart at ~320k while there's still headroom,
-# preempting the 400k mid-turn ambush.
-_CONTEXT_SOFT_WARNING = 320_000
+# loop fires a clean restart at end-of-turn while there's still
+# headroom, preempting the next turn's mid-turn ambush.
+#
+# Lowered 320_000 → 250_000 (PR #27) after the 2026-04-25 production
+# log analysis: average context per turn was 173k, but the long-tail
+# included a single turn that ballooned from below threshold to
+# 2,672,096 tokens with $2.20 of API spend. The fix isn't just to
+# restart sooner — that catches the turn-after — but to restart
+# closer to the average so any single turn has less room to balloon
+# from a "normal" context. At 250k, the next turn starts fresh
+# whenever a turn ends at >250k, which is most non-trivial work.
+#
+# Trade-off: more frequent restarts (each ~$0.03 cold-start cost,
+# typically 5-10 extra restarts per pilot) vs fewer multi-dollar
+# runaway turns. The runaway-turn cost dominates by an order of
+# magnitude in the production data.
+_CONTEXT_SOFT_WARNING = 250_000
 
 
 # ── Cognitive load model (Phase 3 #1A) ────────────────────────────────────

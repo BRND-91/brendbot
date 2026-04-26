@@ -1391,3 +1391,123 @@ Net: ~3,250 lines added; nothing removed.
 ### Post-stage pytest
 
 516 passed (was 402; +114 new across the four test files).
+
+
+## Production-log review patch (PR #27, 2026-04-25)
+
+The 2026-04-25 production log dump revealed three real shortfalls
+that PR #23's structural-honesty work either introduced or never
+fully closed. This PR addresses all three plus adds a small context-
+threshold adjustment from the same dataset.
+
+### 1. Test pollution into production logs
+
+PR #23 added `obs.append_jsonl` writing to `<repo>/logs/*.jsonl`.
+Tests that touched gate / phantom-discriminator paths transitively
+called obs but no autouse fixture redirected `_LOGS_DIR` to a tmp
+dir. Result: every pytest run on the deploy box wrote into real
+production observability streams.
+
+Confirmed-bad evidence from the production data:
+
+- `errors.jsonl` 16 entries, **100% from test:fake / test:ch1 sessions**
+- `turn_events.jsonl` 23 entries with `channel_id="ch1"`
+- `gate_events.jsonl` 27 entries with `channel_id="100"`
+
+Fix: autouse fixture in `tests/conftest.py` that monkeypatches
+`brendbot.obs._LOGS_DIR` to `tmp_path / "logs"` for every test.
+Wrapped in try/except for safety in stub-install phase.
+
+Empirically verified: a test run touching the most obs-active
+suites (phantom_discriminator + obs_integration + admin_bypass) no
+longer creates or modifies any files in `<repo>/logs/`.
+
+Operator action item not in this PR: clean the historical pollution
+out of existing production logs:
+
+```bash
+cd ~/brendbot/logs
+for f in *.jsonl; do
+  grep -v 'test:fake\|test:ch1\|"channel_id": "100"\|"channel_id": "ch1"' "$f" > "$f.clean"
+  mv "$f.clean" "$f"
+done
+```
+
+### 2. LongTurnTimer never wired to the actual turn lifecycle
+
+PR #23 built `runtime_events.LongTurnTimer` — start a 30-second
+timer at turn start, attach 🔄 to the user's message if it fires,
+clear on turn complete. The primitive shipped but was never
+connected to `Session._run_loop`. Result in the production data:
+**53 turns took longer than 60 seconds, 36 took longer than 2
+minutes, and the longest single turn ran for 17 minutes — all
+without any Discord-side indication that work was in progress.**
+The user has no way to tell "bot crashed" from "bot working hard"
+during these gaps.
+
+Fix:
+
+- `Session.__init__` initializes `self._long_turn_timer = None`.
+- `Session._run_loop` creates and `start()`s the timer immediately
+  before `client.query()`, unless the turn is housekeeping or
+  chat_id / `_turn_user_message_id` are unset.
+- `Session._receive_loop` calls `timer.stop()` on every
+  `ResultMessage`, which cancels the pending react if it hasn't
+  fired and clears the 🔄 if it has.
+
+Three skip-conditions are deliberate: housekeeping injections
+(memory blocks, context-summary refresh, shallow-rest) have no
+user-facing message to react to; startup-phase injections where
+`_turn_user_message_id` isn't populated yet for the same reason; and
+DM-mode or other paths with empty `chat_id` because Discord
+react needs a channel.
+
+5 new tests in `tests/test_long_turn_wiring.py` pin all four
+behaviours: timer creates with correct args, timer is skipped on
+housekeeping turns, timer is skipped on missing message_id, timer
+is skipped on missing chat_id.
+
+### 3. Context soft-warning threshold lowered 320k → 250k
+
+The production dataset's average context per turn is 173k tokens,
+but the long tail includes a turn that ballooned from below
+threshold to **2,672,096 tokens with $2.20 of API spend** — a
+restart at 400k fires too late to stop the in-flight runaway,
+because the threshold is checked at turn-complete time.
+
+Fix: lower `_CONTEXT_SOFT_WARNING` from 320k to 250k in
+`brendbot/session_constants.py`. The soft-warning trigger fires a
+clean restart at end-of-turn whenever last-input-tokens exceed the
+threshold; lowering it means the next turn always starts fresh
+when a turn ends at >250k, leaving less room for any single turn
+to balloon from a "normal" baseline.
+
+Trade-off: more frequent restarts (each costs ~$0.03 cold-start,
+typically 5-10 extra per pilot) vs fewer multi-dollar runaway
+turns. Run-the-numbers from the production data: 36 turns >$0.10
+plus the $2.20 outlier dominates by an order of magnitude over a
+modest restart-cost increase. Worth it.
+
+`_CONTEXT_REFRESH_THRESHOLD` stays at 400k as the upper safety
+bound — if the soft-warning misses for any reason, the hard
+threshold catches it.
+
+### Findings the production data revealed but this PR does NOT fix
+
+- **42.6% of turns produce no text** (94 of 230 are pure-silent —
+  no text, no tool calls). $5.34 of spend on no-output turns.
+  Mostly intentional silent drops on ambient cross-channel
+  chatter, which is by design — but the rate is high enough to
+  warrant calibration of the engagement gate in a future pass.
+- **226 haiku-no skips** include some borderline conversational
+  follow-ups that may have warranted a response. Engagement gate
+  threshold tuning is out of scope for this patch.
+- **Median 15.2s first-token latency, p90 75.8s, max 530s** for the
+  receive→first-token window. Mostly Anthropic API ramp-up on
+  large prompts; cache-creation share suggests prompts aren't
+  hitting cache enough on initial frames. Context-threshold lower
+  helps indirectly here by keeping prompts cache-friendly.
+
+### Test pass count
+
+516 → 521 passed (+5 from `test_long_turn_wiring.py`).

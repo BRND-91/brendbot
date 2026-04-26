@@ -35,6 +35,27 @@ Examples:
     kb-query imgfail style_not_transferred
     kb-query imgfail list
     kb-query imglog recent 5
+
+    Energy model — building envelope (residential 1-4 family, MA-focused):
+    kb-query envelope <type>          Walls/roofs/floors/foundations: list assemblies of given type
+    kb-query envelope <type> <filter> Filter by framing or material substring (e.g. "wall 2x6")
+    kb-query envelope id <ASMID>      Lookup full assembly with layer breakdown by ID
+    kb-query fenestration             List all window/door/skylight entries
+    kb-query fenestration <filter>    Filter (e.g. "vinyl triple", "wood double argon", "door fiberglass")
+    kb-query ci                       List continuous insulation products with R/in
+    kb-query ci <material>            Lookup specific CI material entry
+    kb-query macode <CZ> [edition]    MA code minima for climate zone (default CZ5); editions:
+                                      BBRS10|IECC2021|MA_STRETCH|MA_SPECIALIZED|all (default all)
+    kb-query mawx [town|station]      MA weather station data (HDD/CDD/design temps).
+                                      No arg = list all 11 stations; arg = town name or station code.
+
+    Examples (envelope):
+    kb-query envelope wall 2x6
+    kb-query envelope id ENV.WALL.2x6_16OC_R21FG_VNYL
+    kb-query fenestration "triple low-e argon"
+    kb-query ci polyiso
+    kb-query macode 5 MA_SPECIALIZED
+    kb-query mawx Boston
 """
 
 import sqlite3
@@ -525,6 +546,227 @@ def cmd_topics(module):
         print(f"  {topic} ({count} facts)")
 
 
+# ─── ENVELOPE / ENERGY MODEL QUERIES ─────────────────────────────────────────
+
+def _src_tag(src):
+    return f"|{src}" if src else ""
+
+
+def cmd_envelope(args):
+    """List/filter envelope assemblies, or look up by id."""
+    if not args:
+        print("Usage: kb-query envelope <type> [filter] | kb-query envelope id <ASMID>")
+        return
+    conn = get_conn()
+
+    if args[0] == "id":
+        if len(args) < 2:
+            print("Usage: kb-query envelope id <ASMID>")
+            return
+        aid = args[1]
+        row = conn.execute(
+            "SELECT assembly_id, type, name, description, framing, spacing_in, "
+            "       cavity_material, cavity_r_nominal, ci_material, ci_r, "
+            "       sheathing_material, sheathing_r, exterior_finish, interior_finish, "
+            "       framing_factor, r_clear_path, r_framing_path, r_effective, u_effective, "
+            "       calc_method, source_id, source_section, "
+            "       ma_compliant_base, ma_compliant_stretch, ma_compliant_specialized, note "
+            "FROM envelope_assemblies WHERE assembly_id = ?", (aid,)
+        ).fetchone()
+        if not row:
+            print(f"Assembly '{aid}' not found.")
+            return
+        keys = [
+            "assembly_id","type","name","description","framing","spacing_in",
+            "cavity_material","cavity_r_nominal","ci_material","ci_r",
+            "sheathing_material","sheathing_r","exterior_finish","interior_finish",
+            "framing_factor","r_clear_path","r_framing_path","r_effective","u_effective",
+            "calc_method","source_id","source_section",
+            "ma_compliant_base","ma_compliant_stretch","ma_compliant_specialized","note",
+        ]
+        for k, v in zip(keys, row):
+            if v not in (None, ""):
+                print(f"{k}: {v}")
+        # Layers
+        layers = conn.execute(
+            "SELECT layer_order, layer_role, material, thickness_in, r_per_in, r_layer, note "
+            "FROM envelope_layers WHERE assembly_id = ? ORDER BY layer_order", (aid,)
+        ).fetchall()
+        if layers:
+            print("\n--- Layers (interior to exterior) ---")
+            for ord_, role, mat, thk, rpi, rl, note in layers:
+                thk_s = f" {thk}\"" if thk else ""
+                rpi_s = f" R/in={rpi}" if rpi else ""
+                rl_s = f" R={rl}" if rl else ""
+                note_s = f" — {note}" if note else ""
+                print(f"  {ord_}. [{role}] {mat}{thk_s}{rpi_s}{rl_s}{note_s}")
+        return
+
+    asm_type = args[0]
+    filter_term = " ".join(args[1:]) if len(args) >= 2 else None
+
+    if filter_term:
+        like = f"%{filter_term}%"
+        rows = conn.execute(
+            "SELECT assembly_id, name, framing, spacing_in, cavity_r_nominal, ci_r, "
+            "       r_effective, u_effective, source_id "
+            "FROM envelope_assemblies "
+            "WHERE type = ? AND ("
+            "      framing LIKE ? OR name LIKE ? OR description LIKE ? OR "
+            "      cavity_material LIKE ? OR exterior_finish LIKE ? OR ci_material LIKE ?)"
+            "ORDER BY r_effective DESC",
+            (asm_type, like, like, like, like, like, like)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT assembly_id, name, framing, spacing_in, cavity_r_nominal, ci_r, "
+            "       r_effective, u_effective, source_id "
+            "FROM envelope_assemblies WHERE type = ? ORDER BY r_effective DESC",
+            (asm_type,)
+        ).fetchall()
+
+    if not rows:
+        print(f"No assemblies found for type='{asm_type}'" + (f" filter='{filter_term}'" if filter_term else ""))
+        return
+    print(f"{'ID':<40} {'Framing':<8} {'OC':<3} {'CavR':>5} {'CIR':>5} {'Reff':>6} {'Ueff':>7}  Source")
+    for aid, name, fr, sp, cav, ci, reff, ueff, src in rows:
+        print(f"{aid:<40} {fr or '-':<8} {sp or '-':<3} {cav or 0:>5} {ci or 0:>5} {reff or 0:>6.1f} {ueff or 0:>7.4f}  {src or ''}")
+
+
+def cmd_fenestration(args):
+    conn = get_conn()
+    filter_term = " ".join(args) if args else None
+    if filter_term:
+        like = f"%{filter_term}%"
+        rows = conn.execute(
+            "SELECT fen_id, type, name, frame_material, glazing_layers, low_e, gas_fill, "
+            "       u_factor, shgc, vt, source_id "
+            "FROM fenestration_assemblies "
+            "WHERE name LIKE ? OR description LIKE ? OR frame_material LIKE ? OR "
+            "      low_e LIKE ? OR gas_fill LIKE ? OR type LIKE ? "
+            "ORDER BY u_factor",
+            (like, like, like, like, like, like)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT fen_id, type, name, frame_material, glazing_layers, low_e, gas_fill, "
+            "       u_factor, shgc, vt, source_id "
+            "FROM fenestration_assemblies ORDER BY type, u_factor"
+        ).fetchall()
+    if not rows:
+        print("No fenestration entries found.")
+        return
+    print(f"{'ID':<32} {'Type':<8} {'Frame':<10} {'L':<2} {'LowE':<10} {'Gas':<6} {'U':>5} {'SHGC':>5} {'VT':>5}  Source")
+    for fid, t, name, fr, ly, le, gas, u, shgc, vt, src in rows:
+        print(f"{fid:<32} {t or '-':<8} {fr or '-':<10} {ly or '-':<2} {le or '-':<10} {gas or '-':<6} "
+              f"{u or 0:>5.2f} {shgc or 0:>5.2f} {vt or 0:>5.2f}  {src or ''}")
+
+
+def cmd_ci(args):
+    conn = get_conn()
+    if not args:
+        rows = conn.execute(
+            "SELECT ci_id, name, material, r_per_in_nominal, r_per_in_aged, source_id "
+            "FROM ci_materials ORDER BY r_per_in_aged DESC, name"
+        ).fetchall()
+        if not rows:
+            print("No CI materials.")
+            return
+        print(f"{'ID':<28} {'Material':<14} {'R/in nom':>9} {'R/in aged':>10}  Source")
+        for cid, name, mat, rn, ra, src in rows:
+            print(f"{cid:<28} {mat or '-':<14} {rn or 0:>9.2f} {ra or 0:>10.2f}  {src or ''}")
+        return
+    arg = " ".join(args)
+    like = f"%{arg}%"
+    rows = conn.execute(
+        "SELECT ci_id, name, material, r_per_in_nominal, r_per_in_aged, density_pcf, "
+        "       vapor_perm, water_absorb_pct, flame_spread, smoke_developed, typical_use, "
+        "       source_id, source_section, note "
+        "FROM ci_materials WHERE ci_id LIKE ? OR name LIKE ? OR material LIKE ? OR typical_use LIKE ?",
+        (like, like, like, like)
+    ).fetchall()
+    if not rows:
+        print(f"No CI material matched '{arg}'.")
+        return
+    for r in rows:
+        keys = ["ci_id","name","material","r_per_in_nominal","r_per_in_aged","density_pcf",
+                "vapor_perm","water_absorb_pct","flame_spread","smoke_developed","typical_use",
+                "source_id","source_section","note"]
+        for k, v in zip(keys, r):
+            if v not in (None, ""):
+                print(f"{k}: {v}")
+        print("-" * 40)
+
+
+def cmd_macode(args):
+    conn = get_conn()
+    cz = args[0] if args else "5"
+    edition = args[1] if len(args) >= 2 else "all"
+    if edition.lower() == "all":
+        rows = conn.execute(
+            "SELECT code_edition, code_section, climate_zone, component, metric, value, unit, depth_in, source_id "
+            "FROM ma_code_minimums WHERE climate_zone LIKE ? "
+            "ORDER BY component, code_edition", (f"%{cz}%",)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT code_edition, code_section, climate_zone, component, metric, value, unit, depth_in, source_id "
+            "FROM ma_code_minimums WHERE climate_zone LIKE ? AND code_edition = ? "
+            "ORDER BY component, code_edition", (f"%{cz}%", edition)
+        ).fetchall()
+    if not rows:
+        print(f"No code minima found for CZ={cz} edition={edition}")
+        return
+    print(f"{'Edition':<18} {'Section':<14} {'CZ':<4} {'Component':<22} {'Metric':<8} {'Value':>7} {'Unit':<5} {'Depth':>5}  Source")
+    for ed, sec, z, comp, met, val, un, d, src in rows:
+        d_s = str(d) if d is not None else "-"
+        print(f"{ed:<18} {sec or '-':<14} {z:<4} {comp:<22} {met:<8} {val:>7.2f} {un or '-':<5} {d_s:>5}  {src or ''}")
+
+
+def cmd_mawx(args):
+    conn = get_conn()
+    if not args:
+        rows = conn.execute(
+            "SELECT station_code, label, climate_zone, hdd65, cdd65, design_temp_heating, design_temp_cooling "
+            "FROM ma_climate_stations ORDER BY station_code"
+        ).fetchall()
+        if not rows:
+            print("No MA climate stations found.")
+            return
+        print(f"{'Code':<5} {'Label':<32} {'CZ':<3} {'HDD65':>6} {'CDD65':>6} {'99% W':>6} {'1% S':>6}")
+        for c, lbl, z, hdd, cdd, h, cl in rows:
+            print(f"{c:<5} {lbl:<32} {z:<3} {hdd or 0:>6} {cdd or 0:>6} {h or 0:>6.0f} {cl or 0:>6.0f}")
+        return
+    q = " ".join(args)
+    like = f"%{q}%"
+    rows = conn.execute(
+        "SELECT station_code, label, climate_zone, hdd65, cdd65, design_temp_heating, "
+        "       design_temp_cooling, covers, source_id, note "
+        "FROM ma_climate_stations "
+        "WHERE station_code LIKE ? OR label LIKE ? OR covers LIKE ?",
+        (like, like, like)
+    ).fetchall()
+    if not rows:
+        print(f"No MA station/town matching '{q}'.")
+        return
+    for c, lbl, z, hdd, cdd, h, cl, cov, src, note in rows:
+        print(f"station_code: {c}")
+        print(f"label: {lbl}")
+        print(f"climate_zone: {z}")
+        print(f"hdd65: {hdd}")
+        print(f"cdd65: {cdd}")
+        print(f"design_temp_heating (99%): {h}")
+        print(f"design_temp_cooling (1%): {cl}")
+        if cov:
+            print(f"covers: {cov}")
+        if src:
+            print(f"source: {src}")
+        if note:
+            print(f"note: {note}")
+        print("-" * 40)
+
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -560,6 +802,16 @@ def main():
         cmd_imglog(sys.argv[2:])
     elif cmd == "memory":
         cmd_memory(sys.argv[2:])
+    elif cmd == "envelope":
+        cmd_envelope(sys.argv[2:])
+    elif cmd == "fenestration":
+        cmd_fenestration(sys.argv[2:])
+    elif cmd == "ci":
+        cmd_ci(sys.argv[2:])
+    elif cmd == "macode":
+        cmd_macode(sys.argv[2:])
+    elif cmd == "mawx":
+        cmd_mawx(sys.argv[2:])
     else:
         print(__doc__)
         sys.exit(1)

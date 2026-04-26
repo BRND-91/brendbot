@@ -1,0 +1,50 @@
+code_edition,code_section,climate_zone,component,metric,value,unit,depth_in,note,source_id
+IECC2021,R402.1.2,4,ceiling,R_min,60,R,,Climate zone 4: ceiling R-60 (IECC 2021 update from R-49),IECC2021
+IECC2021,R402.1.2,5,ceiling,R_min,60,R,,Climate zone 5: ceiling R-60 (was R-49 in IECC 2018),IECC2021
+IECC2021,R402.1.2,6,ceiling,R_min,60,R,,Climate zone 6: ceiling R-60,IECC2021
+IECC2021,R402.1.2,4,wood_frame_wall,R_min,30,R,,CZ4: R-30 cavity OR R-20+5ci OR R-13+10ci,IECC2021
+IECC2021,R402.1.2,5,wood_frame_wall,R_min,30,R,,"CZ5: R-30 cavity OR R-20+5ci OR R-13+10ci (IECC 2021 raised from R-20). Most MA jurisdictions adopt with amendments.",IECC2021
+IECC2021,R402.1.2,6,wood_frame_wall,R_min,30,R,,CZ6: R-30 cavity OR R-20+5ci,IECC2021
+IECC2021,R402.1.2,5,floor,R_min,30,R,,Floor over unconditioned space (CZ5),IECC2021
+IECC2021,R402.1.2,6,floor,R_min,38,R,,Floor over unconditioned space (CZ6),IECC2021
+IECC2021,R402.1.2,5,basement_wall,R_min,15,R,,Basement wall continuous OR R-19 cavity (CZ5),IECC2021
+IECC2021,R402.1.2,5,basement_wall,R_min,19,R,,Cavity-only path (CZ5),IECC2021
+IECC2021,R402.1.2,6,basement_wall,R_min,15,R,,CZ6 same as CZ5 for basement-wall continuous,IECC2021
+IECC2021,R402.1.2,5,slab_edge,R_min,10,R,2,4 ft minimum perimeter depth or wing dimension; 2 ft for non-heated slab,IECC2021
+IECC2021,R402.1.2,6,slab_edge,R_min,10,R,4,Deeper depth for CZ6,IECC2021
+IECC2021,R402.1.2,5,crawlspace_wall,R_min,15,R,,Continuous insulation on crawlspace wall when conditioned,IECC2021
+IECC2021,R402.1.2,5,window_u,U_max,0.30,U,,Maximum fenestration U-factor CZ5,IECC2021
+IECC2021,R402.1.2,5,window_shgc,SHGC_max,0.40,dimensionless,,No SHGC requirement north of CZ4; informational here,IECC2021
+IECC2021,R402.1.2,5,door_u,U_max,0.32,U,,Opaque door U-factor max,IECC2021
+IECC2021,R402.1.2,5,skylight_u,U_max,0.55,U,,Skylight U-factor max,IECC2021
+BBRS10,780 CMR Ch. 11,5,ceiling,R_min,60,R,,MA 10th Ed. adopts IECC 2021 with amendments. Ceiling R-60 effective 2023.,BBRS10
+BBRS10,780 CMR Ch. 11,5,wood_frame_wall,R_min,20,R,,"MA amendment: retains R-20 (or R-13+5ci) wall path under base code; municipalities often layer Stretch on top. Verify current 780 CMR.",BBRS10
+BBRS10,780 CMR Ch. 11,5,floor,R_min,30,R,,"Floor R-30 base code in MA",BBRS10
+BBRS10,780 CMR Ch. 11,5,basement_wall,R_min,15,R,,Basement R-15 ci (MA base),BBRS10
+BBRS10,780 CMR Ch. 11,5,slab_edge,R_min,10,R,2,Slab edge R-10 to 2 ft (MA base),BBRS10
+BBRS10,780 CMR Ch. 11,5,window_u,U_max,0.30,U,,Window U-0.30 (MA base),BBRS10
+BBRS10,780 CMR Ch. 11,5,door_u,U_max,0.32,U,,Door U-0.32 (MA base),BBRS10
+BBRS10,780 CMR Ch. 11,6,ceiling,R_min,60,R,,Berkshires CZ6,BBRS10
+BBRS10,780 CMR Ch. 11,6,wood_frame_wall,R_min,20,R,,CZ6 base,BBRS10
+BBRS10,780 CMR Ch. 11,6,slab_edge,R_min,10,R,4,CZ6 deeper depth required,BBRS10
+MA_STRETCH,225 CMR 22 §C402,5,ceiling,R_min,60,R,,Stretch matches base on ceiling R-60,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,wood_frame_wall,R_min,21,R,,"Stretch typically R-21 cavity OR R-13+5ci with prescriptive option; alternate compliance via HERS rating.",MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,floor,R_min,30,R,,Floor R-30 (Stretch),MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,basement_wall,R_min,19,R,,Cavity OR R-13ci continuous,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,slab_edge,R_min,10,R,4,Deeper depth (4 ft) under Stretch,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,window_u,U_max,0.27,U,,Stretch tightens window U from 0.30 to 0.27,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,5,door_u,U_max,0.28,U,,Door U-0.28 under Stretch,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,6,ceiling,R_min,60,R,,Berkshires Stretch,MA_STRETCH
+MA_STRETCH,225 CMR 22 §C402,6,wood_frame_wall,R_min,21,R,,Stretch CZ6 wall,MA_STRETCH
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,ceiling,R_min,60,R,,Specialized matches Stretch on ceiling,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,wood_frame_wall,R_min,30,R,,Specialized requires R-30 effective wall (R-20+10ci or equivalent),MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,floor,R_min,38,R,,Floor R-38 under Specialized,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,basement_wall,R_min,20,R,,R-20 ci or equivalent,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,slab_edge,R_min,20,R,4,Deeper and higher R; Passive-House-aligned,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,window_u,U_max,0.22,U,,Triple-pane required for new construction,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,window_shgc,SHGC_max,0.40,dimensionless,,SHGC tightening for cooling,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,door_u,U_max,0.20,U,,Insulated fiberglass class minimum,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,skylight_u,U_max,0.50,U,,Tightened skylight U,MA_SPECIALIZED
+MA_SPECIALIZED,225 CMR 23 RC4.4,5,air_leakage,ACH50_max,3.0,ACH50,,Whole-building air-leakage cap; verified by blower-door,MA_SPECIALIZED
+MA_STRETCH,225 CMR 22 §C402,5,air_leakage,ACH50_max,3.0,ACH50,,MA Stretch air-leakage cap (CZ5/6 IECC),MA_STRETCH
+BBRS10,780 CMR Ch. 11,5,air_leakage,ACH50_max,3.0,ACH50,,IECC 2021 cap adopted by MA base code,BBRS10

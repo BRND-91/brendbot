@@ -1,0 +1,280 @@
+assembly_id,layer_order,layer_role,material,thickness_in,r_per_in,r_layer,note
+ENV.WALL.2x4_16OC_R13FG_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R13FG_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R13FG_VNYL,3,cavity,fiberglass,3.5,3.71,13.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_16OC_R13FG_VNYL,4,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R13FG_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R13FG_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_16OC_R13FG_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_16OC_R15FG_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R15FG_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R15FG_VNYL,3,cavity,fiberglass_hd,3.5,4.29,15.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_16OC_R15FG_VNYL,4,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R15FG_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R15FG_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_16OC_R15FG_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_16OC_R15MW_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R15MW_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R15MW_VNYL,3,cavity,mineral_wool,3.5,4.29,15.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_16OC_R15MW_VNYL,4,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R15MW_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R15MW_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_16OC_R15MW_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,3,cavity,fiberglass,3.5,3.71,13.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,4,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,6,ci,xps continuous insulation,,,5.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,7,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_16OC_R13_R5XPS_VNYL,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,3,cavity,fiberglass,3.5,3.71,13.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,4,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,6,ci,polyiso continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,7,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x4_16OC_R13_R10POLYISO_FC,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R19FG_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R19FG_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R19FG_VNYL,3,cavity,fiberglass,5.5,3.45,19.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R19FG_VNYL,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R19FG_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R19FG_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x6_16OC_R19FG_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21FG_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21FG_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21FG_VNYL,3,cavity,fiberglass_hd,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21FG_VNYL,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21FG_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21FG_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x6_16OC_R21FG_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R23MW_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R23MW_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R23MW_FC,3,cavity,mineral_wool,5.5,4.18,23.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R23MW_FC,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R23MW_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R23MW_FC,6,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x6_16OC_R23MW_FC,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21CELL_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21CELL_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21CELL_VNYL,3,cavity,cellulose,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21CELL_VNYL,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21CELL_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21CELL_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x6_16OC_R21CELL_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,3,cavity,fiberglass_hd,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,6,ci,xps continuous insulation,,,5.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,7,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x6_16OC_R21FG_R5XPS_VNYL,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,3,cavity,fiberglass_hd,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,6,ci,polyiso continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,7,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x6_16OC_R21FG_R10POLYISO_FC,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,3,cavity,mineral_wool,5.5,4.18,23.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,4,framing,Framing — 2x6 solid wood (20% area),5.5,1.25,6.88,Framing fraction (FF) = 0.2
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,6,ci,mineral_wool continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,7,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x6_24OC_R23MW_R10MW_FC,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,3,cavity,cc_spf,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x6_16OC_R21CCSPF_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R33CCSPF_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R33CCSPF_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R33CCSPF_FC,3,cavity,cc_spf,5.5,6.0,33.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R33CCSPF_FC,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R33CCSPF_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R33CCSPF_FC,6,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x6_16OC_R33CCSPF_FC,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,3,cavity,cellulose,3.5,11.14,39.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,4,framing,Framing — 2x4 solid wood (22% area),3.5,1.25,4.38,Framing fraction (FF) = 0.22
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,6,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_DBLSTUD_R39CELL_VNYL,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_LARSEN_R49CELL_FC,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_LARSEN_R49CELL_FC,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_LARSEN_R49CELL_FC,3,cavity,cellulose,3.5,14.0,49.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x4_LARSEN_R49CELL_FC,4,framing,Framing — 2x4 solid wood (22% area),3.5,1.25,4.38,Framing fraction (FF) = 0.22
+ENV.WALL.2x4_LARSEN_R49CELL_FC,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_LARSEN_R49CELL_FC,6,exterior_finish,fiber_cement,,,0.17,
+ENV.WALL.2x4_LARSEN_R49CELL_FC,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,3,cavity,fiberglass_hd,5.5,3.82,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,4,framing,Framing — 2x6 solid wood (22% area),5.5,1.25,6.88,Framing fraction (FF) = 0.22
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,6,exterior_finish,brick,,,0.44,
+ENV.WALL.2x6_16OC_R21FG_NONE_BRICK,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.WALL.2x4_16OC_R0_VNYL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.WALL.2x4_16OC_R0_VNYL,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.WALL.2x4_16OC_R0_VNYL,3,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.WALL.2x4_16OC_R0_VNYL,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.WALL.2x4_16OC_R0_VNYL,5,exterior_finish,vinyl,,,0.61,
+ENV.WALL.2x4_16OC_R0_VNYL,6,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.VENTED_R30_LF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.VENTED_R30_LF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.VENTED_R30_LF,3,cavity,cellulose,,,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.VENTED_R30_LF,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.VENTED_R30_LF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.VENTED_R38_LF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.VENTED_R38_LF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.VENTED_R38_LF,3,cavity,cellulose,,,38.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.VENTED_R38_LF,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.VENTED_R38_LF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.VENTED_R49_LF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.VENTED_R49_LF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.VENTED_R49_LF,3,cavity,cellulose,,,49.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.VENTED_R49_LF,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.VENTED_R49_LF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.VENTED_R60_LF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.VENTED_R60_LF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.VENTED_R60_LF,3,cavity,cellulose,,,60.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.VENTED_R60_LF,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.VENTED_R60_LF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,3,cavity,fiberglass,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,6,exterior_finish,asphalt_shingle,,,0.44,
+ENV.ROOF.CATHEDRAL_2x10_R30FG_ASPH,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,3,cavity,fiberglass,11.25,3.38,38.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,4,framing,Framing — 2x12 solid wood (18% area),11.25,1.25,14.06,Framing fraction (FF) = 0.18
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,6,exterior_finish,asphalt_shingle,,,0.44,
+ENV.ROOF.CATHEDRAL_2x12_R38FG_ASPH,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,3,cavity,cc_spf,9.25,4.86,45.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,6,exterior_finish,asphalt_shingle,,,0.44,
+ENV.ROOF.UNVENTED_2x10_R45CCSPF_ASPH,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,3,cavity,fiberglass,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,6,ci,polyiso continuous insulation,,,20.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,7,exterior_finish,asphalt_shingle,,,0.44,
+ENV.ROOF.UNVENTED_2x10_R45_R20POLYISO_ASPH,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,3,cavity,cc_spf,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,6,ci,polyiso continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,7,exterior_finish,asphalt_shingle,,,0.44,
+ENV.ROOF.UNVENTED_2x10_R30CCSPF_R10POLYISO,8,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.RAISED_HEEL_R49_LF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.RAISED_HEEL_R49_LF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.RAISED_HEEL_R49_LF,3,cavity,cellulose,,,49.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.RAISED_HEEL_R49_LF,4,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.RAISED_HEEL_R49_LF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.FLAT_2x10_R30CCSPF,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.FLAT_2x10_R30CCSPF,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.FLAT_2x10_R30CCSPF,3,cavity,cc_spf,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.FLAT_2x10_R30CCSPF,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.FLAT_2x10_R30CCSPF,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.FLAT_2x10_R30CCSPF,6,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.ROOF.FLAT_R30CC_R20POLYISO,1,film_int,ASHRAE interior film (upward heat flow),,,0.61,
+ENV.ROOF.FLAT_R30CC_R20POLYISO,2,interior_finish,1/2 in. gypsum board,0.5,0.9,0.45,
+ENV.ROOF.FLAT_R30CC_R20POLYISO,3,cavity,cc_spf,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.ROOF.FLAT_R30CC_R20POLYISO,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.ROOF.FLAT_R30CC_R20POLYISO,5,sheathing,1/2 in. OSB,0.5,1.26,0.63,
+ENV.ROOF.FLAT_R30CC_R20POLYISO,6,ci,polyiso continuous insulation,,,20.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.ROOF.FLAT_R30CC_R20POLYISO,7,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_NONE,1,film_int,ASHRAE interior film (downward heat flow),,,0.92,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_NONE,2,subfloor,3/4 in. T&G subfloor,0.75,1.25,0.94,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_NONE,3,cavity,fiberglass,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_NONE,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_NONE,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FLOOR.OVERCRAWL_2x10_R23MW_NONE,1,film_int,ASHRAE interior film (downward heat flow),,,0.92,
+ENV.FLOOR.OVERCRAWL_2x10_R23MW_NONE,2,subfloor,3/4 in. T&G subfloor,0.75,1.25,0.94,
+ENV.FLOOR.OVERCRAWL_2x10_R23MW_NONE,3,cavity,mineral_wool,9.25,2.49,23.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FLOOR.OVERCRAWL_2x10_R23MW_NONE,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.FLOOR.OVERCRAWL_2x10_R23MW_NONE,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FLOOR.OVERGARAGE_2x10_R30CCSPF,1,film_int,ASHRAE interior film (downward heat flow),,,0.92,
+ENV.FLOOR.OVERGARAGE_2x10_R30CCSPF,2,subfloor,3/4 in. T&G subfloor,0.75,1.25,0.94,
+ENV.FLOOR.OVERGARAGE_2x10_R30CCSPF,3,cavity,cc_spf,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FLOOR.OVERGARAGE_2x10_R30CCSPF,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.FLOOR.OVERGARAGE_2x10_R30CCSPF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,1,film_int,ASHRAE interior film (downward heat flow),,,0.92,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,2,subfloor,3/4 in. T&G subfloor,0.75,1.25,0.94,
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,3,cavity,fiberglass,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,5,ci,xps continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.FLOOR.OVERCRAWL_2x10_R30FG_R10XPS,6,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FLOOR.CANTILEVER_2x10_R30CCSPF,1,film_int,ASHRAE interior film (downward heat flow),,,0.92,
+ENV.FLOOR.CANTILEVER_2x10_R30CCSPF,2,subfloor,3/4 in. T&G subfloor,0.75,1.25,0.94,
+ENV.FLOOR.CANTILEVER_2x10_R30CCSPF,3,cavity,cc_spf,9.25,3.24,30.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FLOOR.CANTILEVER_2x10_R30CCSPF,4,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.FLOOR.CANTILEVER_2x10_R30CCSPF,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.RIM.2x10_R21FG_BATT,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.RIM.2x10_R21FG_BATT,2,cavity,fiberglass_hd,9.25,2.27,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.RIM.2x10_R21FG_BATT,3,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.RIM.2x10_R21FG_BATT,4,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.RIM.2x10_R20CCSPF,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.RIM.2x10_R20CCSPF,2,cavity,cc_spf,9.25,2.27,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.RIM.2x10_R20CCSPF,3,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.RIM.2x10_R20CCSPF,4,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.RIM.2x10_R10XPS_R21FG,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.RIM.2x10_R10XPS_R21FG,2,cavity,fiberglass_hd,9.25,2.27,21.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.RIM.2x10_R10XPS_R21FG,3,framing,Framing — 2x10 solid wood (20% area),9.25,1.25,11.56,Framing fraction (FF) = 0.2
+ENV.RIM.2x10_R10XPS_R21FG,4,ci,xps continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.RIM.2x10_R10XPS_R21FG,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.SLAB_R10_2FT,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.SLAB_R10_2FT,2,cavity,xps,,,10.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.SLAB_R10_2FT,3,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.SLAB_R10_4FT_R10UNDER,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.SLAB_R10_4FT_R10UNDER,2,cavity,xps,,,10.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.SLAB_R10_4FT_R10UNDER,3,ci,xps continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.FND.SLAB_R10_4FT_R10UNDER,4,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.SLAB_R20_4FT_R20UNDER,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.SLAB_R20_4FT_R20UNDER,2,cavity,xps,,,20.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.SLAB_R20_4FT_R20UNDER,3,ci,xps continuous insulation,,,20.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.FND.SLAB_R20_4FT_R20UNDER,4,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.BSMT_INT_R15_2x4FG_DRYWALL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.BSMT_INT_R15_2x4FG_DRYWALL,2,cavity,fiberglass,3.5,4.29,15.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.BSMT_INT_R15_2x4FG_DRYWALL,3,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.FND.BSMT_INT_R15_2x4FG_DRYWALL,4,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.BSMT_EXT_R15XPS,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.BSMT_EXT_R15XPS,2,cavity,xps,,,15.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.BSMT_EXT_R15XPS,3,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.BSMT_INT_R10XPS_R13FG_DRYWALL,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.BSMT_INT_R10XPS_R13FG_DRYWALL,2,cavity,fiberglass,3.5,3.71,13.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.BSMT_INT_R10XPS_R13FG_DRYWALL,3,framing,Framing — 2x4 solid wood (25% area),3.5,1.25,4.38,Framing fraction (FF) = 0.25
+ENV.FND.BSMT_INT_R10XPS_R13FG_DRYWALL,4,ci,xps continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.FND.BSMT_INT_R10XPS_R13FG_DRYWALL,5,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.BSMT_INT_R20CCSPF,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.BSMT_INT_R20CCSPF,2,cavity,cc_spf,,,20.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.BSMT_INT_R20CCSPF,3,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.CRAWL_VENTED_FLR,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.CRAWL_VENTED_FLR,2,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.CRAWL_CONDITIONED_R15XPS,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.CRAWL_CONDITIONED_R15XPS,2,cavity,xps,,,15.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.CRAWL_CONDITIONED_R15XPS,3,film_ext,ASHRAE exterior film (winter),,,0.17,
+ENV.FND.FPSF_R10VERT_R10WING,1,film_int,ASHRAE interior film (horizontal),,,0.68,
+ENV.FND.FPSF_R10VERT_R10WING,2,cavity,xps,,,10.0,Cavity-path R; framing-path uses solid-wood R/in
+ENV.FND.FPSF_R10VERT_R10WING,3,ci,xps continuous insulation,,,10.0,Outboard of sheathing; eliminates thermal bridge through framing
+ENV.FND.FPSF_R10VERT_R10WING,4,film_ext,ASHRAE exterior film (winter),,,0.17,
